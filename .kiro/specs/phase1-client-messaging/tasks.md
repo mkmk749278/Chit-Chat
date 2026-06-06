@@ -230,7 +230,7 @@ Testing approach (from the design's Testing Strategy):
     - **Property 23: Relay binds sender to the authenticated connection**
     - **Validates: Requirements 5.7, 8.2**
 
-  - [-] 4.7 Wire the message handler into `RealtimeGateway` (and optional ciphertext persistence)
+  - [x] 4.7 Wire the message handler into `RealtimeGateway` (and optional ciphertext persistence)
     - Add the `send`-frame handler calling `MessageRelayService.relay`, send an `ack` frame back to the
       sender on accepted delivery; optionally persist to the minimal ciphertext-only `messages` table
       (off the delivery hot path) with its migration
