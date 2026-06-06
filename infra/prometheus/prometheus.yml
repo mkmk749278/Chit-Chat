@@ -1,0 +1,28 @@
+# Phase 0 — Prometheus scrape configuration (Section 13.1 / Requirement 12.3)
+#
+# Prometheus scrapes the NestJS backend's Prometheus-format `/metrics` endpoint.
+# The backend exposes `/metrics` only on the Docker Compose `monitoring`
+# network (enforced in application code, Requirement 12.7 / 13.6), and this
+# Prometheus instance is attached to that same network in docker-compose.yml,
+# so the target is reachable by the compose service name `backend`.
+#
+# This file is mounted read-only into the container at
+# /etc/prometheus/prometheus.yml (see infra/docker/docker-compose.yml).
+
+global:
+  # How often to scrape targets and evaluate rules. 15s is a sensible default
+  # that balances metric freshness against load on the backend.
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Scrape the backend's HTTP request count and latency metrics published at
+  # /metrics. The target uses the compose service name and REST port; DNS
+  # resolution happens over the shared `monitoring` network.
+  - job_name: 'backend'
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      - targets: ['backend:3000']
+        labels:
+          service: 'backend'

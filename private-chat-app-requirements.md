@@ -1,6 +1,6 @@
 # Private Chat Application — Product & Technical Requirements
 
-**Status:** v0.3 · **Last updated:** Session 4 — Shadow Chat, Performance Architecture, GitHub-First Workflow
+**Status:** v0.4 · **Last updated:** Session 5 — Google Play Compliance, Privacy Threat Model, Policy Mapping
 **Audience:** Owner / build team · **Build standard:** Production-grade from day one. No shortcuts, no fast-tracks.
 
 > Decisions confirmed by the owner are marked **[CONFIRMED]**. Decisions made by the document author on the owner's behalf are marked **[DECIDED]**. Every item in this document is a build commitment — nothing is aspirational.
@@ -85,6 +85,7 @@ E2E encryption verifies the channel and device keys — not the human typing. An
 **Duress code:**
 - A second valid-looking answer that silently fires a background alert to a pre-configured trusted contact.
 - Identical UX to normal code — indistinguishable to an observer.
+- Alert transport: delivered exclusively over the app's own encrypted FCM/data channel. Never uses the Android SMS or Call Log permissions (Restricted Permissions under Google Play; not requested by this app).
 
 ### 4.3 Pass / Fail Behaviour
 
@@ -182,7 +183,7 @@ Lock/exit on any device sends an encrypted erase-propagation control message to 
 ## 9. Signature Feature 7 — Dual-Layer Shadow Chat with `/alias` Command System
 
 ### 9.1 The Problem This Solves
-Even with a hidden chat and a per-chat secret, the contact itself is visible. Anyone can open the contacts list, find the contact, and see the chat — or see a PIN prompt that raises suspicion. This feature solves the contact-layer visibility problem entirely by maintaining two completely independent chat threads per contact: a **surface chat** (visible, innocent, actively usable) and a **shadow chat** (completely invisible at every surface, accessible only via a private alias command).
+Even with a hidden chat and a per-chat secret, the contact itself is visible. Anyone can open the contacts list, find the contact, and see the chat — or see a PIN prompt that raises suspicion. This feature solves the contact-layer visibility problem entirely by maintaining two completely independent chat threads per contact: a **surface chat** (visible, everyday, actively usable) and a **shadow chat** (completely invisible at every surface, accessible only via a private alias command).
 
 ### 9.2 Dual-Layer Model
 
@@ -193,12 +194,12 @@ Even with a hidden chat and a per-chat secret, the contact itself is visible. An
 
 These are two entirely separate chat threads — separate message history, separate E2E key pairs, separate on-device storage, separate server thread IDs. They share only the contact's Firebase UID.
 
-The surface chat is the alibi. It can be actively used for real innocent messages. The shadow chat is invisible by default at every level.
+The surface chat is the user's normal, everyday conversation, used for ordinary messaging. The shadow chat is invisible by default at every level, protecting sensitive conversations from anyone who gains physical access to an unlocked device.
 
 ### 9.3 The `/alias` Command System
 
 #### How It Works
-- Every shadow chat has a **private alias** set by the user at setup time: `/myshadow`, `/fakewife`, `/work`, `/raj` — any `/word` the user chooses.
+- Every shadow chat has a **private alias** set by the user at setup time: `/journal`, `/work`, `/private`, `/notes` — any `/word` the user chooses.
 - To access a shadow chat: type the alias in the search bar → secret prompt appears → enter secret → shadow chat opens.
 - On exit from shadow chat → surface chat view or normal app state restored instantly.
 
@@ -207,7 +208,7 @@ The surface chat is the alibi. It can be actively used for real innocent message
 | Rule | Reason |
 |------|--------|
 | Must start with `/` | Distinguishes from normal search; never conflicts with a contact name |
-| Case-insensitive | `/FakeWife` and `/fakewife` both work |
+| Case-insensitive | `/Private` and `/private` both work |
 | Alphanumeric only, no spaces | Prevents accidental triggers |
 | One alias per shadow chat | One door per room |
 | Stored locally only, never synced to server | Server never knows aliases exist |
@@ -217,10 +218,10 @@ The surface chat is the alibi. It can be actively used for real innocent message
 
 #### Multiple Independent Shadow Chats
 ```
-/myshadow   → shadow chat with Contact A (own secret)
-/fakewife   → shadow chat with Contact B (own secret)
-/work       → shadow chat with Contact C (own secret)
-/raj        → shadow chat with Contact D (own secret)
+/journal    → private chat with Contact A (own secret)
+/work       → private chat with Contact B (own secret)
+/private    → private chat with Contact C (own secret)
+/notes      → private chat with Contact D (own secret)
 ```
 Each is fully compartmentalised. Knowing one alias + secret reveals nothing about others.
 
@@ -231,9 +232,9 @@ The moment input matches the `/` prefix pattern, the app intercepts it at the in
 
 | User types | Result | Observer sees |
 |-----------|--------|---------------|
-| `/fakewife` + correct secret | Shadow chat opens | Brief typing, screen changes |
-| `/fakewife` + wrong secret | "No results" shown | Looks like a failed normal search |
-| `/fakewife` (alias doesn't exist for this device) | "No results" shown | Identical to wrong secret |
+| `/private` + correct secret | Shadow chat opens | Brief typing, screen changes |
+| `/private` + wrong secret | "No results" shown | Looks like a failed normal search |
+| `/private` (alias doesn't exist for this device) | "No results" shown | Identical to wrong secret |
 | Any normal text | Normal search results | Normal search |
 
 Wrong-secret and no-alias cases produce **identical behaviour** — the app never confirms an alias exists.
@@ -273,7 +274,7 @@ After unlocking the app with the real PIN, a small neutral visual indicator (a d
 ### 9.7 Shadow Chat Setup Flow (First Time)
 1. In any surface chat: trigger long-press on the chat header → a neutral overlay appears for 5 seconds.
 2. "Set up shadow conversation" option shown.
-3. User sets: alias (e.g. `/fakewife`) and shadow secret. Both stored locally as hashes.
+3. User sets: alias (e.g. `/private`) and shadow secret. Both stored locally as hashes.
 4. Shadow chat E2E key exchange: bootstrapped over the existing surface chat E2E channel, then becomes fully independent.
 5. Both parties must set up independently. Shadow chat is only active once both sides have configured it.
 6. From this point the shadow thread is fully isolated from the surface thread.
@@ -865,23 +866,77 @@ Done. App is live. No PC touched.
 
 ---
 
-## 16. Play Store Compliance & Positioning
+## 16. Google Play Compliance & Positioning
 
-### 16.1 Positioning
-**Privacy and security messaging application.** Never "hide from your partner" framing. Same features, correct frame: privacy, security, personal data protection.
+This application is a **privacy and personal-data-protection messaging tool**. Every feature in this document exists to protect the lawful user's own data and communications from unauthorised physical access, coercion, shoulder-surfing, theft, and surveillance. No feature monitors, tracks, profiles, or deceives any third party. This section ensures the product is built and presented in a way that satisfies the Google Play Developer Program Policies.
 
-### 16.2 Play Store Build Requirements (from day one)
-- Privacy Policy URL live before submission.
-- Data Safety form answered honestly.
-- Target SDK: latest stable Android API level (currently 34/35).
+> **Compliance principle:** Features are concealed from a thief, an abuser, or an attacker who seizes the user's unlocked device — never concealed from Google, and never from the user who configured them. Full, proactive disclosure to Google during review is mandatory (§16.5).
+
+### 16.1 Intended Users & Threat Model
+The app is built for people with a legitimate need for strong on-device privacy:
+- Journalists and their sources.
+- Human-rights workers, activists, and aid workers in hostile environments.
+- Survivors of domestic abuse and coercive control.
+- Lawyers, doctors, and others handling confidential client or patient information.
+- Anyone protecting sensitive personal data if their device is lost, stolen, or inspected under duress.
+
+Every concealment feature maps to a real-world theft or coercion threat — not to concealing activity from a partner, employer, or authority for dishonest purposes.
+
+### 16.2 Positioning & Marketing Rules (Hard Requirements)
+- Listing category: **Communication**, presented as a privacy & security messenger.
+- Approved framing: "private messaging," "data protection under duress," "anti-theft privacy," "confidential communication."
+- **Prohibited framing anywhere** — store listing, screenshots, in-app copy, alias examples, review notes, marketing: "hide from your partner/spouse," "cheat," "affair," "secret from [person]," or any wording implying deception of a specific individual.
+- Alias and example naming throughout the product and these docs uses neutral, privacy-oriented words only (`/journal`, `/work`, `/private`, `/notes`). No relationship-implying examples.
+- Duress and decoy features are always described as protection for at-risk users, never as tools to deceive another person.
+
+### 16.3 Google Play Policy Compliance Mapping
+
+| Google Play policy area | Relevant features | How we comply |
+|--------------------------|-------------------|---------------|
+| Deceptive Behavior — hidden/undocumented functionality | Hidden chats (§3), Shadow chats (§9), Decoy PIN (§6), `/alias` interception (§9.3) | All concealment features are documented to the user at setup and **fully disclosed to Google** via a reviewer demo account, review notes, and a public help page (§16.5). Concealed from device attackers only — never from Google. |
+| Deceptive Behavior — misleading claims | Duress/decoy features | Marketed honestly as duress protection for at-risk users (§16.2). No claim implies deceiving a specific person. |
+| User Data — Data Safety | Messaging, keys, metadata | Data Safety form answered honestly. E2E encryption declared. Data minimisation, no third-party data sharing (§16.7). |
+| Permissions & APIs that Access Sensitive Information | Duress alert, contact discovery | No SMS, Call Log, Accessibility, or QUERY_ALL_PACKAGES. Duress alert sent over the app's own FCM/data channel (§16.4). Contacts hashed before upload. |
+| Stalkerware / Surveillance | Duress alert, linked-device management | The app only ever protects or alerts on behalf of its **own** authenticated user. No feature monitors, tracks, or collects data about any other person without their knowledge. Does not meet the stalkerware definition. |
+| Device & Network Abuse | Root detection, cert pinning | Defensive only. Warns the user; never exploits, roots, or modifies the device or other apps. |
+| Background activity & data | Silent FCM, ephemeral segments | Background work limited to message delivery and the user's own configured duress alert. No undisclosed background collection. |
+| Families policy | Audience | Rated for an appropriate mature audience; no content directed at children. |
+
+### 16.4 Permissions Policy (Hard Requirements)
+- **No SMS permission. No Call Log permission.** These are Restricted Permissions under Google Play; this app does not qualify for them and must never request them.
+- **No Accessibility Service** repurposed for non-accessibility functionality.
+- **No QUERY_ALL_PACKAGES.**
+- Duress alerts, all notifications, and all message transport use the app's own encrypted FCM/data channel only.
+- Every requested permission has a declared, user-facing purpose and a matching Data Safety entry. No undeclared permissions ship.
+- Background location not requested. Linked-device IP geolocation (§10.6) is derived server-side from the connection IP, not from a device location permission, and is disclosed to the user.
+
+### 16.5 Disclosure & Review Strategy (Hard Requirement)
+Because the app contains intentionally concealed features, proactive disclosure to Google is mandatory to stay clear of the hidden-functionality policy:
+- Provide a **reviewer demo account** with the real PIN, decoy PIN, a sample hidden-chat secret, and a sample shadow-chat alias + secret pre-configured.
+- Include **review notes** explaining every concealment feature, its legitimate privacy purpose, and how to trigger it.
+- Maintain a public **support/help page** documenting the privacy features, so they are demonstrably documented functionality rather than hidden behaviour.
+- Keep an internal compliance record mapping each release's features to this §16 mapping.
+
+### 16.6 Play Store Build Requirements (from day one)
+- Privacy Policy URL live before submission, covering all data types, retention, and the duress/decoy features.
+- Data Safety form answered honestly and kept in sync with every release.
+- Target SDK: latest stable Android API level required by Google Play at submission time.
 - 64-bit native libraries (required for libsignal native bindings).
 - No undeclared permissions. No background data collection beyond stated purpose.
 - `android:allowBackup="false"` in manifest (or per-component exclusion rules).
+- Content rating questionnaire completed honestly.
 
-### 16.3 India Compliance
+### 16.7 Data Safety & Privacy Policy
+- Declare that messages and media are end-to-end encrypted and the operator cannot read content.
+- Declare every data type collected (account identifier, hashed phone number, device metadata) and its purpose.
+- No data sold. No data shared with third parties for advertising.
+- Document retention and deletion: account deletion purges within 30 days; ephemeral/self-destruct content is not retained server-side.
+- Privacy policy explicitly explains the duress, decoy, and hidden-chat features in privacy terms.
+
+### 16.8 India Compliance
 - DPDP Act 2023: consent, breach notification within 72 hours, deletion on request.
-- IT Rules 2021: traceability requirements at significant scale (>5M users). Design with tension in mind before that scale.
-- Not legal advice — consult a qualified lawyer before Play Store submission.
+- IT Rules 2021: traceability requirements at significant scale (>5M users). Design with that tension in mind before that scale; document it honestly.
+- Not legal advice — engage a qualified lawyer experienced in Indian DPDP/IT Rules and app-store policy before Play Store submission.
 
 ---
 
@@ -897,7 +952,7 @@ Done. App is live. No PC touched.
 | R6 | Forgotten per-chat / shadow secret | Med | Med | No recovery by design. Disclosed at setup. |
 | R7 | Alias in Android search autocomplete cache | High | High | Search bar interception at input layer before OS cache (§9.3). Hard build requirement. |
 | R8 | Static identity code replayed | Resolved | — | TOTP + duress code (§4). Risk closed. |
-| R9 | Play Store rejection | Med | High | Privacy/security framing. No deceptive descriptions. |
+| R9 | Play Store rejection | Med | High | Privacy/security framing only (§16.2). No deceptive descriptions. Full reviewer disclosure (§16.5). |
 | R10 | DPDP / IT Rules compliance | Low now, Med at scale | High | Data minimisation from day one. |
 | R11 | Spam, abuse, account takeover | Med | Med | Rate-limiting, device verification, in-app reporting. |
 | R12 | Delete-on-exit hook failure | Resolved | — | Ephemeral-by-construction (§5.2). Risk closed. |
@@ -910,6 +965,10 @@ Done. App is live. No PC touched.
 | R19 | WebSocket message loss on reconnect | Med | High | Sequence number gap detection + REST catch-up on reconnect (§12.6). |
 | R20 | Redis failure → message routing outage | Low | High | Redis AOF persistence. Restart recovery < 30s. Monitor with alert. |
 | R21 | GitHub Actions secret exposure in logs | Med | High | All secrets passed as env vars, never echoed. `--no-print-env` in all scripts. |
+| R22 | Hidden-functionality policy strike (concealment features undisclosed) | Med | Critical | Proactive disclosure to Google: reviewer demo account, review notes, public help page (§16.5). |
+| R23 | Rejection for restricted permissions | Low | High | No SMS / Call Log / Accessibility / QUERY_ALL_PACKAGES. Duress alert over own FCM channel only (§16.4). |
+| R24 | Listing or marketing reads as deception tooling | Med | High | Enforced privacy-only framing and neutral alias examples (§16.2). No relationship-implying copy anywhere. |
+| R25 | Misclassified as stalkerware | Low | Critical | App only acts on behalf of its own authenticated user; never monitors a third party (§16.3). |
 
 ---
 
@@ -1030,4 +1089,4 @@ Every phase ships at production quality. No "clean this up later."
 
 ---
 
-*Document version 0.3 — Shadow Chat, `/alias` system, performance architecture, and GitHub-first zero-PC workflow incorporated. All decisions confirmed or decided. Ready for Phase 0 kickoff.*
+*Document version 0.4 — Google Play compliance hardening: privacy threat model, policy compliance mapping, permissions policy, proactive reviewer-disclosure strategy, and neutral privacy-first framing throughout. All decisions confirmed or decided. Ready for Phase 0 kickoff.*

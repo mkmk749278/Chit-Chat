@@ -1,0 +1,60 @@
+# Pull-request quality gate (design §14.2, Requirement 10.1, 10.6)
+#
+# On every pull request targeting `main`, this pipeline runs the full quality
+# gate across all workspaces — lint, TypeScript typecheck, unit tests, and a
+# build check — WITHOUT deploying anything (Req 10.6). Any failing step fails
+# the job, which reports a failed status check back to the pull request and
+# blocks merge (Req 10.6). There is no VPS access and no secret usage here:
+# this workflow only validates code.
+
+name: pr
+
+on:
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs for the same PR so only the latest commit is checked.
+concurrency:
+  group: pr-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Quality gate: lint -> typecheck -> unit tests -> build, across every
+  # workspace. Any failure fails this job and therefore the PR status check,
+  # without deploying (Req 10.6). No deploy job exists in this workflow.
+  # ---------------------------------------------------------------------------
+  quality-gate:
+    name: Lint, typecheck, test, and build (no deploy)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Shared packages must compile before apps can lint/typecheck/build.
+      - name: Build shared packages
+        run: npm run build:packages
+
+      - name: Lint (ESLint)
+        run: npm run lint --workspaces --if-present
+
+      - name: Typecheck (tsc)
+        run: npm run typecheck --workspaces --if-present
+
+      - name: Unit tests (Jest)
+        run: npm run test --workspaces --if-present
+
+      - name: Build check
+        run: npm run build --workspaces --if-present

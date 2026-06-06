@@ -1,0 +1,164 @@
+# Encrypted database backup pipeline (design §14.2, Requirement 10)
+#
+# Scheduled nightly at 02:00 UTC (cron `0 2 * * *`). The job SSHes to the VPS,
+# runs `pg_dump`, encrypts the dump with GPG using the backup key, uploads the
+# encrypted artifact to Backblaze B2, verifies the upload, and prunes backups
+# older than 30 days. A manual trigger is also provided for ad-hoc backups.
+#
+# Every secret is sourced from GitHub Secrets and injected as an environment
+# variable (Req 10.3). GitHub automatically masks registered secret values in
+# log output, and no step ever echoes a secret (Req 10.4). The GPG key,
+# database URL, and B2 credentials are passed to the VPS over the SSH session
+# as masked env vars and are never printed.
+
+name: backup
+
+on:
+  schedule:
+    # 02:00 UTC every day.
+    - cron: "0 2 * * *"
+  # Allow on-demand backups without waiting for the nightly schedule.
+  workflow_dispatch:
+
+# Never run two backups at once; let an in-flight backup finish.
+concurrency:
+  group: backup
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Dump -> GPG encrypt -> upload to B2 -> verify -> prune (>30 days).
+  # All credentials come from GitHub Secrets and are auto-masked (Req 10.3, 10.4).
+  # ---------------------------------------------------------------------------
+  backup-database:
+    name: Encrypted pg_dump to Backblaze B2
+    runs-on: ubuntu-latest
+    env:
+      # Category A — VPS access (secrets are auto-masked in logs).
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+      # Category H — Backup encryption.
+      BACKUP_GPG_KEY: ${{ secrets.BACKUP_GPG_KEY }}
+      BACKUP_GPG_PASSPHRASE: ${{ secrets.BACKUP_GPG_PASSPHRASE }}
+      # Category E — Database connection (full URL with credentials).
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      # Category F — Backblaze B2 storage.
+      B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+      B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+      # Bucket dedicated to encrypted backups (placeholder default below).
+      B2_BACKUP_BUCKET_NAME: ${{ secrets.B2_BACKUP_BUCKET_NAME }}
+      # Retain encrypted backups for 30 days, then prune.
+      RETENTION_DAYS: "30"
+    steps:
+      - name: Configure SSH access
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/backup_key
+          chmod 600 ~/.ssh/backup_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      # Run the full backup cycle on the VPS over a single SSH session. Secrets
+      # are forwarded as env vars via `ssh ... 'VAR=$VAR ...'`; GitHub masks the
+      # values, and the remote script never echoes them (Req 10.4).
+      #
+      # Steps on the VPS:
+      #   1. pg_dump the database (custom format) to a timestamped file.
+      #   2. Symmetrically encrypt the dump with GPG using BACKUP_GPG_KEY as the
+      #      passphrase source (AES-256), producing a .gpg artifact.
+      #   3. Upload the encrypted artifact to Backblaze B2.
+      #   4. Verify the upload exists in B2 (list the uploaded key).
+      #   5. Prune local and remote backups older than RETENTION_DAYS (30).
+      - name: Dump, encrypt, upload, verify, and prune
+        run: |
+          set -euo pipefail
+          TS="$(date -u +%Y%m%dT%H%M%SZ)"
+          ssh -i ~/.ssh/backup_key "${VPS_USER}@${VPS_HOST}" \
+            "DATABASE_URL='${DATABASE_URL}' \
+             BACKUP_GPG_KEY='${BACKUP_GPG_KEY}' \
+             B2_KEY_ID='${B2_KEY_ID}' \
+             B2_APPLICATION_KEY='${B2_APPLICATION_KEY}' \
+             B2_BACKUP_BUCKET_NAME='${B2_BACKUP_BUCKET_NAME:-chit-chat-backups}' \
+             RETENTION_DAYS='${RETENTION_DAYS}' \
+             TS='${TS}' bash -s" <<'REMOTE'
+          set -euo pipefail
+
+          BACKUP_DIR="/opt/chit-chat/backups"
+          mkdir -p "${BACKUP_DIR}"
+          DUMP_FILE="${BACKUP_DIR}/db-${TS}.dump"
+          ENC_FILE="${DUMP_FILE}.gpg"
+          REMOTE_KEY="postgres/db-${TS}.dump.gpg"
+
+          # 1) Dump the database in custom format (compressed, restorable).
+          pg_dump --format=custom --no-owner --no-privileges \
+            --dbname="${DATABASE_URL}" --file="${DUMP_FILE}"
+
+          # 2) Encrypt with GPG (AES-256, symmetric). Passphrase is piped from a
+          #    file descriptor so it never appears in the process list or logs.
+          printf '%s' "${BACKUP_GPG_KEY}" | gpg --batch --yes \
+            --passphrase-fd 0 --pinentry-mode loopback \
+            --cipher-algo AES256 --symmetric \
+            --output "${ENC_FILE}" "${DUMP_FILE}"
+
+          # Plaintext dump is no longer needed once encrypted.
+          rm -f "${DUMP_FILE}"
+
+          # 3) Authenticate to and upload to Backblaze B2.
+          export B2_APPLICATION_KEY_ID="${B2_KEY_ID}"
+          export B2_APPLICATION_KEY="${B2_APPLICATION_KEY}"
+          b2 authorize-account "${B2_APPLICATION_KEY_ID}" "${B2_APPLICATION_KEY}" >/dev/null
+          b2 upload-file "${B2_BACKUP_BUCKET_NAME}" "${ENC_FILE}" "${REMOTE_KEY}" >/dev/null
+
+          # 4) Verify the encrypted artifact is present in the bucket.
+          if b2 ls "${B2_BACKUP_BUCKET_NAME}" "postgres/" | grep -q "db-${TS}.dump.gpg"; then
+            echo "Verified backup present in B2: ${REMOTE_KEY}"
+          else
+            echo "Backup verification failed: ${REMOTE_KEY} not found in B2." >&2
+            exit 1
+          fi
+
+          # 5) Prune backups older than RETENTION_DAYS (30) locally and in B2.
+          find "${BACKUP_DIR}" -type f -name 'db-*.dump.gpg' -mtime "+${RETENTION_DAYS}" -delete
+
+          CUTOFF="$(date -u -d "${RETENTION_DAYS} days ago" +%Y%m%d 2>/dev/null \
+                    || date -u -v-"${RETENTION_DAYS}"d +%Y%m%d)"
+          b2 ls "${B2_BACKUP_BUCKET_NAME}" "postgres/" | while read -r OBJ; do
+            FNAME="$(basename "${OBJ}")"
+            FDATE="$(printf '%s' "${FNAME}" | sed -n 's/^db-\([0-9]\{8\}\)T.*/\1/p')"
+            if [ -n "${FDATE}" ] && [ "${FDATE}" -lt "${CUTOFF}" ]; then
+              b2 delete-file-version "${OBJ}" >/dev/null 2>&1 || true
+              echo "Pruned old backup: ${OBJ}"
+            fi
+          done
+
+          echo "Backup cycle complete for ${TS}."
+          REMOTE
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/backup_key
+
+  # ---------------------------------------------------------------------------
+  # Failure notification: surfaces a clear failure marker whenever the backup
+  # fails ("notify on failure", design §14.2).
+  # ---------------------------------------------------------------------------
+  notify-failure:
+    name: Notify on failure
+    runs-on: ubuntu-latest
+    needs: backup-database
+    if: failure()
+    steps:
+      - name: Report failure
+        run: |
+          echo "::error::backup pipeline failed for run ${GITHUB_RUN_ID}."
+          {
+            echo "## Backup pipeline failed";
+            echo "- Ref: \`${GITHUB_REF}\`";
+            echo "- Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}";
+          } >> "${GITHUB_STEP_SUMMARY}"
+          exit 1

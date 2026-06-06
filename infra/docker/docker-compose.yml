@@ -1,0 +1,158 @@
+# Phase 0 — Docker Compose stack (Section 14.5)
+#
+# Orchestrates the full single-VPS deployment: NestJS backend, Next.js web,
+# PostgreSQL + PgBouncer, Redis, Caddy edge proxy, Prometheus, and Grafana.
+#
+# Restart policy: every service uses `restart: always` so containers
+# automatically restart on failure AND when the Docker daemon restarts
+# (Requirement 9.1). `depends_on` enforces startup ordering so each service
+# starts only after the services it depends on are running.
+#
+# Secrets: each service reads its own `.env.{service}` file written by the
+# deploy pipeline from GitHub Secrets. Those files are NOT committed — only
+# referenced here. Create them out-of-band; never store real secret values
+# in this repository.
+
+services:
+  # ---------------------------------------------------------------------------
+  # Backend — NestJS REST (:3000) + WebSocket (:3001)
+  # ---------------------------------------------------------------------------
+  backend:
+    build: ../../apps/backend
+    restart: always
+    env_file:
+      - .env.backend
+    ports:
+      - "3000:3000"
+      - "3001:3001"
+    depends_on:
+      - postgres
+      - pgbouncer
+      - redis
+    networks:
+      - app
+      - monitoring
+
+  # ---------------------------------------------------------------------------
+  # Web — Next.js (container :3000 exposed as :3002)
+  # ---------------------------------------------------------------------------
+  web:
+    build: ../../apps/web
+    restart: always
+    env_file:
+      - .env.web
+    ports:
+      - "3002:3000"
+    depends_on:
+      - backend
+    networks:
+      - app
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 16 — durable persistence (named volume)
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    restart: always
+    env_file:
+      - .env.postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - app
+
+  # ---------------------------------------------------------------------------
+  # PgBouncer — transaction-pooling connection pooler (:5432)
+  # ---------------------------------------------------------------------------
+  pgbouncer:
+    image: pgbouncer/pgbouncer:latest
+    restart: always
+    env_file:
+      - .env.pgbouncer
+    environment:
+      # Transaction pooling so multi-row write transactions run on a single
+      # pooled connection (Requirement 4.4).
+      POOL_MODE: transaction
+    ports:
+      - "5432:5432"
+    depends_on:
+      - postgres
+    networks:
+      - app
+
+  # ---------------------------------------------------------------------------
+  # Redis 7 — cache / presence / pub-sub / rate-limit (named volume)
+  # Append-only-file persistence with appendfsync everysec (Requirement 9.2).
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    restart: always
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redis_data:/data
+    networks:
+      - app
+
+  # ---------------------------------------------------------------------------
+  # Caddy — edge reverse proxy with automatic TLS (:80 / :443)
+  # ---------------------------------------------------------------------------
+  caddy:
+    image: caddy:latest
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ../caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+      - web
+    networks:
+      - app
+
+  # ---------------------------------------------------------------------------
+  # Prometheus — scrapes the backend /metrics endpoint
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:latest
+    restart: always
+    volumes:
+      - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      - backend
+    networks:
+      - monitoring
+
+  # ---------------------------------------------------------------------------
+  # Grafana — dashboards (container :3000 exposed as :3003)
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:latest
+    restart: always
+    env_file:
+      - .env.grafana
+    ports:
+      - "3003:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - monitoring
+
+networks:
+  app:
+    driver: bridge
+  monitoring:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  caddy_data:
+  caddy_config:
+  prometheus_data:
+  grafana_data:

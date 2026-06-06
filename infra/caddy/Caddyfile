@@ -1,0 +1,55 @@
+# =============================================================================
+# Chit-Chat — Caddy edge reverse proxy (design §12.7 / §13.2)
+#
+# Caddy_Proxy terminates TLS at the edge and routes traffic to the Docker
+# Compose service network. Real domains are injected at deploy time via
+# environment substitution:
+#   DOMAIN           -> base web domain        (e.g. example.com)
+#   ADMIN_IP_RANGE   -> admin CIDR for Grafana  (e.g. 203.0.113.0/24)
+#
+# Automatic HTTPS (Req 9.3, 9.6, 9.8):
+#   Caddy obtains and renews Let's Encrypt certificates automatically for every
+#   site address below. If issuance/renewal fails, Caddy keeps serving the most
+#   recent valid certificate and retries in the background (built-in behavior).
+#   Plain-HTTP requests to any site are automatically redirected to HTTPS.
+#
+# Gateway errors (Req 9.7):
+#   When an upstream is unreachable, reverse_proxy returns HTTP 502 to the
+#   client by default — no message body is fabricated.
+# =============================================================================
+
+# --- api. subdomain -> backend REST :3000 (Req 9.4) --------------------------
+api.{$DOMAIN} {
+	reverse_proxy backend:3000
+}
+
+# --- ws. subdomain -> backend WebSocket :3001, compression OFF (Req 9.4) -----
+# Frame compression is disabled so WebSocket frames are never recompressed
+# (design §12.7). Caddy transparently handles the HTTP/1.1 Upgrade handshake.
+ws.{$DOMAIN} {
+	reverse_proxy backend:3001 {
+		transport http {
+			compression off
+		}
+	}
+}
+
+# --- web domain -> Next.js web (Req 9.4) -------------------------------------
+# The web container listens on its internal port 3000 (published to the host as
+# 3002 per §14.5). Caddy reaches it over the Compose network by service name, so
+# it targets the container port 3000 — not the host-published 3002.
+{$DOMAIN} {
+	reverse_proxy web:3000
+}
+
+# --- grafana. subdomain -> IP-restricted monitoring (Req 9.5) ----------------
+# Requests from inside the admin IP range reach Grafana (container listens on
+# its default port 3000); everything else is rejected with 403 and never
+# forwarded to the grafana service.
+grafana.{$DOMAIN} {
+	@internal remote_ip {$ADMIN_IP_RANGE}
+	handle @internal {
+		reverse_proxy grafana:3000
+	}
+	respond 403
+}

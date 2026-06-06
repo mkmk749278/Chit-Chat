@@ -1,0 +1,24 @@
+{
+  "name": "@chat-app/ui",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Shared UI components — Phase 0 placeholder so the workspace builds",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}

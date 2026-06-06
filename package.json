@@ -1,0 +1,21 @@
+{
+  "name": "chat-app",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Privacy chat application monorepo (Phase 0 — Infrastructure, CI/CD & Auth Foundation)",
+  "license": "UNLICENSED",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build:packages": "npm run build --workspace=@chat-app/types --workspace=@chat-app/crypto --workspace=@chat-app/ui",
+    "build": "npm run build:packages && npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present"
+  }
+}

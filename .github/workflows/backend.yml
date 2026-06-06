@@ -1,0 +1,147 @@
+# Backend deploy pipeline (design §14.2, Requirement 10)
+#
+# On push to `main` touching `apps/backend/**`, this pipeline runs the quality
+# gate (lint -> tests -> tsc build) in sequence and deploys to the VPS ONLY if
+# every gate step succeeds (Req 10.2). If lint, tests, or the build fails, the
+# `deploy` job never runs, so the currently running deployment is left
+# unchanged (Req 10.8). After deploy it runs database migrations and then polls
+# `/health`, retrying up to 5 times at 10s intervals; if the endpoint never
+# reports healthy the run is marked failed (Req 10.7, 10.9).
+#
+# Every secret is sourced from GitHub Secrets and injected as an environment
+# variable (Req 10.3). GitHub automatically masks registered secret values in
+# log output, and no step ever echoes a secret (Req 10.4).
+
+name: backend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/backend/**"
+      - "packages/**"
+      - ".github/workflows/backend.yml"
+
+# Cancel superseded runs on the same ref so only the latest commit deploys.
+concurrency:
+  group: backend-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Quality gate: lint -> tests -> tsc build, in that order (Req 10.2).
+  # A failure in any step fails this job and prevents `deploy` from running
+  # (Req 10.8).
+  # ---------------------------------------------------------------------------
+  build-and-test:
+    name: Lint, test, and build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Shared packages must compile before the backend can lint/build.
+      - name: Build shared packages
+        run: npm run build:packages
+
+      - name: Lint (ESLint)
+        run: npm run lint --workspace=@chat-app/backend --if-present
+
+      - name: Test (Jest)
+        run: npm run test --workspace=@chat-app/backend --if-present
+
+      - name: Build (tsc)
+        run: npm run build --workspace=@chat-app/backend
+
+  # ---------------------------------------------------------------------------
+  # Deploy: runs only after the quality gate succeeds (`needs`), satisfying the
+  # "deploy only on success" requirement (Req 10.2) and leaving the running
+  # deployment untouched on any gate failure (Req 10.8).
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy to VPS, migrate, and verify health
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    env:
+      # Category A — VPS access (secrets are auto-masked in logs).
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+      # Path to the checked-out repo on the VPS that holds the compose stack.
+      VPS_APP_DIR: ${{ secrets.VPS_APP_DIR }}
+      # Base domain; the backend is reachable at https://api.<DOMAIN>.
+      DOMAIN: ${{ secrets.DOMAIN }}
+    steps:
+      - name: Configure SSH access
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      # Pull the new code and (re)build/start the backend service, then apply
+      # database migrations inside the running backend container (Req 10.7).
+      - name: Deploy and run migrations
+        run: |
+          APP_DIR="${VPS_APP_DIR:-/opt/chit-chat}"
+          ssh -i ~/.ssh/deploy_key "${VPS_USER}@${VPS_HOST}" \
+            "set -euo pipefail \
+             && cd '${APP_DIR}' \
+             && git pull --ff-only \
+             && cd infra/docker \
+             && docker compose up --build -d backend \
+             && docker compose exec -T backend npm run migration:run"
+
+      # Verify the deployment is healthy via the public endpoint behind Caddy.
+      # Up to 5 attempts at 10s intervals; non-zero exit fails the run when the
+      # endpoint never reports healthy (Req 10.7, 10.9).
+      - name: Verify /health
+        run: |
+          HEALTH_URL="https://api.${DOMAIN}/health"
+          for attempt in 1 2 3 4 5; do
+            echo "Health check attempt ${attempt}/5: ${HEALTH_URL}"
+            if curl -fsS --max-time 10 "${HEALTH_URL}" | grep -q '"status":"ok"'; then
+              echo "Deployment is healthy."
+              exit 0
+            fi
+            if [ "${attempt}" -lt 5 ]; then
+              echo "Not healthy yet; retrying in 10s."
+              sleep 10
+            fi
+          done
+          echo "::error::/health did not report healthy after 5 attempts."
+          exit 1
+
+  # ---------------------------------------------------------------------------
+  # Failure notification: surfaces a clear failure marker whenever the gate or
+  # the deploy/health verification fails ("notify on failure", design §14.2).
+  # ---------------------------------------------------------------------------
+  notify-failure:
+    name: Notify on failure
+    runs-on: ubuntu-latest
+    needs: [build-and-test, deploy]
+    if: failure()
+    steps:
+      - name: Report failure
+        run: |
+          echo "::error::backend pipeline failed for commit ${GITHUB_SHA} on ${GITHUB_REF}."
+          {
+            echo "## Backend pipeline failed";
+            echo "- Commit: \`${GITHUB_SHA}\`";
+            echo "- Ref: \`${GITHUB_REF}\`";
+            echo "- Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}";
+          } >> "${GITHUB_STEP_SUMMARY}"
+          exit 1

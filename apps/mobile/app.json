@@ -1,0 +1,13 @@
+{
+  "expo": {
+    "name": "chat-app",
+    "slug": "chat-app",
+    "version": "0.0.0",
+    "orientation": "portrait",
+    "platforms": [
+      "ios",
+      "android"
+    ],
+    "newArchEnabled": true
+  }
+}

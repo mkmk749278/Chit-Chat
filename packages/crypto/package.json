@@ -1,0 +1,30 @@
+{
+  "name": "@chat-app/crypto",
+  "version": "0.0.0",
+  "private": true,
+  "description": "libsignal wrapper (shared TS) — signed-prekey signature-verification stub (Phase 0; full libsignal wiring in Phase 1)",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@chat-app/types": "0.0.0",
+    "@signalapp/libsignal-client": "^0.47.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsc -p tsconfig.json && node --test dist/index.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.0"
+  }
+}

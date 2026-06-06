@@ -1,0 +1,233 @@
+/**
+ * `@chat-app/crypto` — `ConversationReducer` (Phase 1, design Component 7: UI).
+ *
+ * Source of truth: `.kiro/specs/phase1-client-messaging/design.md` →
+ *   "Components and Interfaces" → "Client Component 7: UI (Sign_In_Screen +
+ *   Conversation_Screen)".
+ *
+ * A pure, platform-agnostic reducer that maps the conversation's incoming events
+ * (message arrivals, status updates, composer edits, connection changes, the web
+ * ephemerality acknowledgment, and inbound delivery errors) onto a single
+ * `ConversationState` snapshot. Both the Mobile_App (FlatList) and the Web_App
+ * (virtual list) consume this exact reducer so render logic is identical across
+ * platforms (Requirement 6.7).
+ *
+ * The reducer guarantees, for any arrival order and any duplication of events:
+ *   - each message appears exactly once, keyed by `(remoteUid?/direction/seq)`, and
+ *     the list is ordered ascending by `seq` (Requirements 6.2, 6.9);
+ *   - `composer.canSend` is `true` only when the trimmed composer text is non-empty
+ *     and its length is within 1..4096 (Requirements 6.3, 6.4);
+ *   - inbound delivery-error entries carry `text === null` while failed outbound
+ *     sends retain their text (Requirements 6.8, 6.9);
+ *   - on web, messaging stays gated until the ephemerality warning is acknowledged
+ *     (Requirements 7.7, 8.3).
+ *
+ * It performs no I/O, mutation, or other side effects: every event yields a brand-new
+ * state value and the input `state` is never mutated, which keeps the reducer fully
+ * unit- and property-testable and safe to drive React/React Native render cycles.
+ */
+
+import type { ConnectionStatus, MessageStatus } from '@chat-app/types';
+
+/** Maximum composer length, inclusive, in characters (Requirement 6.3). */
+export const COMPOSER_MAX_LENGTH = 4096;
+
+/** Minimum composer length, inclusive, in characters (Requirement 6.3). */
+export const COMPOSER_MIN_LENGTH = 1;
+
+/**
+ * A single message as rendered in the Conversation_Screen message list. Each entry is
+ * uniquely identified within the list by its `(direction, seq)` pair so an inbound and
+ * an outbound message may share a sequence number without colliding (Requirement 6.2).
+ */
+export interface RenderableMessage {
+  /** Stable client-side identifier for the row (e.g. a UUID). */
+  id: string;
+  /** Per-conversation monotonic sequence number used for ordering (6.2). */
+  seq: number;
+  /** `out` for messages this device sent, `in` for messages it received. */
+  direction: 'out' | 'in';
+  /**
+   * Decrypted text for display, or `null` for an inbound delivery-error entry whose
+   * ciphertext could not be decrypted (Requirements 5.5, 6.9).
+   */
+  text: string | null;
+  /** Lifecycle status driving the per-message indicator (6.5, 6.8, 6.9). */
+  status: MessageStatus;
+}
+
+/**
+ * The complete render state for the Conversation_Screen. Produced exclusively by
+ * {@link reduce}; treated as immutable by consumers.
+ */
+export interface ConversationState {
+  /** Connection indicator state surfaced by the Realtime_Client (4.7, 6.6). */
+  connection: ConnectionStatus;
+  /** Messages rendered ascending by `seq`, each exactly once (6.2). */
+  messages: RenderableMessage[];
+  /** Composer text plus its derived send-enablement (6.3, 6.4). */
+  composer: { text: string; canSend: boolean };
+  /**
+   * Whether the web ephemerality warning has been acknowledged. On web this gates all
+   * messaging until `true`; on mobile it is left `true` so messaging is never gated
+   * (Requirements 7.7, 8.3).
+   */
+  webWarningAcknowledged: boolean;
+}
+
+/**
+ * Events fed to the {@link reduce} function. The union is discriminated on `type`.
+ *
+ * - `message-appended`        — a sent or received message enters the list (6.2).
+ * - `status-updated`          — an existing message changes lifecycle status (6.5, 6.8).
+ * - `composer-changed`        — the user edited the composer text (6.3, 6.4).
+ * - `connection-changed`      — the Realtime_Client reported a new status (6.6).
+ * - `web-warning-acknowledged`— the user acknowledged the web ephemerality warning (7.7, 8.3).
+ * - `inbound-delivery-error`  — a received envelope failed decryption (5.5, 6.9).
+ */
+export type ConversationEvent =
+  | { type: 'message-appended'; message: RenderableMessage }
+  | { type: 'status-updated'; id: string; status: MessageStatus }
+  | { type: 'composer-changed'; text: string }
+  | { type: 'connection-changed'; connection: ConnectionStatus }
+  | { type: 'web-warning-acknowledged' }
+  | {
+      type: 'inbound-delivery-error';
+      id: string;
+      seq: number;
+    };
+
+/**
+ * The reducer contract consumed by the platform UIs (design Component 7).
+ */
+export interface ConversationReducer {
+  reduce(state: ConversationState, event: ConversationEvent): ConversationState;
+}
+
+/**
+ * Compute whether the send control should be enabled for the given composer text.
+ *
+ * The send control is enabled only when the text, after trimming surrounding
+ * whitespace, is non-empty and its length lies within the inclusive 1..4096 range
+ * (Requirements 6.3, 6.4). Length is measured on the trimmed text so leading/trailing
+ * whitespace neither enables an otherwise-empty message nor pushes a valid message
+ * past the cap.
+ */
+export function canSendComposerText(text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed.length >= COMPOSER_MIN_LENGTH && trimmed.length <= COMPOSER_MAX_LENGTH;
+}
+
+/**
+ * The initial, empty conversation state.
+ *
+ * @param platform - `'web'` starts gated (`webWarningAcknowledged: false`) so messaging
+ *   is disabled until the ephemerality warning is acknowledged; `'mobile'` is never
+ *   gated, so it starts acknowledged (Requirements 7.7, 8.3).
+ */
+export function initialConversationState(platform: 'mobile' | 'web'): ConversationState {
+  return {
+    connection: 'disconnected',
+    messages: [],
+    composer: { text: '', canSend: false },
+    webWarningAcknowledged: platform !== 'web',
+  };
+}
+
+/**
+ * Dedupe key for a rendered message. Inbound and outbound messages are keyed
+ * separately so the same per-conversation `seq` for each direction does not collide
+ * (Requirement 6.2). The conversation is 1:1, so `direction` plus `seq` uniquely
+ * identifies a message within a single conversation's list.
+ */
+function messageKey(message: Pick<RenderableMessage, 'direction' | 'seq'>): string {
+  return `${message.direction}:${message.seq}`;
+}
+
+/**
+ * Insert or replace a message in the list, keeping it deduplicated by
+ * `(direction, seq)` and ordered ascending by `seq`. A repeated arrival for an
+ * existing key replaces the stored entry rather than adding a duplicate row, so the
+ * list contains each `(direction, seq)` exactly once regardless of arrival order or
+ * duplication (Requirement 6.2).
+ */
+function upsertMessage(
+  messages: readonly RenderableMessage[],
+  incoming: RenderableMessage,
+): RenderableMessage[] {
+  const key = messageKey(incoming);
+  const next = messages.filter((existing) => messageKey(existing) !== key);
+  next.push(incoming);
+  next.sort((a, b) =>
+    a.seq === b.seq ? messageKey(a).localeCompare(messageKey(b)) : a.seq - b.seq,
+  );
+  return next;
+}
+
+/**
+ * Pure conversation reducer (Requirements 6.2–6.9, 7.7, 8.3).
+ *
+ * Returns a new {@link ConversationState} for each event without mutating `state`.
+ * Events that target a message not present in the list (`status-updated`,
+ * `inbound-delivery-error` for an unknown id) leave the message list unchanged so the
+ * reducer tolerates out-of-order or duplicate events gracefully.
+ */
+export function reduce(
+  state: ConversationState,
+  event: ConversationEvent,
+): ConversationState {
+  switch (event.type) {
+    case 'message-appended':
+      return {
+        ...state,
+        messages: upsertMessage(state.messages, event.message),
+      };
+
+    case 'status-updated':
+      return {
+        ...state,
+        messages: state.messages.map((message) =>
+          message.id === event.id ? { ...message, status: event.status } : message,
+        ),
+      };
+
+    case 'composer-changed':
+      return {
+        ...state,
+        composer: { text: event.text, canSend: canSendComposerText(event.text) },
+      };
+
+    case 'connection-changed':
+      return { ...state, connection: event.connection };
+
+    case 'web-warning-acknowledged':
+      return { ...state, webWarningAcknowledged: true };
+
+    case 'inbound-delivery-error':
+      // Render the inbound entry with no plaintext and a delivery-error status
+      // (Requirements 5.5, 6.9). Deduped/ordered like any inbound message (6.2).
+      return {
+        ...state,
+        messages: upsertMessage(state.messages, {
+          id: event.id,
+          seq: event.seq,
+          direction: 'in',
+          text: null,
+          status: 'delivery-error',
+        }),
+      };
+
+    default: {
+      // Exhaustiveness guard: a new event variant must be handled explicitly.
+      const _exhaustive: never = event;
+      return state;
+    }
+  }
+}
+
+/**
+ * Default {@link ConversationReducer} implementation wrapping the pure {@link reduce}
+ * function, for consumers that prefer an object with a `reduce` method (design
+ * Component 7) over the free function.
+ */
+export const conversationReducer: ConversationReducer = { reduce };
