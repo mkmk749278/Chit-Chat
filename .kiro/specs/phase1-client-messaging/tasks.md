@@ -306,12 +306,12 @@ Testing approach (from the design's Testing Strategy):
     - TLS-only requests to the `api.` endpoint; abort without transmitting on TLS failure
     - _Requirements: 8.6, 8.7_
 
-  - [~] 7.6 Build web `Sign_In_Screen` with ephemerality warning gate
+  - [x] 7.6 Build web `Sign_In_Screen` with ephemerality warning gate
     - Sign-in inputs wired to the shared `AuthService`; display the in-memory-only + history-unreadable
       warning (D9/D10), keep it visible until explicit acknowledgment, and gate messaging on that acknowledgment
     - _Requirements: 1.1, 6.1, 7.3, 7.7, 8.3_
 
-  - [~] 7.7 Build web `Conversation_Screen`
+  - [x] 7.7 Build web `Conversation_Screen`
     - Render the shared `ConversationReducer` state (message list, composer, status, connection indicator)
     - _Requirements: 6.1, 6.2, 6.4, 6.5, 6.6, 6.8, 6.9_
 
