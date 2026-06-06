@@ -37,13 +37,19 @@ export interface LoggableRequest {
   authContext?: { uid?: string } | null;
 }
 
-/** The extra top-level properties merged into every completed-request log entry. */
-export interface RequestLogProps {
+/**
+ * The extra top-level properties merged into every completed-request log entry.
+ *
+ * Declared as a type alias (not an interface) so it carries an implicit index
+ * signature and is therefore assignable to the `Record<string, unknown>` return
+ * type pino-http requires from `customProps` (see `request-logger.config.ts`).
+ */
+export type RequestLogProps = {
   /** Sanitised request route (path + scrubbed query). Requirement 12.1. */
   route: string;
   /** Firebase UID, present only when the request was authenticated. Requirement 12.6. */
   uid?: string;
-}
+};
 
 /** Generate a fresh correlation id. */
 export function generateRequestId(): string {

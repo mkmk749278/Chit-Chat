@@ -44,7 +44,7 @@ describe('buildRequestLoggerOptions', () => {
       const id = opts.genReqId!(req as never, res as never);
 
       expect(typeof id).toBe('string');
-      expect(id.length).toBeGreaterThan(0);
+      expect(String(id).length).toBeGreaterThan(0);
     });
   });
 
