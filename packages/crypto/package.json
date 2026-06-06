@@ -21,7 +21,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsc -p tsconfig.json && node --test dist/index.test.js"
+    "test": "tsc -p tsconfig.json && node --test \"dist/*.test.js\""
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
