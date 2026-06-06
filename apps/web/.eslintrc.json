@@ -1,0 +1,15 @@
+{
+  "root": true,
+  "parser": "@typescript-eslint/parser",
+  "parserOptions": {
+    "ecmaVersion": 2022,
+    "sourceType": "module",
+    "ecmaFeatures": { "jsx": true }
+  },
+  "plugins": ["@next/next"],
+  "extends": [
+    "plugin:@next/next/recommended",
+    "plugin:@next/next/core-web-vitals"
+  ],
+  "ignorePatterns": ["node_modules/", ".next/", "out/", "next-env.d.ts"]
+}

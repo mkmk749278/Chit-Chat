@@ -180,3 +180,18 @@ export * from './device-registrar';
  * `classifyReconnect` close-code classifier and the injectable `Scheduler` port.
  */
 export * from './realtime-client';
+
+/**
+ * `Messaging` (Phase 1, design Component 5: Messaging). The stateful orchestrator that
+ * ties the shared pieces into the 1:1 send/receive lifecycle: `send` establishes a
+ * libsignal session if needed (claim → establish), allocates the per-conversation seq,
+ * encrypts, builds the plaintext-free envelope, and transmits — or holds the frame in a
+ * pending-send queue while disconnected and flushes it exactly once on reconnect (5.2,
+ * 5.10). A transmitted message arms a 30 s ack deadline: an `ack` frame moves it
+ * `sending → sent` and a timeout moves it `sending → failed` with its text retained (5.6,
+ * 5.11); a session-establishment / encrypt failure transmits nothing and marks the
+ * message `failed` (5.9). `onEnvelope` decrypts and renders inbound plaintext, or surfaces
+ * a `delivery-error` with no plaintext on failure (5.5, 6.9). Conversation changes are
+ * emitted as `ConversationEvent`s for the shared `ConversationReducer` (6.7).
+ */
+export * from './messaging';

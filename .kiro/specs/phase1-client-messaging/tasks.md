@@ -164,7 +164,7 @@ Testing approach (from the design's Testing Strategy):
     - **Property 14: Connection status reflects socket state**
     - **Validates: Requirements 4.7, 6.6**
 
-  - [-] 2.27 Implement `Messaging` orchestration
+  - [x] 2.27 Implement `Messaging` orchestration
     - `send` (establish session if needed, allocate seq, encrypt, build envelope, transmit), pending-send
       hold while disconnected and flush-once on reconnect, ack→sent and 30 s timeout→failed, `onEnvelope`
       decrypt-and-render / delivery-error

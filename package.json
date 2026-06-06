@@ -11,6 +11,10 @@
   "engines": {
     "node": ">=20"
   },
+  "overrides": {
+    "react": "18.2.0",
+    "react-dom": "18.2.0"
+  },
   "scripts": {
     "build:packages": "npm run build --workspace=@chat-app/types --workspace=@chat-app/crypto --workspace=@chat-app/ui",
     "build": "npm run build:packages && npm run build --workspaces --if-present",
