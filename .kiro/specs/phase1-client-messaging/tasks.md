@@ -88,19 +88,19 @@ Testing approach (from the design's Testing Strategy):
       `ensureIdentity` reuses stored identity; expose public-only base64 bundle
     - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 7.5, 8.1_
 
-  - [ ]* 2.10 Write property test for well-formed public prekey bundle
+  - [x]* 2.10 Write property test for well-formed public prekey bundle
     - **Property 7: Well-formed public prekey bundle**
     - **Validates: Requirements 2.1, 2.2, 2.3, 2.5**
 
-  - [ ]* 2.11 Write property test for identity generation atomicity
+  - [x]* 2.11 Write property test for identity generation atomicity
     - **Property 8: Identity generation atomicity** (inject failures at random generation steps)
     - **Validates: Requirements 2.7, 2.8**
 
-  - [ ]* 2.12 Write property test for identity reuse idempotence
+  - [x]* 2.12 Write property test for identity reuse idempotence
     - **Property 9: Identity reuse idempotence**
     - **Validates: Requirements 2.6**
 
-  - [ ]* 2.13 Write property test for public keys only leaving the device
+  - [x]* 2.13 Write property test for public keys only leaving the device
     - **Property 4: Public keys only leave the device** (scan all values passed to registrar/realtime/network)
     - **Validates: Requirements 2.4, 3.2, 8.1**
 
@@ -113,7 +113,7 @@ Testing approach (from the design's Testing Strategy):
     - **Property 1: libsignal session round-trip** (multi-message sequence using persisted state)
     - **Validates: Requirements 5.1, 5.2, 5.4, 5.8**
 
-  - [ ]* 2.16 Write property test for decrypt failure yielding no plaintext
+  - [x]* 2.16 Write property test for decrypt failure yielding no plaintext
     - **Property 15: Decrypt failure yields no plaintext**
     - **Validates: Requirements 5.5, 6.9**
 
@@ -127,7 +127,7 @@ Testing approach (from the design's Testing Strategy):
     - **Property 12: Token-refresh retry is bounded**
     - **Validates: Requirements 1.6, 1.9, 3.4, 4.4, 4.9**
 
-  - [ ]* 2.19 Write property test for no secrets in logs or error reports
+  - [x]* 2.19 Write property test for no secrets in logs or error reports
     - **Property 20: No secrets in logs or error reports**
     - **Validates: Requirements 1.8, 8.5**
 
@@ -141,11 +141,11 @@ Testing approach (from the design's Testing Strategy):
       10 s timeout, idempotent across launches via stored `deviceId`
     - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8, 3.9_
 
-  - [ ]* 2.22 Write property test for registration idempotence across launches
+  - [x]* 2.22 Write property test for registration idempotence across launches
     - **Property 10: Registration idempotence across launches**
     - **Validates: Requirements 3.7**
 
-  - [ ]* 2.23 Write unit tests for DeviceRegistrar example branches
+  - [x]* 2.23 Write unit tests for DeviceRegistrar example branches
     - 201 persists and exposes `deviceId` (3.3); 400 records the offending field and does not retry the same
       payload (3.5)
     - _Requirements: 3.3, 3.5_
@@ -160,7 +160,7 @@ Testing approach (from the design's Testing Strategy):
     - **Property 13: Close-code-driven reconnect classification**
     - **Validates: Requirements 4.4, 4.5, 4.6, 4.8**
 
-  - [ ]* 2.26 Write property test for connection status reflecting socket state
+  - [x]* 2.26 Write property test for connection status reflecting socket state
     - **Property 14: Connection status reflects socket state**
     - **Validates: Requirements 4.7, 6.6**
 
@@ -170,11 +170,11 @@ Testing approach (from the design's Testing Strategy):
       decrypt-and-render / delivery-error
     - _Requirements: 5.2, 5.5, 5.6, 5.9, 5.10, 5.11_
 
-  - [ ]* 2.28 Write property test for pending send flushing exactly once
+  - [x]* 2.28 Write property test for pending send flushing exactly once
     - **Property 16: Pending send flushes exactly once**
     - **Validates: Requirements 5.10**
 
-  - [ ]* 2.29 Write property test for ack and timeout status transitions
+  - [x]* 2.29 Write property test for ack and timeout status transitions
     - **Property 17: Ack and timeout status transitions**
     - **Validates: Requirements 5.6, 5.11, 6.5, 6.8**
 
@@ -191,7 +191,7 @@ Testing approach (from the design's Testing Strategy):
     - **Property 21: Composer send-enablement validation**
     - **Validates: Requirements 6.3, 6.4**
 
-  - [ ]* 2.33 Write property test for web messaging gated on ephemerality acknowledgment
+  - [x]* 2.33 Write property test for web messaging gated on ephemerality acknowledgment
     - **Property 18: Web messaging gated on ephemerality acknowledgment**
     - **Validates: Requirements 7.7, 8.3**
 
