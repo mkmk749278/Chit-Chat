@@ -285,7 +285,7 @@ Testing approach (from the design's Testing Strategy):
     - _Requirements: 6.7_
 
 - [ ] 7. Web adapters and screens in `apps/web`
-  - [~] 7.1 Implement Firebase Web SDK auth adapter
+  - [x] 7.1 Implement Firebase Web SDK auth adapter
     - Bind `AuthTokenProvider`: phone OTP request/confirm, current token + uid, refresh, sign-out
     - _Requirements: 1.2, 1.3, 1.4, 1.7_
 
