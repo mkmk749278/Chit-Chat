@@ -21,7 +21,15 @@ class FakeKeyGen implements LibsignalKeyGen {
 
   private nextBytes(tag: number): Uint8Array {
     this.counter += 1;
-    return Uint8Array.from([tag, this.counter & 0xff, (this.counter >> 8) & 0xff]);
+    // 16 distinct bytes (24-char base64) so a private value can never be a coincidental
+    // short substring of the public bundle JSON in the Property-4 scan; the leading `tag`
+    // keeps public (0x10/0x20) and private (0x11/0x21) material distinguishable.
+    const bytes = new Uint8Array(16);
+    for (let i = 0; i < bytes.length; i += 1) {
+      bytes[i] = (tag * 31 + this.counter * 7 + i * 13) & 0xff;
+    }
+    bytes[0] = tag;
+    return bytes;
   }
   async generateIdentityKeyPair(): Promise<GeneratedKeyPair> {
     this.identityKeyPairCalls += 1;
