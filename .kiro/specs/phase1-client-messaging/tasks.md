@@ -56,11 +56,11 @@ Testing approach (from the design's Testing Strategy):
     - `encode(meta, body)` and `decode(envelope)` with no parameter or field for plaintext
     - _Requirements: 5.3, 5.7, 8.2_
 
-  - [ ]* 2.3 Write property test for envelope codec round-trip
+  - [x]* 2.3 Write property test for envelope codec round-trip
     - **Property 2: Envelope codec round-trip**
     - **Validates: Requirements 5.3**
 
-  - [ ]* 2.4 Write property test for no plaintext on the wire
+  - [x]* 2.4 Write property test for no plaintext on the wire
     - **Property 3: No plaintext on the wire**
     - Deep-scan every serialized outbound frame for plaintext bytes; assert absence
     - **Validates: Requirements 5.3, 5.7, 8.2**
@@ -69,7 +69,7 @@ Testing approach (from the design's Testing Strategy):
     - Strictly increasing per-conversation sequence numbers backed by `KeyStore.nextSeq`
     - _Requirements: 5.3, 6.2_
 
-  - [ ]* 2.6 Write property test for per-conversation sequence monotonicity
+  - [x]* 2.6 Write property test for per-conversation sequence monotonicity
     - **Property 5: Per-conversation sequence monotonicity**
     - **Validates: Requirements 5.3, 6.2**
 
@@ -78,7 +78,7 @@ Testing approach (from the design's Testing Strategy):
       cumulative-budget stop for registration retries
     - _Requirements: 3.6, 3.9, 4.5, 4.6, 4.10, 4.11_
 
-  - [ ]* 2.8 Write property test for backoff delay bounds
+  - [x]* 2.8 Write property test for backoff delay bounds
     - **Property 11: Backoff delays stay within bounds**
     - **Validates: Requirements 3.6, 3.9, 4.5, 4.6, 4.10, 4.11**
 
@@ -123,7 +123,7 @@ Testing approach (from the design's Testing Strategy):
       injected `AuthTokenProvider`
     - _Requirements: 1.6, 1.9, 1.10, 1.11, 8.5_
 
-  - [ ]* 2.18 Write property test for bounded token-refresh retry
+  - [x]* 2.18 Write property test for bounded token-refresh retry
     - **Property 12: Token-refresh retry is bounded**
     - **Validates: Requirements 1.6, 1.9, 3.4, 4.4, 4.9**
 
@@ -156,7 +156,7 @@ Testing approach (from the design's Testing Strategy):
       handshake timeout, expose `connected`/`disconnected` status
     - _Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 4.8, 4.9, 4.10, 4.11, 6.6_
 
-  - [ ]* 2.25 Write property test for close-code-driven reconnect classification
+  - [x]* 2.25 Write property test for close-code-driven reconnect classification
     - **Property 13: Close-code-driven reconnect classification**
     - **Validates: Requirements 4.4, 4.5, 4.6, 4.8**
 
@@ -183,11 +183,11 @@ Testing approach (from the design's Testing Strategy):
       gating consumed identically by both platforms
     - _Requirements: 6.2, 6.3, 6.4, 6.5, 6.6, 6.8, 6.9, 7.7, 8.3_
 
-  - [ ]* 2.31 Write property test for message-list dedup and ordering
+  - [x]* 2.31 Write property test for message-list dedup and ordering
     - **Property 6: Message-list dedup and ordering**
     - **Validates: Requirements 6.2**
 
-  - [ ]* 2.32 Write property test for composer send-enablement validation
+  - [x]* 2.32 Write property test for composer send-enablement validation
     - **Property 21: Composer send-enablement validation**
     - **Validates: Requirements 6.3, 6.4**
 
