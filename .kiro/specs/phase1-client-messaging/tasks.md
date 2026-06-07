@@ -131,7 +131,7 @@ Testing approach (from the design's Testing Strategy):
     - **Property 20: No secrets in logs or error reports**
     - **Validates: Requirements 1.8, 8.5**
 
-  - [ ]* 2.20 Write unit tests for AuthService example behaviors
+  - [x]* 2.20 Write unit tests for AuthService example behaviors
     - Token + uid exposed to consumers on sign-in (1.4); rejected credential retains phone number + shows
       error (1.5); email/Google route through the same token path (1.7)
     - _Requirements: 1.4, 1.5, 1.7_
@@ -275,7 +275,7 @@ Testing approach (from the design's Testing Strategy):
     - Render the shared `ConversationReducer` state (message list, composer, status, connection indicator)
     - _Requirements: 6.1, 6.2, 6.4, 6.5, 6.6, 6.8, 6.9_
 
-  - [~] 6.8 Configure Android manifest to exclude restricted capabilities
+  - [x] 6.8 Configure Android manifest to exclude restricted capabilities
     - Declare none of SMS, Call Log, Accessibility Service, or `QUERY_ALL_PACKAGES`
     - _Requirements: 8.4_
 
@@ -289,7 +289,7 @@ Testing approach (from the design's Testing Strategy):
     - Bind `AuthTokenProvider`: phone OTP request/confirm, current token + uid, refresh, sign-out
     - _Requirements: 1.2, 1.3, 1.4, 1.7_
 
-  - [ ] 7.2 Implement in-memory `KeyStore` adapter with session-end wipe
+  - [x] 7.2 Implement in-memory `KeyStore` adapter with session-end wipe
     - Hold identity/session material in JS memory only (no localStorage/sessionStorage/IndexedDB/Cache/Web
       SQL/cookies); `destroy()` wipes within the page-unload/tab-close/sign-out event cycle; no key-backup path
     - _Requirements: 7.2, 7.4, 7.5_
@@ -340,11 +340,11 @@ Testing approach (from the design's Testing Strategy):
       sender sees `sent`, backend relay carries ciphertext only
     - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.6, 5.7, 5.8_
 
-  - [ ]* 8.5 Write Android manifest smoke/static check
+  - [x]* 8.5 Write Android manifest smoke/static check
     - Assert SMS, Call Log, Accessibility Service, and `QUERY_ALL_PACKAGES` are absent
     - _Requirements: 8.4_
 
-  - [ ]* 8.6 Write shared-package consumption smoke check
+  - [x]* 8.6 Write shared-package consumption smoke check
     - Assert both `apps/mobile` and `apps/web` import the shared `packages/crypto` / `packages/types` modules
       for sign-in, registration, connection, encryption, and send/receive
     - _Requirements: 6.7_
