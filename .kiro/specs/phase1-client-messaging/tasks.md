@@ -216,7 +216,7 @@ Testing approach (from the design's Testing Strategy):
       double-issuing, and `null` when exhausted)
     - **Validates: Requirements 5.1**
 
-  - [ ]* 4.4 Write unit tests for KeysController auth/not-found branches
+  - [x]* 4.4 Write unit tests for KeysController auth/not-found branches
     - `404` for a recipient with no device; `401` (guard) for an unauthenticated caller
     - _Requirements: 5.1_
 
@@ -226,7 +226,7 @@ Testing approach (from the design's Testing Strategy):
       recipient's local socket(s); treat ciphertext as opaque (never decode/log)
     - _Requirements: 5.7, 8.2_
 
-  - [ ]* 4.6 Write property test for relay binding sender to the authenticated connection
+  - [x]* 4.6 Write property test for relay binding sender to the authenticated connection
     - **Property 23: Relay binds sender to the authenticated connection**
     - **Validates: Requirements 5.7, 8.2**
 
@@ -236,7 +236,7 @@ Testing approach (from the design's Testing Strategy):
       (off the delivery hot path) with its migration
     - _Requirements: 5.6, 5.7_
 
-  - [ ]* 4.8 Write unit test for ACK on accepted relay
+  - [x]* 4.8 Write unit test for ACK on accepted relay
     - Accepted relay returns `{ status: 'received' }` and the gateway emits an `ack` frame to the sender
     - _Requirements: 5.6_
 
