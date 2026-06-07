@@ -39,8 +39,12 @@ test('Property 20: the token never appears in serialization, inspection, or surf
   // Feature: phase1-client-messaging, Property 20: No secrets in logs or error reports
   await fc.assert(
     fc.asyncProperty(
-      // Distinctive, non-trivial token values (avoid empty / coincidental substrings).
-      fc.string({ minLength: 8, maxLength: 64 }).filter((t) => t.trim().length >= 8),
+      // Distinctive token values: a fixed `tkn-` prefix + a long hex body. This models a
+      // real secret while guaranteeing the value can never be a coincidental substring of
+      // the fixed redaction/error text (e.g. "[redacted]", "reauth-required",
+      // "Re-authentication is required") — whose longest hex run is only a few chars — so
+      // the test fails ONLY on a genuine leak, never on a string collision.
+      fc.hexaString({ minLength: 16, maxLength: 56 }).map((hex) => `tkn-${hex}`),
       async (token) => {
         const auth = new AuthService(new TokenLeakingProvider(token));
 

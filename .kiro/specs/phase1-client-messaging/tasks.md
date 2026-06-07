@@ -244,7 +244,7 @@ Testing approach (from the design's Testing Strategy):
   - Ensure all tests pass, ask the user if questions arise.
 
 - [ ] 6. Mobile adapters and screens in `apps/mobile`
-  - [-] 6.1 Implement `FirebaseAuthAdapter` (`@react-native-firebase/auth`)
+  - [x] 6.1 Implement `FirebaseAuthAdapter` (`@react-native-firebase/auth`)
     - Bind `AuthTokenProvider`: phone OTP request/confirm, current token + uid, refresh, sign-out
     - _Requirements: 1.2, 1.3, 1.4, 1.7_
 
@@ -258,20 +258,20 @@ Testing approach (from the design's Testing Strategy):
       surfaces the error
     - _Requirements: 7.6_
 
-  - [~] 6.4 Implement mobile `WebSocketTransport` adapter
+  - [x] 6.4 Implement mobile `WebSocketTransport` adapter
     - Open WSS with the `['bearer', token]` subprotocol over TLS; never put the token in the URL
     - _Requirements: 4.1, 4.2, 8.6_
 
-  - [~] 6.5 Implement mobile `HttpClient` adapter
+  - [x] 6.5 Implement mobile `HttpClient` adapter
     - TLS-only requests to the `api.` endpoint; abort without transmitting on TLS failure
     - _Requirements: 8.6, 8.7_
 
-  - [~] 6.6 Build mobile `Sign_In_Screen`
+  - [x] 6.6 Build mobile `Sign_In_Screen`
     - Shown when no valid token; phone + OTP inputs wired to the shared `AuthService`; error/retain-phone on
       rejection
     - _Requirements: 1.1, 1.5, 6.1_
 
-  - [~] 6.7 Build mobile `Conversation_Screen`
+  - [x] 6.7 Build mobile `Conversation_Screen`
     - Render the shared `ConversationReducer` state (message list, composer, status, connection indicator)
     - _Requirements: 6.1, 6.2, 6.4, 6.5, 6.6, 6.8, 6.9_
 

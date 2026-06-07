@@ -8,7 +8,8 @@
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@chat-app/crypto": "0.0.0",
@@ -21,6 +22,8 @@
     "react-native": "0.74.5"
   },
   "devDependencies": {
-    "@babel/core": "^7.24.0"
+    "@babel/core": "^7.24.0",
+    "@types/react": "^18.3.0",
+    "typescript": "^5.5.0"
   }
 }
