@@ -41,7 +41,7 @@ Testing approach (from the design's Testing Strategy):
     - Export all from `@chat-app/types`
     - _Requirements: 2.5, 3.1, 5.6, 6.5, 6.6_
 
-  - [ ]* 1.3 Write unit tests for type shape conformance
+  - [x]* 1.3 Write unit tests for type shape conformance
     - Assert `PublicPreKeyBundleOut` structurally matches the Phase 0 `RegisterDeviceDto` (registrationId,
       identityKey, signedPreKey{keyId,publicKey,signature}, oneTimePreKeys[])
     - _Requirements: 2.5, 3.1_
@@ -349,7 +349,7 @@ Testing approach (from the design's Testing Strategy):
       for sign-in, registration, connection, encryption, and send/receive
     - _Requirements: 6.7_
 
-  - [ ]* 8.7 Write no-key-backup static check
+  - [x]* 8.7 Write no-key-backup static check
     - Assert no key-backup or key-recovery API is exported by the client
     - _Requirements: 7.5_
 
