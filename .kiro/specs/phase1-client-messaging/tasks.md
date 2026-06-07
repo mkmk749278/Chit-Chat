@@ -109,7 +109,7 @@ Testing approach (from the design's Testing Strategy):
       injected `SignalProtocolStore`/`KeyStore`
     - _Requirements: 5.1, 5.2, 5.4, 5.8_
 
-  - [ ]* 2.15 Write property test for libsignal session round-trip
+  - [x]* 2.15 Write property test for libsignal session round-trip
     - **Property 1: libsignal session round-trip** (multi-message sequence using persisted state)
     - **Validates: Requirements 5.1, 5.2, 5.4, 5.8**
 
