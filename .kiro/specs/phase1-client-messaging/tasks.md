@@ -298,11 +298,11 @@ Testing approach (from the design's Testing Strategy):
     - **Property 19: Web session-end wipe**
     - **Validates: Requirements 7.2, 7.4**
 
-  - [~] 7.4 Implement web `WebSocketTransport` adapter
+  - [x] 7.4 Implement web `WebSocketTransport` adapter
     - Open WSS with the `['bearer', token]` subprotocol over TLS; never put the token in the URL
     - _Requirements: 4.1, 4.2, 8.6_
 
-  - [~] 7.5 Implement web `HttpClient` adapter
+  - [x] 7.5 Implement web `HttpClient` adapter
     - TLS-only requests to the `api.` endpoint; abort without transmitting on TLS failure
     - _Requirements: 8.6, 8.7_
 
