@@ -11,6 +11,9 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@chat-app/crypto": "*",
+    "@chat-app/types": "*",
+    "firebase": "^10.12.0",
     "next": "14.2.5",
     "react": "18.2.0",
     "react-dom": "18.2.0"
