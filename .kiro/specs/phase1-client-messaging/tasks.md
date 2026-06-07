@@ -294,7 +294,7 @@ Testing approach (from the design's Testing Strategy):
       SQL/cookies); `destroy()` wipes within the page-unload/tab-close/sign-out event cycle; no key-backup path
     - _Requirements: 7.2, 7.4, 7.5_
 
-  - [ ]* 7.3 Write property test for web session-end wipe
+  - [x]* 7.3 Write property test for web session-end wipe
     - **Property 19: Web session-end wipe**
     - **Validates: Requirements 7.2, 7.4**
 
