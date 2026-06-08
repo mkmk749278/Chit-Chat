@@ -13,7 +13,7 @@ FROM node:20-bookworm-slim AS build
 WORKDIR /repo
 
 # Manifests first for a cacheable install layer.
-COPY package.json package-lock.json ./
+COPY package.json package-lock.json tsconfig.base.json ./
 COPY packages ./packages
 COPY apps ./apps
 
