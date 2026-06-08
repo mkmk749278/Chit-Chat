@@ -8,6 +8,10 @@
       "ios",
       "android"
     ],
+    "splash": {
+      "backgroundColor": "#ffffff",
+      "resizeMode": "contain"
+    },
     "android": {
       "package": "com.chatapp.mobile",
       "permissions": [],
