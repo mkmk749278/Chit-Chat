@@ -21,6 +21,8 @@ on:
       - "apps/web/**"
       - "packages/**"
       - ".github/workflows/web.yml"
+  # Allow manual deploys from the Actions tab / `gh workflow run`.
+  workflow_dispatch:
 
 concurrency:
   group: web-deploy-${{ github.ref }}

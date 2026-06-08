@@ -21,6 +21,8 @@ on:
       - "apps/backend/**"
       - "packages/**"
       - ".github/workflows/backend.yml"
+  # Allow manual deploys from the Actions tab / `gh workflow run`.
+  workflow_dispatch:
 
 # Cancel superseded runs on the same ref so only the latest commit deploys.
 concurrency:
