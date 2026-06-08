@@ -87,6 +87,12 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-and-test
     if: needs.build-and-test.outputs.deploy_enabled == 'true'
+    # Serialize with the web deploy: both converge the same compose stack on the
+    # VPS, so they must never run concurrently. A shared group across both
+    # workflows (queue, don't cancel) guarantees one-at-a-time deploys.
+    concurrency:
+      group: vps-deploy
+      cancel-in-progress: false
     env:
       # Category A — VPS access (secrets are auto-masked in logs).
       VPS_HOST: ${{ secrets.VPS_HOST }}
@@ -99,24 +105,62 @@ jobs:
     steps:
       - name: Configure SSH access
         run: |
+          set -euo pipefail
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
-      # Pull the new code and (re)build/start the backend service, then apply
-      # database migrations inside the running backend container (Req 10.7).
-      - name: Deploy and run migrations
+      # Render each compose service's .env file from its GitHub Secret (each secret
+      # holds the full file contents). Written with umask 077 and never echoed; the
+      # masked secret values do not appear in logs (Req 10.3, 10.4).
+      - name: Render service env files from secrets
+        env:
+          ENV_BACKEND: ${{ secrets.ENV_BACKEND }}
+          ENV_WEB: ${{ secrets.ENV_WEB }}
+          ENV_POSTGRES: ${{ secrets.ENV_POSTGRES }}
+          ENV_PGBOUNCER: ${{ secrets.ENV_PGBOUNCER }}
+          ENV_CADDY: ${{ secrets.ENV_CADDY }}
+          ENV_GRAFANA: ${{ secrets.ENV_GRAFANA }}
         run: |
-          APP_DIR="${VPS_APP_DIR:-/opt/chit-chat}"
+          set -euo pipefail
+          umask 077
+          mkdir -p envs
+          printf '%s' "$ENV_BACKEND"   > envs/.env.backend
+          printf '%s' "$ENV_WEB"       > envs/.env.web
+          printf '%s' "$ENV_POSTGRES"  > envs/.env.postgres
+          printf '%s' "$ENV_PGBOUNCER" > envs/.env.pgbouncer
+          printf '%s' "$ENV_CADDY"     > envs/.env.caddy
+          printf '%s' "$ENV_GRAFANA"   > envs/.env.grafana
+
+      - name: Copy env files to the VPS
+        run: |
+          set -euo pipefail
+          APP_DIR="${VPS_APP_DIR:-/app}"
+          scp -i ~/.ssh/deploy_key \
+            envs/.env.backend envs/.env.web envs/.env.postgres \
+            envs/.env.pgbouncer envs/.env.caddy envs/.env.grafana \
+            "${VPS_USER}@${VPS_HOST}:${APP_DIR}/infra/docker/"
+
+      # Pull the new code, converge the whole compose stack (so the edge proxy and
+      # dependencies are running too), then apply migrations in the backend
+      # container (Req 10.7).
+      - name: Deploy, converge stack, and run migrations
+        run: |
+          set -euo pipefail
+          APP_DIR="${VPS_APP_DIR:-/app}"
           ssh -i ~/.ssh/deploy_key "${VPS_USER}@${VPS_HOST}" \
             "set -euo pipefail \
              && cd '${APP_DIR}' \
              && git pull --ff-only \
              && cd infra/docker \
-             && docker compose up --build -d backend \
+             && docker compose up --build -d \
              && docker compose exec -T backend npm run migration:run"
+
+      - name: Clean up rendered env files
+        if: always()
+        run: rm -rf envs
 
       # Verify the deployment is healthy via the public endpoint behind Caddy.
       # Up to 5 attempts at 10s intervals; non-zero exit fails the run when the
