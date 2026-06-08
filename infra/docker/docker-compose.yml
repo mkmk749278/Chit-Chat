@@ -18,13 +18,20 @@ services:
   # Backend — NestJS REST (:3000) + WebSocket (:3001)
   # ---------------------------------------------------------------------------
   backend:
-    build: ../../apps/backend
+    # Built from the repo root so the shared workspace packages are in context.
+    build:
+      context: ../..
+      dockerfile: apps/backend/Dockerfile
     restart: always
     env_file:
       - .env.backend
+    # Bound to localhost only — public traffic reaches the backend through Caddy
+    # over the Docker network (api./ws. subdomains). Docker bypasses ufw, so an
+    # unbound "3000:3000" would expose these to the internet; 127.0.0.1 keeps them
+    # reachable on the VPS for debugging without publishing them.
     ports:
-      - "3000:3000"
-      - "3001:3001"
+      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:3001:3001"
     depends_on:
       - postgres
       - pgbouncer
@@ -37,12 +44,24 @@ services:
   # Web — Next.js (container :3000 exposed as :3002)
   # ---------------------------------------------------------------------------
   web:
-    build: ../../apps/web
+    # Built from the repo root; NEXT_PUBLIC_* are inlined at build time, sourced from
+    # the compose .env file the deploy renders (public client config, not secrets).
+    build:
+      context: ../..
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_FIREBASE_API_KEY: ${NEXT_PUBLIC_FIREBASE_API_KEY:-}
+        NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ${NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN:-}
+        NEXT_PUBLIC_FIREBASE_PROJECT_ID: ${NEXT_PUBLIC_FIREBASE_PROJECT_ID:-}
+        NEXT_PUBLIC_FIREBASE_APP_ID: ${NEXT_PUBLIC_FIREBASE_APP_ID:-}
+        NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: ${NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET:-}
+        NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: ${NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID:-}
     restart: always
     env_file:
       - .env.web
+    # Localhost-only; public traffic reaches the web app through Caddy.
     ports:
-      - "3002:3000"
+      - "127.0.0.1:3002:3000"
     depends_on:
       - backend
     networks:
@@ -65,7 +84,10 @@ services:
   # PgBouncer — transaction-pooling connection pooler (:5432)
   # ---------------------------------------------------------------------------
   pgbouncer:
-    image: pgbouncer/pgbouncer:latest
+    # edoburu/pgbouncer auto-generates pgbouncer.ini + userlist.txt from the
+    # DB_*/AUTH_TYPE/POOL_MODE env vars (no mounted config needed) and is actively
+    # maintained, unlike the 5-year-old pgbouncer/pgbouncer image.
+    image: edoburu/pgbouncer:latest
     restart: always
     env_file:
       - .env.pgbouncer
@@ -73,8 +95,10 @@ services:
       # Transaction pooling so multi-row write transactions run on a single
       # pooled connection (Requirement 4.4).
       POOL_MODE: transaction
+    # Localhost-only — only the backend (over the Docker network) needs the pooler.
+    # Never publish 5432 to the public internet.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     depends_on:
       - postgres
     networks:
@@ -138,8 +162,9 @@ services:
     restart: always
     env_file:
       - .env.grafana
+    # Localhost-only; public access is via Caddy's grafana. subdomain (IP-allowlisted).
     ports:
-      - "3003:3000"
+      - "127.0.0.1:3003:3000"
     volumes:
       - grafana_data:/var/lib/grafana
     depends_on:
