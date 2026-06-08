@@ -27,8 +27,14 @@ import { FirebaseAuthAdapter } from '../auth';
 
 export type ControllerEvent = ConversationEvent;
 
+/** Result of an OTP request: `ok`, plus the raw provider error code on failure. */
+export interface RequestOtpResult {
+  ok: boolean;
+  error?: string;
+}
+
 export interface ChatController {
-  requestOtp(e164: string): Promise<boolean>;
+  requestOtp(e164: string): Promise<RequestOtpResult>;
   confirmOtp(code: string): Promise<string | null>;
   send(plaintext: string): Promise<void>;
   subscribe(listener: (event: ControllerEvent) => void): () => void;
@@ -55,9 +61,9 @@ export function createMobileController(): ChatController {
   let outboundSeq = 0;
 
   return {
-    async requestOtp(e164: string): Promise<boolean> {
+    async requestOtp(e164: string): Promise<RequestOtpResult> {
       const result = await authService.requestOtp(e164);
-      return result.ok;
+      return { ok: result.ok, error: result.error };
     },
     async confirmOtp(code: string): Promise<string | null> {
       try {
@@ -91,8 +97,8 @@ export function createMobileController(): ChatController {
 export function createDemoController(): ChatController {
   const listeners = new Set<(event: ControllerEvent) => void>();
   return {
-    async requestOtp(e164: string): Promise<boolean> {
-      return /^\+[1-9]\d{6,14}$/.test(e164);
+    async requestOtp(e164: string): Promise<RequestOtpResult> {
+      return { ok: /^\+[1-9]\d{6,14}$/.test(e164) };
     },
     async confirmOtp(code: string): Promise<string | null> {
       return /^\d{6}$/.test(code) ? `demo:${code}` : null;
