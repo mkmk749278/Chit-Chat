@@ -10,10 +10,11 @@
  * (design.md §14.3):
  *   - Category B (Firebase):        FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY
  *   - Category E (database/cache):  DATABASE_URL, PGBOUNCER_URL, REDIS_URL
- *   - Category G (monitoring):      SENTRY_DSN_BACKEND
  *   - Category I (app security):    JWT_SECRET, ENCRYPTION_KEY
  *
- * PORT and WS_PORT are optional and fall back to the bootstrap defaults (3000/3001).
+ * SENTRY_DSN_BACKEND (Category G) is OPTIONAL: when blank the SentryService stays
+ * disabled, so the backend boots without a Sentry project. PORT and WS_PORT are also
+ * optional and fall back to the bootstrap defaults (3000/3001).
  */
 
 /**
@@ -27,7 +28,6 @@ export const REQUIRED_ENV_VARS = [
   'FIREBASE_PROJECT_ID',
   'FIREBASE_CLIENT_EMAIL',
   'FIREBASE_PRIVATE_KEY',
-  'SENTRY_DSN_BACKEND',
   'JWT_SECRET',
   'ENCRYPTION_KEY',
 ] as const;
@@ -51,6 +51,12 @@ export type AppConfig = Readonly<Record<RequiredEnvVar, string>> & {
   readonly PORT: number;
   /** Resolved WebSocket listen port. */
   readonly WS_PORT: number;
+  /**
+   * Optional Sentry DSN for backend error reporting. Blank when unset, in which
+   * case `SentryService` stays disabled and all capture calls are no-ops — so the
+   * backend boots fine without a Sentry project (Category G is optional for boot).
+   */
+  readonly SENTRY_DSN_BACKEND: string;
   /**
    * Optional comma/whitespace-separated CIDR allowlist that restricts the
    * Prometheus `/metrics` endpoint to the monitoring network (Requirement 12.7,
@@ -144,6 +150,10 @@ export function validateEnv(raw: Record<string, unknown> = process.env): AppConf
     MONITORING_CIDRS: isAbsent(raw.MONITORING_CIDRS)
       ? ''
       : String(raw.MONITORING_CIDRS).trim(),
+    // Optional: blank when unset so Sentry stays disabled rather than blocking boot.
+    SENTRY_DSN_BACKEND: isAbsent(raw.SENTRY_DSN_BACKEND)
+      ? ''
+      : String(raw.SENTRY_DSN_BACKEND).trim(),
   };
 
   for (const name of REQUIRED_ENV_VARS) {
