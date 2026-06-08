@@ -99,6 +99,10 @@ services:
   caddy:
     image: caddy:latest
     restart: always
+    # DOMAIN + ADMIN_IP_RANGE are substituted into the Caddyfile ({$DOMAIN} etc.);
+    # the deploy pipeline renders .env.caddy from the ENV_CADDY secret.
+    env_file:
+      - .env.caddy
     ports:
       - "80:80"
       - "443:443"
