@@ -3,8 +3,14 @@
 # Builds the signed Android App Bundle (AAB) for the mobile app. This pipeline
 # is scoped by path: it runs on push to `main` that touches `apps/mobile/**`
 # (or shared packages / this workflow), and can also be triggered manually via
-# workflow_dispatch (Req 10.1). Phase 0 wires the build only — the app itself is
-# a skeleton — so there is no Play Store upload here, just a signed artifact.
+# workflow_dispatch (Req 10.1). It generates the native project from the Expo
+# config via `expo prebuild`, then builds a signed AAB artifact (no Play Store
+# upload yet). The build job is SKIPPED until the signing secrets are configured
+# (see the `config` gate below), so the pipeline stays green until release setup.
+#
+# To produce a build you must set these GitHub Secrets: ANDROID_KEYSTORE_BASE64,
+# ANDROID_KEY_ALIAS, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_PASSWORD, and
+# GOOGLE_SERVICES_JSON (base64-encoded). See docs/phase1-handoff.md.
 #
 # Every secret is sourced from GitHub Secrets and injected as an environment
 # variable (Req 10.3). GitHub automatically masks registered secret values in
@@ -90,26 +96,37 @@ jobs:
       - name: Build shared packages
         run: npm run build:packages
 
-      # Decode the base64 google-services.json secret into the Android app
-      # module. The decoded value is written straight to a file and never
-      # printed to the log (Req 10.4).
+      # Decode the base64 google-services.json secret to the path app.json's
+      # `android.googleServicesFile` points at. It MUST exist before `expo
+      # prebuild` so the @react-native-firebase/app config plugin wires the
+      # google-services Gradle plugin into the generated project. Written straight
+      # to a file, never printed (Req 10.4).
       - name: Write google-services.json
         run: |
           set -euo pipefail
-          mkdir -p apps/mobile/android/app
-          printf '%s' "$GOOGLE_SERVICES_JSON" | base64 --decode > apps/mobile/android/app/google-services.json
+          printf '%s' "$GOOGLE_SERVICES_JSON" | base64 --decode > apps/mobile/google-services.json
 
-      # Decode the base64 release keystore secret to disk for signing. The
-      # decoded keystore is binary and is never echoed (Req 10.4).
+      # Generate the native Android project from the Expo config (app.json). This
+      # is what creates `apps/mobile/android/` (Gradle project, package name,
+      # Firebase wiring) — the repo intentionally does not commit the native
+      # project. `--no-install` keeps the npm workspace install authoritative.
+      # The GitHub ubuntu runner ships the Android SDK, so Gradle finds it via
+      # ANDROID_HOME without an explicit SDK install step.
+      - name: Generate native Android project (expo prebuild)
+        working-directory: apps/mobile
+        run: npx expo prebuild --platform android --no-install
+
+      # Decode the base64 release keystore secret to disk for signing, into the
+      # app module created by prebuild. The decoded keystore is binary and is
+      # never echoed (Req 10.4).
       - name: Write release keystore
         run: |
           set -euo pipefail
-          mkdir -p apps/mobile/android/app
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > apps/mobile/android/app/release.keystore
 
-      # Build the signed release AAB. Signing credentials are passed to Gradle
-      # as project properties sourced from env (masked), never inlined or
-      # logged (Req 10.3, 10.4). Replace with `eas build` if/when EAS is wired.
+      # Build the signed release AAB. Signing credentials are passed to Gradle as
+      # project properties sourced from env (masked), never inlined or logged
+      # (Req 10.3, 10.4). Swap for `eas build` if/when EAS is adopted.
       - name: Build signed AAB (gradlew bundleRelease)
         working-directory: apps/mobile/android
         run: |
@@ -135,6 +152,7 @@ jobs:
         if: always()
         run: |
           rm -f apps/mobile/android/app/release.keystore
+          rm -f apps/mobile/google-services.json
           rm -f apps/mobile/android/app/google-services.json
 
   # ---------------------------------------------------------------------------
