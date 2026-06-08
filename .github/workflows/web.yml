@@ -131,6 +131,8 @@ jobs:
           printf '%s' "$ENV_PGBOUNCER" > envs/.env.pgbouncer
           printf '%s' "$ENV_CADDY"     > envs/.env.caddy
           printf '%s' "$ENV_GRAFANA"   > envs/.env.grafana
+          # Compose default env file — supplies NEXT_PUBLIC_* for the web build args.
+          printf '%s' "$ENV_WEB"       > envs/.env
 
       - name: Copy env files to the VPS
         run: |
@@ -138,7 +140,7 @@ jobs:
           APP_DIR="${VPS_APP_DIR:-/app}"
           scp -i ~/.ssh/deploy_key \
             envs/.env.backend envs/.env.web envs/.env.postgres \
-            envs/.env.pgbouncer envs/.env.caddy envs/.env.grafana \
+            envs/.env.pgbouncer envs/.env.caddy envs/.env.grafana envs/.env \
             "${VPS_USER}@${VPS_HOST}:${APP_DIR}/infra/docker/"
 
       # Pull the new code and converge the whole compose stack (web + edge proxy +

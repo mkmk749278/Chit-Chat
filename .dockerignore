@@ -1,0 +1,12 @@
+# Keep build context small and reproducible. Source for every workspace is copied
+# (npm ci needs all workspace package.json files), but never host build output or
+# installed deps — those are produced fresh inside the image.
+**/node_modules
+**/dist
+**/.next
+**/.expo
+**/coverage
+**/*.tsbuildinfo
+.git
+.github
+**/*.log
