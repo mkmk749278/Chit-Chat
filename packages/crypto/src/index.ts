@@ -195,3 +195,14 @@ export * from './realtime-client';
  * emitted as `ConversationEvent`s for the shared `ConversationReducer` (6.7).
  */
 export * from './messaging';
+
+/**
+ * In-memory {@link SignalProtocolStore} (Phase 1). A pure-JS, dependency-free backing for
+ * the libsignal-facing store surface — the reference store for the web client (process
+ * memory, wiped on session end) and the engine tests. The mobile client backs the same
+ * port with the SQLCipher `KeyStore`. The real libsignal engine that drives this store
+ * (`createLibsignalEngine`) lives in the Node-only `libsignal-engine.node` module and is
+ * intentionally not re-exported here, so the web/mobile bundlers never pull in the native
+ * library (the platform adapter binds the engine at runtime).
+ */
+export * from './in-memory-signal-store';
