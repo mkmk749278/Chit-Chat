@@ -30,6 +30,9 @@ WORKDIR /repo
 # and the built workspace packages + backend (dist + src).
 COPY --from=build /repo/node_modules ./node_modules
 COPY --from=build /repo/package.json /repo/package-lock.json ./
+# tsconfig.base.json is required at runtime too: `migration:run` uses ts-node,
+# which compiles datasource.ts against apps/backend/tsconfig.json → ../../tsconfig.base.json.
+COPY --from=build /repo/tsconfig.base.json ./
 COPY --from=build /repo/packages ./packages
 COPY --from=build /repo/apps/backend ./apps/backend
 
