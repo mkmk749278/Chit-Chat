@@ -64,4 +64,6 @@ export const AppDataSource = new DataSource({
   logging: ['error', 'migration', 'schema'],
 });
 
-export default AppDataSource;
+// NOTE: single export only. The TypeORM CLI (`-d datasource.ts`) rejects a file
+// that exports more than one DataSource, so we deliberately do not also
+// `export default` this instance.
