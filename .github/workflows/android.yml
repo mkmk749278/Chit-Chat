@@ -1,11 +1,12 @@
 # Android build pipeline (design §14.2, Requirement 10)
 #
-# Builds the signed Android App Bundle (AAB) for the mobile app. This pipeline
+# Builds the signed release APK (for device/sideload testing) AND the signed
+# Android App Bundle (AAB, for the Play Store) for the mobile app. This pipeline
 # is scoped by path: it runs on push to `main` that touches `apps/mobile/**`
 # (or shared packages / this workflow), and can also be triggered manually via
 # workflow_dispatch (Req 10.1). It generates the native project from the Expo
-# config via `expo prebuild`, then builds a signed AAB artifact (no Play Store
-# upload yet). The build job is SKIPPED until the signing secrets are configured
+# config via `expo prebuild`, then builds the signed APK + AAB as artifacts (no
+# Play Store upload yet). The build job is SKIPPED until the signing secrets are configured
 # (see the `config` gate below), so the pipeline stays green until release setup.
 #
 # To produce a build you must set these GitHub Secrets: ANDROID_KEYSTORE_BASE64,
@@ -61,7 +62,7 @@ jobs:
   # to disk without ever being echoed (Req 10.3, 10.4).
   # ---------------------------------------------------------------------------
   build-android:
-    name: Build and sign release AAB
+    name: Build and sign release APK + AAB
     runs-on: ubuntu-latest
     needs: config
     if: needs.config.outputs.signing_enabled == 'true'
@@ -124,20 +125,32 @@ jobs:
           set -euo pipefail
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > apps/mobile/android/app/release.keystore
 
-      # Build the signed release AAB. Signing credentials are passed to Gradle as
-      # project properties sourced from env (masked), never inlined or logged
-      # (Req 10.3, 10.4). Swap for `eas build` if/when EAS is adopted.
-      - name: Build signed AAB (gradlew bundleRelease)
+      # Build BOTH signed outputs from the same keystore:
+      #   - assembleRelease -> a release .apk for sideloading / device testing
+      #   - bundleRelease   -> the .aab for Play Store upload
+      # Signing credentials are passed to Gradle as project properties sourced
+      # from env (masked), never inlined or logged (Req 10.3, 10.4).
+      - name: Build signed APK + AAB (gradlew assembleRelease bundleRelease)
         working-directory: apps/mobile/android
         run: |
           set -euo pipefail
           chmod +x ./gradlew
-          ./gradlew bundleRelease \
+          ./gradlew assembleRelease bundleRelease \
             -Pandroid.injected.signing.store.file="$GITHUB_WORKSPACE/apps/mobile/android/app/release.keystore" \
             -Pandroid.injected.signing.store.password="$ANDROID_KEYSTORE_PASSWORD" \
             -Pandroid.injected.signing.key.alias="$ANDROID_KEY_ALIAS" \
             -Pandroid.injected.signing.key.password="$ANDROID_KEY_PASSWORD"
 
+      # Release APK — install this on a device to test before publishing.
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-apk
+          path: apps/mobile/android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      # Release AAB — upload this to the Google Play Console.
       - name: Upload AAB artifact
         uses: actions/upload-artifact@v4
         with:
