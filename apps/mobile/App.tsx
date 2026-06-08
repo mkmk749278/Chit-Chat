@@ -18,14 +18,14 @@ import { SafeAreaView, StyleSheet } from 'react-native';
 
 import { initialConversationState, reduce } from '@chat-app/crypto';
 
-import { createDemoController, type ChatController } from './src/app/chat-controller';
+import { createMobileController, type ChatController } from './src/app/chat-controller';
 import { ConversationScreen } from './src/ui/ConversationScreen';
 import { SignInScreen } from './src/ui/SignInScreen';
 
 export default function App(): React.JSX.Element {
   const controllerRef = useRef<ChatController | null>(null);
   if (controllerRef.current === null) {
-    controllerRef.current = createDemoController();
+    controllerRef.current = createMobileController();
   }
   const controller = controllerRef.current;
 
@@ -33,7 +33,6 @@ export default function App(): React.JSX.Element {
     initialConversationState('mobile'),
   );
   const [uid, setUid] = useState<string | null>(null);
-  const seqRef = useRef(0);
 
   useEffect(() => controller.subscribe((event) => dispatch(event)), [controller]);
 
@@ -60,11 +59,8 @@ export default function App(): React.JSX.Element {
     if (text.length === 0) {
       return;
     }
-    const seq = (seqRef.current += 1);
-    dispatch({
-      type: 'message-appended',
-      message: { id: `local-${seq}`, seq, direction: 'out', text, status: 'sending' },
-    });
+    // The controller owns the message lifecycle: it emits `message-appended` and the
+    // subsequent status updates, which flow back into the reducer via `subscribe`.
     dispatch({ type: 'composer-changed', text: '' });
     void controller.send(text);
   }, [state.composer.text, controller]);
