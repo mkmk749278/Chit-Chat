@@ -54,9 +54,13 @@ export class DevicesService {
    * — including a unique-constraint conflict — every statement is rolled back and no
    * partial rows remain (Requirements 2.5, 6.7).
    */
-  async registerDevice(uid: string, dto: RegisterDeviceDto): Promise<RegisterDeviceResponse> {
+  async registerDevice(
+    uid: string,
+    dto: RegisterDeviceDto,
+    phoneNumber?: string,
+  ): Promise<RegisterDeviceResponse> {
     return this.transactions.runInTransaction(async (manager) => {
-      const userId = await this.upsertUser(manager, uid);
+      const userId = await this.upsertUser(manager, uid, phoneNumber);
       const deviceId = await this.upsertDevice(manager, userId, dto);
 
       await this.replaceSignedPreKey(manager, deviceId, dto);
@@ -71,9 +75,19 @@ export class DevicesService {
   /**
    * Upserts the `users` row keyed by `firebase_uid` and returns its id. Idempotent for
    * returning users — exactly one row per UID (Requirement 2.4).
+   *
+   * When the verified token carries a phone number it is persisted so the directory
+   * (`POST /api/directory/resolve`) can resolve a phone to this UID for contact discovery.
+   * A token WITHOUT a phone claim leaves any previously-stored number untouched (the field
+   * is simply omitted from the upsert), so re-registering never blanks a known number.
    */
-  private async upsertUser(manager: EntityManager, uid: string): Promise<string> {
-    await manager.upsert(UserEntity, { firebaseUid: uid }, ['firebaseUid']);
+  private async upsertUser(
+    manager: EntityManager,
+    uid: string,
+    phoneNumber?: string,
+  ): Promise<string> {
+    const row = phoneNumber !== undefined ? { firebaseUid: uid, phoneNumber } : { firebaseUid: uid };
+    await manager.upsert(UserEntity, row, ['firebaseUid']);
     const user = await manager.findOneByOrFail(UserEntity, { firebaseUid: uid });
     return user.id;
   }

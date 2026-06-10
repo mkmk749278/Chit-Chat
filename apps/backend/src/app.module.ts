@@ -4,6 +4,7 @@ import { AuthModule } from './auth';
 import { ConfigModule } from './config';
 import { DatabaseModule } from './database';
 import { DevicesModule } from './devices';
+import { DirectoryModule } from './directory';
 import { HealthModule } from './health';
 import { KeysModule } from './keys';
 import { ObservabilityModule } from './observability';
@@ -19,7 +20,8 @@ import { RedisModule } from './redis';
  * (e.g. RedisModule, DatabaseModule) are `@Global`, but each is still imported
  * explicitly here so the composition is exactly — and visibly — these eight.
  *
- * Phase 1 adds the KeysModule (`GET /api/keys/:uid` prekey-bundle claim), imported
+ * Phase 1 adds the KeysModule (`GET /api/keys/:uid` prekey-bundle claim) and the
+ * DirectoryModule (`POST /api/directory/resolve` phone→UID contact discovery), imported
  * explicitly alongside the Phase 0 modules.
  *
  * ConfigModule is imported first so its fail-fast environment validation runs
@@ -45,6 +47,7 @@ import { RedisModule } from './redis';
     DatabaseModule,
     ObservabilityModule,
     KeysModule,
+    DirectoryModule,
   ],
   controllers: [],
   providers: [],

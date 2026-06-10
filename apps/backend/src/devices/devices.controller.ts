@@ -95,6 +95,9 @@ export class DevicesController {
       throw new HttpException('Rate limit exceeded', HttpStatus.TOO_MANY_REQUESTS);
     }
 
-    return this.devices.registerDevice(auth.uid, dto);
+    // Persist the verified phone number (when the token carries one) so the directory can
+    // resolve a phone → this UID for contact discovery. Only the trusted token claim is
+    // used — never a client-supplied value.
+    return this.devices.registerDevice(auth.uid, dto, auth.phoneNumber);
   }
 }
