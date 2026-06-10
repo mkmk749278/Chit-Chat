@@ -16,7 +16,7 @@
 
 import { StatusBar } from 'expo-status-bar';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, SafeAreaView, StyleSheet, useColorScheme } from 'react-native';
+import { Alert, Pressable, SafeAreaView, StyleSheet, Text, useColorScheme, View } from 'react-native';
 
 import {
   initialConversationState,
@@ -24,7 +24,11 @@ import {
   type ConversationState,
 } from '@chat-app/crypto';
 
-import { createMobileController, type ChatController } from './src/app/chat-controller';
+import {
+  createMobileController,
+  type ChatController,
+  type SetupState,
+} from './src/app/chat-controller';
 import { ChatsListScreen, type ChatSummary } from './src/ui/ChatsListScreen';
 import { ContactsScreen, type ContactRow } from './src/ui/ContactsScreen';
 import { ConversationScreen } from './src/ui/ConversationScreen';
@@ -77,6 +81,7 @@ export default function App(): React.JSX.Element {
   const [tab, setTab] = useState<Tab>('chats');
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [openChatId, setOpenChatId] = useState<string | null>(null);
+  const [setup, setSetup] = useState<SetupState>({ phase: 'idle' });
   // The subscription callback below must see the CURRENT open chat, not the one captured
   // when the controller was subscribed.
   const openChatRef = useRef<string | null>(null);
@@ -98,6 +103,9 @@ export default function App(): React.JSX.Element {
       }),
     [controller],
   );
+
+  // Surface encryption-setup progress/failure (identity + device registration + connect).
+  useEffect(() => controller.onSetupChange(setSetup), [controller]);
 
   const confirmOtp = useCallback(
     async (code: string, e164: string): Promise<boolean> => {
@@ -219,6 +227,23 @@ export default function App(): React.JSX.Element {
         />
       ) : (
         <>
+          {setup.phase === 'registering' && (
+            <View style={[styles.banner, { backgroundColor: '#2A2A3C' }]}>
+              <Text style={styles.bannerText}>🔐 Setting up encryption…</Text>
+            </View>
+          )}
+          {setup.phase === 'failed' && (
+            <Pressable
+              style={[styles.banner, { backgroundColor: '#7A1F2B' }]}
+              onPress={() => void controller.retrySetup()}
+              accessibilityRole="button"
+            >
+              <Text style={styles.bannerText} numberOfLines={2}>
+                ⚠ Encryption setup failed: {setup.error ?? 'unknown error'}
+              </Text>
+              <Text style={styles.bannerAction}>Tap to retry</Text>
+            </Pressable>
+          )}
           {tab === 'chats' && (
             <ChatsListScreen
               chats={summaries}
@@ -240,4 +265,7 @@ export default function App(): React.JSX.Element {
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
+  banner: { paddingHorizontal: 16, paddingVertical: 10 },
+  bannerText: { color: '#fff', fontSize: 13, fontWeight: '600' },
+  bannerAction: { color: '#fff', fontSize: 12, fontWeight: '700', marginTop: 2, opacity: 0.9 },
 });

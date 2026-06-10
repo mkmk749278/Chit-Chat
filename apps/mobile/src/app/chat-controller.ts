@@ -57,6 +57,18 @@ import { createReactNativeWebSocketTransport } from '../transport/web-socket-tra
 
 export type ControllerEvent = ConversationEvent;
 
+/**
+ * Encryption-setup lifecycle for the signed-in user: identity generation + device
+ * registration + realtime connect. Surfaced to the UI so a failed bootstrap is VISIBLE
+ * (with the underlying error) and retryable, instead of silently leaving the user unable to
+ * be discovered or messaged.
+ */
+export interface SetupState {
+  phase: 'idle' | 'registering' | 'ready' | 'failed';
+  /** Human-readable failure reason when `phase === 'failed'`. */
+  error?: string;
+}
+
 /** Result of an OTP request: `ok`, plus the raw provider error code on failure. */
 export interface RequestOtpResult {
   ok: boolean;
@@ -78,6 +90,12 @@ export interface ChatController {
   /** Send `plaintext` to the currently-open conversation (see {@link openConversation}). */
   send(plaintext: string): Promise<void>;
   subscribe(listener: (event: ControllerEvent) => void): () => void;
+  /** Current encryption-setup state (identity + device registration + connection). */
+  getSetup(): SetupState;
+  /** Subscribe to {@link SetupState} changes; fires immediately with the current state. */
+  onSetupChange(listener: (state: SetupState) => void): () => void;
+  /** Re-run encryption setup after a failure (e.g. transient network at sign-in). */
+  retrySetup(): Promise<void>;
   /** Client-initiated sign-out (clears the auth session; Requirement 4.8). */
   signOut(): Promise<void>;
 }
@@ -107,6 +125,17 @@ export function createMobileController(): ChatController {
   let messaging: Messaging | null = null;
   let realtime: RealtimeClient | null = null;
   let activeRecipient: string | null = null;
+  let currentUid: string | null = null;
+
+  // Encryption-setup state, observable by the UI.
+  let setup: SetupState = { phase: 'idle' };
+  const setupListeners = new Set<(state: SetupState) => void>();
+  const setSetup = (next: SetupState): void => {
+    setup = next;
+    for (const listener of setupListeners) {
+      listener(setup);
+    }
+  };
 
   /**
    * Bring up the encrypted-messaging stack for a signed-in user: generate/load the device
@@ -115,6 +144,7 @@ export function createMobileController(): ChatController {
    * sends rather than thrown — the user stays signed in.
    */
   async function bootstrap(uid: string): Promise<void> {
+    setSetup({ phase: 'registering' });
     const store = createInMemoryKeyStore();
     keyStore = store;
 
@@ -127,14 +157,16 @@ export function createMobileController(): ChatController {
     );
     const registration = await registrar.ensureRegistered();
     if (registration.status !== 'registered') {
-      // Without a deviceId the client cannot be addressed; surface a disconnected status so
-      // the UI shows the connection issue. Sends will fail honestly until re-registered.
+      // Without a deviceId the client cannot be addressed or discovered. Surface WHY so the
+      // user sees it and can retry, instead of silently failing every lookup/send.
+      setSetup({ phase: 'failed', error: `Device registration failed (${registration.status}).` });
       emit({ type: 'connection-changed', connection: 'disconnected' });
       return;
     }
 
     const record = await store.loadIdentity(uid);
     if (record === null) {
+      setSetup({ phase: 'failed', error: 'Identity could not be loaded after registration.' });
       emit({ type: 'connection-changed', connection: 'disconnected' });
       return;
     }
@@ -170,6 +202,18 @@ export function createMobileController(): ChatController {
     messaging.onConversationUpdate(emit);
     realtime.onStatus((status) => emit({ type: 'connection-changed', connection: status }));
     realtime.connect();
+    setSetup({ phase: 'ready' });
+  }
+
+  /** Run {@link bootstrap}, mapping any thrown error onto a visible `failed` setup state. */
+  async function runBootstrap(uid: string): Promise<void> {
+    try {
+      await bootstrap(uid);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setSetup({ phase: 'failed', error: message });
+      emit({ type: 'connection-changed', connection: 'disconnected' });
+    }
   }
 
   function teardown(): void {
@@ -191,11 +235,10 @@ export function createMobileController(): ChatController {
     async confirmOtp(code: string): Promise<string | null> {
       try {
         const { uid } = await authService.confirmOtp(code);
+        currentUid = uid;
         // Bring up messaging in the background; sign-in itself succeeds immediately so the
-        // UI can advance. Connection status flows back through subscription events.
-        void bootstrap(uid).catch(() => {
-          emit({ type: 'connection-changed', connection: 'disconnected' });
-        });
+        // UI can advance. Setup progress/failure flows back through onSetupChange.
+        void runBootstrap(uid);
         return uid;
       } catch {
         return null;
@@ -229,8 +272,34 @@ export function createMobileController(): ChatController {
       return () => listeners.delete(listener);
     },
 
+    getSetup(): SetupState {
+      return setup;
+    },
+
+    onSetupChange(listener: (state: SetupState) => void): () => void {
+      setupListeners.add(listener);
+      listener(setup);
+      return () => setupListeners.delete(listener);
+    },
+
+    async retrySetup(): Promise<void> {
+      if (setup.phase === 'registering') {
+        return;
+      }
+      const uid = authService.getCurrentUid() ?? currentUid;
+      if (uid === null) {
+        setSetup({ phase: 'failed', error: 'Not signed in.' });
+        return;
+      }
+      teardown();
+      currentUid = uid;
+      await runBootstrap(uid);
+    },
+
     async signOut(): Promise<void> {
       teardown();
+      setSetup({ phase: 'idle' });
+      currentUid = null;
       await authService.signOut();
     },
   };
@@ -258,6 +327,16 @@ export function createDemoController(): ChatController {
     subscribe(listener: (event: ControllerEvent) => void): () => void {
       listeners.add(listener);
       return () => listeners.delete(listener);
+    },
+    getSetup(): SetupState {
+      return { phase: 'ready' };
+    },
+    onSetupChange(listener: (state: SetupState) => void): () => void {
+      listener({ phase: 'ready' });
+      return () => undefined;
+    },
+    async retrySetup(): Promise<void> {
+      // Demo controller is always "ready".
     },
     async signOut(): Promise<void> {
       // Demo controller holds no real auth session.
