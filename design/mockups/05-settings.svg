@@ -1,0 +1,57 @@
+<svg width="390" height="844" viewBox="0 0 390 844" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, Segoe UI, Roboto, sans-serif">
+  <defs>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6D5EF7"/><stop offset="1" stop-color="#9B8CFA"/></linearGradient>
+  </defs>
+  <rect width="390" height="844" rx="46" fill="#F6F6FB"/>
+  <text x="28" y="40" font-size="14" font-weight="600" fill="#14141B">9:41</text>
+  <text x="320" y="40" font-size="13" fill="#14141B">📶 🔋</text>
+  <text x="28" y="96" font-size="30" font-weight="800" fill="#14141B">Settings</text>
+
+  <!-- profile card -->
+  <rect x="20" y="120" width="350" height="92" rx="18" fill="#FFFFFF" stroke="#EFEFF4"/>
+  <circle cx="68" cy="166" r="30" fill="url(#brand)"/><text x="68" y="173" text-anchor="middle" font-size="22" font-weight="700" fill="#fff">YO</text>
+  <text x="112" y="158" font-size="18" font-weight="700" fill="#14141B">You</text>
+  <text x="112" y="180" font-size="13" fill="#6B7280">+91 96185 79123</text>
+  <text x="350" y="172" text-anchor="end" font-size="13" font-weight="700" fill="#6D5EF7">Edit</text>
+
+  <!-- security group -->
+  <text x="34" y="248" font-size="12" font-weight="700" fill="#9AA0AC">SECURITY &amp; PRIVACY</text>
+  <rect x="20" y="262" width="350" height="180" rx="18" fill="#FFFFFF" stroke="#EFEFF4"/>
+  <g font-size="15" fill="#14141B">
+    <text x="56" y="298">🔑</text><text x="84" y="298">Encryption keys</text><text x="352" y="298" text-anchor="end" font-size="16" fill="#C7C7D1">›</text>
+    <line x1="56" y1="318" x2="354" y2="318" stroke="#F1F1F6"/>
+    <text x="56" y="350">🛡️</text><text x="84" y="350">Safety number</text><text x="352" y="350" text-anchor="end" font-size="16" fill="#C7C7D1">›</text>
+    <line x1="56" y1="370" x2="354" y2="370" stroke="#F1F1F6"/>
+    <text x="56" y="402">🧹</text><text x="84" y="402">Wipe data on sign‑out</text>
+    <rect x="312" y="390" width="42" height="24" rx="12" fill="#6D5EF7"/><circle cx="344" cy="402" r="9" fill="#fff"/>
+    <line x1="56" y1="420" x2="354" y2="420" stroke="#F1F1F6"/>
+    <text x="56" y="430" font-size="11" fill="#9AA0AC"> </text>
+  </g>
+
+  <!-- app group -->
+  <text x="34" y="478" font-size="12" font-weight="700" fill="#9AA0AC">APP</text>
+  <rect x="20" y="492" width="350" height="132" rx="18" fill="#FFFFFF" stroke="#EFEFF4"/>
+  <g font-size="15" fill="#14141B">
+    <text x="56" y="528">🔔</text><text x="84" y="528">Notifications</text>
+    <rect x="312" y="516" width="42" height="24" rx="12" fill="#6D5EF7"/><circle cx="344" cy="528" r="9" fill="#fff"/>
+    <line x1="56" y1="548" x2="354" y2="548" stroke="#F1F1F6"/>
+    <text x="56" y="580">🌙</text><text x="84" y="580">Appearance</text><text x="352" y="580" text-anchor="end" font-size="13" fill="#9AA0AC">System ›</text>
+    <line x1="56" y1="600" x2="354" y2="600" stroke="#F1F1F6"/>
+    <text x="56" y="616" font-size="11" fill="#9AA0AC"> </text>
+    <text x="56" y="617">ℹ️</text><text x="84" y="617">About Lumin</text><text x="352" y="617" text-anchor="end" font-size="16" fill="#C7C7D1">›</text>
+  </g>
+
+  <!-- sign out -->
+  <rect x="20" y="648" width="350" height="50" rx="14" fill="#FDECEC"/>
+  <text x="195" y="679" text-anchor="middle" font-size="15" font-weight="700" fill="#E0463B">Sign out</text>
+
+  <!-- tab bar -->
+  <rect x="0" y="760" width="390" height="84" fill="#FFFFFF"/>
+  <line x1="0" y1="760" x2="390" y2="760" stroke="#EFEFF4"/>
+  <g text-anchor="middle">
+    <text x="80" y="796" font-size="20" fill="#9AA0AC">💬</text><text x="80" y="816" font-size="11" fill="#9AA0AC">Chats</text>
+    <text x="195" y="796" font-size="20" fill="#9AA0AC">👤</text><text x="195" y="816" font-size="11" fill="#9AA0AC">Contacts</text>
+    <text x="310" y="796" font-size="20" fill="#6D5EF7">⚙</text><text x="310" y="816" font-size="11" font-weight="700" fill="#6D5EF7">Settings</text>
+  </g>
+  <rect x="150" y="828" width="90" height="5" rx="2.5" fill="#D7D7E0"/>
+</svg>

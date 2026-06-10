@@ -1,0 +1,54 @@
+<svg width="390" height="844" viewBox="0 0 390 844" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, Segoe UI, Roboto, sans-serif">
+  <defs>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7C6CFF"/><stop offset="1" stop-color="#A99BFF"/></linearGradient>
+    <linearGradient id="a1" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#34D399"/><stop offset="1" stop-color="#10B981"/></linearGradient>
+  </defs>
+  <rect width="390" height="844" rx="46" fill="#0A0A10"/>
+  <text x="28" y="40" font-size="14" font-weight="600" fill="#F2F2F7">9:41</text>
+  <text x="320" y="40" font-size="13" fill="#F2F2F7">📶 🔋</text>
+
+  <rect x="0" y="56" width="390" height="74" fill="#101019"/>
+  <line x1="0" y1="130" x2="390" y2="130" stroke="#1E1E2A"/>
+  <text x="24" y="100" font-size="22" fill="#A99BFF">‹</text>
+  <circle cx="64" cy="93" r="20" fill="url(#a1)"/><text x="64" y="99" text-anchor="middle" font-size="15" font-weight="700" fill="#0C0C12">AR</text>
+  <text x="94" y="88" font-size="16" font-weight="700" fill="#F2F2F7">Aarav</text>
+  <circle cx="99" cy="104" r="4" fill="#22C55E"/>
+  <text x="110" y="108" font-size="11" fill="#46D38A">end‑to‑end encrypted · online</text>
+  <text x="356" y="99" text-anchor="middle" font-size="18" fill="#9CA3AF">⋮</text>
+
+  <text x="195" y="160" text-anchor="middle" font-size="11" fill="#6B7280">Today</text>
+  <rect x="55" y="172" width="280" height="40" rx="12" fill="#241F12"/>
+  <text x="195" y="190" text-anchor="middle" font-size="10.5" fill="#E5C16B">🔒 Messages are end‑to‑end encrypted. No one</text>
+  <text x="195" y="204" text-anchor="middle" font-size="10.5" fill="#E5C16B">outside this chat can read them, not even Lumin.</text>
+
+  <g>
+    <rect x="24" y="236" width="206" height="44" rx="16" fill="#1C1C28"/>
+    <text x="40" y="263" font-size="14" fill="#ECECF2">Hey! Did you get the keys? 🔑</text>
+    <text x="40" y="294" font-size="10" fill="#6B7280">9:30</text>
+  </g>
+  <g>
+    <rect x="150" y="312" width="216" height="44" rx="16" fill="url(#brand)"/>
+    <text x="166" y="339" font-size="14" fill="#16131F">Yes — sending the bundle now.</text>
+    <text x="330" y="370" font-size="10" fill="#6B7280">9:31</text>
+    <text x="352" y="370" font-size="11" fill="#A99BFF">✓✓</text>
+  </g>
+  <g>
+    <rect x="24" y="388" width="150" height="44" rx="16" fill="#1C1C28"/>
+    <text x="40" y="415" font-size="14" fill="#ECECF2">Perfect, thank you 🙏</text>
+    <text x="40" y="446" font-size="10" fill="#6B7280">9:31</text>
+  </g>
+  <g>
+    <rect x="172" y="464" width="194" height="44" rx="16" fill="url(#brand)" opacity="0.5"/>
+    <text x="188" y="491" font-size="14" fill="#16131F">Let’s meet at 6.</text>
+    <text x="330" y="522" font-size="10" fill="#6B7280">now</text>
+    <text x="352" y="522" font-size="10" fill="#6B7280">🕓</text>
+  </g>
+
+  <rect x="0" y="744" width="390" height="100" fill="#101019"/>
+  <line x1="0" y1="744" x2="390" y2="744" stroke="#1E1E2A"/>
+  <circle cx="34" cy="784" r="16" fill="#1B1B26"/><text x="34" y="789" text-anchor="middle" font-size="15" fill="#9CA3AF">＋</text>
+  <rect x="58" y="766" width="262" height="40" rx="20" fill="#1B1B26"/>
+  <text x="76" y="791" font-size="14" fill="#6B7280">Message…</text>
+  <circle cx="350" cy="786" r="22" fill="url(#brand)"/><text x="350" y="792" text-anchor="middle" font-size="16" fill="#16131F">➤</text>
+  <rect x="150" y="828" width="90" height="5" rx="2.5" fill="#3A3A46"/>
+</svg>

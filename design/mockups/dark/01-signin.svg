@@ -1,0 +1,36 @@
+<svg width="390" height="844" viewBox="0 0 390 844" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, Segoe UI, Roboto, sans-serif">
+  <defs>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7C6CFF"/><stop offset="1" stop-color="#A99BFF"/></linearGradient>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#141320"/><stop offset="1" stop-color="#0C0C12"/></linearGradient>
+  </defs>
+  <rect width="390" height="844" rx="46" fill="url(#bg)"/>
+  <text x="28" y="40" font-size="14" font-weight="600" fill="#F2F2F7">9:41</text>
+  <text x="320" y="40" font-size="13" fill="#F2F2F7">📶 🔋</text>
+
+  <g transform="translate(195,150)">
+    <circle r="44" fill="url(#brand)"/>
+    <path d="M-12,-4 v18 h24 v-18 a12,12 0 0 0 -24,0" fill="none" stroke="#0C0C12" stroke-width="3.5" stroke-linejoin="round"/>
+    <circle cx="0" cy="6" r="3.5" fill="#0C0C12"/>
+  </g>
+  <text x="195" y="232" text-anchor="middle" font-size="28" font-weight="800" fill="#F4F4FA">Lumin Chat</text>
+  <text x="195" y="258" text-anchor="middle" font-size="14" fill="#9CA3AF">Private, end‑to‑end encrypted messaging</text>
+
+  <text x="34" y="330" font-size="13" font-weight="600" fill="#C7C7D1">Phone number</text>
+  <rect x="30" y="344" width="92" height="52" rx="13" fill="#1B1B26" stroke="#2C2C3A"/>
+  <text x="46" y="376" font-size="16" font-weight="600" fill="#F2F2F7">🇮🇳 +91</text>
+  <text x="104" y="375" font-size="12" fill="#6B7280">▾</text>
+  <rect x="130" y="344" width="230" height="52" rx="13" fill="#1B1B26" stroke="#2C2C3A"/>
+  <text x="146" y="376" font-size="16" fill="#F2F2F7">96185 79123</text>
+
+  <rect x="30" y="416" width="330" height="54" rx="14" fill="url(#brand)"/>
+  <text x="195" y="450" text-anchor="middle" font-size="16" font-weight="700" fill="#16131F">Send code</text>
+
+  <rect x="30" y="500" width="330" height="92" rx="16" fill="#12231A" stroke="#1E3A2A"/>
+  <text x="50" y="530" font-size="15">🔒</text>
+  <text x="74" y="528" font-size="13" font-weight="700" fill="#46D38A">End‑to‑end encrypted</text>
+  <text x="74" y="550" font-size="12" fill="#8FC7A6">Messages are encrypted on your device.</text>
+  <text x="74" y="568" font-size="12" fill="#8FC7A6">We can’t read them — and we don’t store them.</text>
+
+  <text x="195" y="640" text-anchor="middle" font-size="11" fill="#6B7280">By continuing you agree to the Terms &amp; Privacy Policy</text>
+  <rect x="150" y="822" width="90" height="5" rx="2.5" fill="#3A3A46"/>
+</svg>
