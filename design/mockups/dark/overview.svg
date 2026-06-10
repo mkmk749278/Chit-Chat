@@ -1,0 +1,13 @@
+<svg width="1680" height="820" viewBox="0 0 1680 820" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" font-family="-apple-system, Segoe UI, Roboto, sans-serif">
+  <rect width="1680" height="820" fill="#08080C"/>
+  <text x="40" y="56" font-size="30" font-weight="800" fill="#F4F4FA">Lumin Chat — dark theme</text>
+  <text x="40" y="82" font-size="15" fill="#9CA3AF">Private, end‑to‑end encrypted messaging · sample screens</text>
+  <image x="40" y="110" width="300" height="649" xlink:href="01-signin.png"/>
+  <image x="370" y="110" width="300" height="649" xlink:href="02-chats.png"/>
+  <image x="700" y="110" width="300" height="649" xlink:href="03-conversation.png"/>
+  <image x="1030" y="110" width="300" height="649" xlink:href="04-newchat.png"/>
+  <image x="1360" y="110" width="300" height="649" xlink:href="05-settings.png"/>
+  <g font-size="15" font-weight="700" fill="#C7C7D1" text-anchor="middle">
+    <text x="190" y="790">Sign in</text><text x="520" y="790">Chats</text><text x="850" y="790">Conversation</text><text x="1180" y="790">New chat</text><text x="1510" y="790">Settings</text>
+  </g>
+</svg>
