@@ -1,26 +1,68 @@
 /**
- * Mobile app container (Phase 1, design Client Component 7: UI).
+ * Lumin Chat — mobile app shell (design/mockups; Phase 1 Client Component 7: UI).
  *
- * Composes the shared, pure pieces into the running Mobile_App screen, mirroring the web
- * container: it owns the single `ConversationState` via the shared `reduce` reducer from
- * `@chat-app/crypto` (so mobile and web render through one path, Requirement 6.7), shows
- * `SignInScreen` until the user signs in, then `ConversationScreen`, and routes user
- * intent through the injected {@link ChatController}.
+ * Container that composes the Lumin 3-tab shell (Chats / Contacts / Settings) around the
+ * shared crypto core. Navigation is state-driven (see TabBar.tsx for why React Navigation
+ * is deliberately not used at this size): an auth gate shows `SignInScreen` until the user
+ * signs in; afterwards the tab shell renders, and opening a chat pushes the
+ * `ConversationScreen` over it.
  *
- * The {@link ChatController} is the seam to the crypto core; task 6.9 swaps the in-memory
- * demo controller for the real Firebase (RN) + SQLCipher + native-libsignal + Messaging
- * wiring without touching the screens.
+ * Each conversation owns a `ConversationState` driven by the shared `reduce` from
+ * `@chat-app/crypto` (one render path across web and mobile, Requirement 6.7). User
+ * intent routes through the injected {@link ChatController}; controller events feed the
+ * OPEN conversation's reducer. The controller is the seam where the real Messaging +
+ * libsignal engine wiring lands without touching these screens.
  */
 
 import { StatusBar } from 'expo-status-bar';
-import React, { useCallback, useEffect, useReducer, useRef, useState } from 'react';
-import { SafeAreaView, StyleSheet } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { SafeAreaView, StyleSheet, useColorScheme } from 'react-native';
 
-import { initialConversationState, reduce } from '@chat-app/crypto';
+import {
+  initialConversationState,
+  reduce,
+  type ConversationState,
+} from '@chat-app/crypto';
 
 import { createMobileController, type ChatController } from './src/app/chat-controller';
+import { ChatsListScreen, type ChatSummary } from './src/ui/ChatsListScreen';
+import { ContactsScreen, type ContactRow } from './src/ui/ContactsScreen';
 import { ConversationScreen } from './src/ui/ConversationScreen';
+import { SettingsScreen } from './src/ui/SettingsScreen';
 import { SignInScreen } from './src/ui/SignInScreen';
+import { TabBar, type Tab } from './src/ui/TabBar';
+
+/** One chat thread: peer identity + its reducer-owned conversation state. */
+interface Conversation {
+  id: string;
+  name: string;
+  state: ConversationState;
+  /** Unix ms of the last activity, for list ordering and the time label. */
+  lastAt: number;
+}
+
+/** Short list-row time label ("9:32" today, weekday otherwise). */
+function timeLabel(unixMs: number): string {
+  const then = new Date(unixMs);
+  const now = new Date();
+  if (then.toDateString() === now.toDateString()) {
+    return `${then.getHours()}:${String(then.getMinutes()).padStart(2, '0')}`;
+  }
+  return then.toLocaleDateString(undefined, { weekday: 'short' });
+}
+
+/** Derive the chat-list preview line from a conversation's last message. */
+function previewOf(state: ConversationState): string {
+  const last = state.messages[state.messages.length - 1];
+  if (last === undefined) {
+    return 'Say hello 👋';
+  }
+  if (last.direction === 'out') {
+    const text = last.text ?? '';
+    return last.status === 'failed' ? `You: ⚠ ${text}` : `You: ${text}`;
+  }
+  return '🔒 Encrypted message';
+}
 
 export default function App(): React.JSX.Element {
   const controllerRef = useRef<ChatController | null>(null);
@@ -28,21 +70,41 @@ export default function App(): React.JSX.Element {
     controllerRef.current = createMobileController();
   }
   const controller = controllerRef.current;
+  const dark = useColorScheme() === 'dark';
 
-  const [state, dispatch] = useReducer(reduce, undefined, () =>
-    initialConversationState('mobile'),
-  );
   const [uid, setUid] = useState<string | null>(null);
+  const [phone, setPhone] = useState<string>('');
+  const [tab, setTab] = useState<Tab>('chats');
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [openChatId, setOpenChatId] = useState<string | null>(null);
+  // The subscription callback below must see the CURRENT open chat, not the one captured
+  // when the controller was subscribed.
+  const openChatRef = useRef<string | null>(null);
+  openChatRef.current = openChatId;
 
-  useEffect(() => controller.subscribe((event) => dispatch(event)), [controller]);
-
-  const requestOtp = useCallback((e164: string) => controller.requestOtp(e164), [controller]);
+  // Controller events drive the open conversation's reducer.
+  useEffect(
+    () =>
+      controller.subscribe((event) => {
+        const target = openChatRef.current;
+        if (target === null) {
+          return;
+        }
+        setConversations((prev) =>
+          prev.map((c) =>
+            c.id === target ? { ...c, state: reduce(c.state, event), lastAt: Date.now() } : c,
+          ),
+        );
+      }),
+    [controller],
+  );
 
   const confirmOtp = useCallback(
-    async (code: string): Promise<boolean> => {
+    async (code: string, e164: string): Promise<boolean> => {
       const signedInUid = await controller.confirmOtp(code);
       if (signedInUid !== null) {
         setUid(signedInUid);
+        setPhone(e164);
         return true;
       }
       return false;
@@ -50,38 +112,105 @@ export default function App(): React.JSX.Element {
     [controller],
   );
 
+  const startChat = useCallback((id: string, name: string) => {
+    setConversations((prev) =>
+      prev.some((c) => c.id === id)
+        ? prev
+        : [
+            { id, name, state: initialConversationState('mobile'), lastAt: Date.now() },
+            ...prev,
+          ],
+    );
+    setOpenChatId(id);
+    setTab('chats');
+  }, []);
+
   const onComposerChange = useCallback((text: string) => {
-    dispatch({ type: 'composer-changed', text });
+    const target = openChatRef.current;
+    if (target === null) {
+      return;
+    }
+    setConversations((prev) =>
+      prev.map((c) =>
+        c.id === target ? { ...c, state: reduce(c.state, { type: 'composer-changed', text }) } : c,
+      ),
+    );
   }, []);
 
   const onSend = useCallback(() => {
-    const text = state.composer.text.trim();
+    const target = openChatRef.current;
+    if (target === null) {
+      return;
+    }
+    const open = conversations.find((c) => c.id === target);
+    const text = open?.state.composer.text.trim() ?? '';
     if (text.length === 0) {
       return;
     }
-    // The controller owns the message lifecycle: it emits `message-appended` and the
-    // subsequent status updates, which flow back into the reducer via `subscribe`.
-    dispatch({ type: 'composer-changed', text: '' });
+    // The controller owns the message lifecycle (message-appended + status updates flow
+    // back through the subscription); the container only clears the composer.
+    onComposerChange('');
     void controller.send(text);
-  }, [state.composer.text, controller]);
+  }, [conversations, controller, onComposerChange]);
+
+  const signOut = useCallback(() => {
+    void controller.signOut();
+    // Session-end hygiene: drop all conversation state with the session.
+    setConversations([]);
+    setOpenChatId(null);
+    setTab('chats');
+    setUid(null);
+    setPhone('');
+  }, [controller]);
+
+  const openConversation = openChatId !== null
+    ? conversations.find((c) => c.id === openChatId) ?? null
+    : null;
+
+  const summaries: ChatSummary[] = [...conversations]
+    .sort((a, b) => b.lastAt - a.lastAt)
+    .map((c) => ({
+      id: c.id,
+      name: c.name,
+      preview: previewOf(c.state),
+      time: timeLabel(c.lastAt),
+      unread: 0,
+    }));
+  const contacts: ContactRow[] = conversations.map((c) => ({ id: c.id, name: c.name }));
 
   return (
-    <SafeAreaView style={styles.root}>
+    <SafeAreaView style={[styles.root, { backgroundColor: dark ? '#0C0C12' : '#FBFBFE' }]}>
       {uid === null ? (
-        <SignInScreen onRequestOtp={requestOtp} onConfirmOtp={confirmOtp} />
-      ) : (
+        <SignInScreen onRequestOtp={(e164) => controller.requestOtp(e164)} onConfirmOtp={confirmOtp} />
+      ) : openConversation !== null ? (
         <ConversationScreen
-          state={state}
-          selfLabel={uid}
+          state={openConversation.state}
+          peerName={openConversation.name}
           onComposerChange={onComposerChange}
           onSend={onSend}
+          onBack={() => setOpenChatId(null)}
         />
+      ) : (
+        <>
+          {tab === 'chats' && (
+            <ChatsListScreen
+              chats={summaries}
+              onOpenChat={setOpenChatId}
+              onNewChat={() => setTab('contacts')}
+            />
+          )}
+          {tab === 'contacts' && <ContactsScreen contacts={contacts} onStartChat={startChat} />}
+          {tab === 'settings' && (
+            <SettingsScreen displayName="You" phone={phone} onSignOut={signOut} />
+          )}
+          <TabBar active={tab} onSelect={setTab} />
+        </>
       )}
-      <StatusBar style="auto" />
+      <StatusBar style={dark ? 'light' : 'dark'} />
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#fff' },
+  root: { flex: 1 },
 });

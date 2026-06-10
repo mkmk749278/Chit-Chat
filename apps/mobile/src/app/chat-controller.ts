@@ -38,6 +38,8 @@ export interface ChatController {
   confirmOtp(code: string): Promise<string | null>;
   send(plaintext: string): Promise<void>;
   subscribe(listener: (event: ControllerEvent) => void): () => void;
+  /** Client-initiated sign-out (clears the auth session; Requirement 4.8). */
+  signOut(): Promise<void>;
 }
 
 /**
@@ -91,6 +93,9 @@ export function createMobileController(): ChatController {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
+    async signOut(): Promise<void> {
+      await authService.signOut();
+    },
   };
 }
 
@@ -110,6 +115,9 @@ export function createDemoController(): ChatController {
     subscribe(listener: (event: ControllerEvent) => void): () => void {
       listeners.add(listener);
       return () => listeners.delete(listener);
+    },
+    async signOut(): Promise<void> {
+      // Demo controller holds no real auth session.
     },
   };
 }

@@ -21,6 +21,8 @@ import {
   View,
 } from 'react-native';
 
+import { useTheme } from './theme';
+
 /** A selectable country: ISO code, display name, E.164 dialing code, and flag emoji. */
 interface Country {
   iso: string;
@@ -72,10 +74,12 @@ function friendlyError(code: string | undefined): string {
 
 export interface SignInScreenProps {
   onRequestOtp: (e164: string) => Promise<{ ok: boolean; error?: string }>;
-  onConfirmOtp: (code: string) => Promise<boolean>;
+  /** Confirm the OTP; `e164` is the number the code was sent to (for the profile). */
+  onConfirmOtp: (code: string, e164: string) => Promise<boolean>;
 }
 
 export function SignInScreen({ onRequestOtp, onConfirmOtp }: SignInScreenProps): React.JSX.Element {
+  const t = useTheme();
   const [country, setCountry] = useState<Country>(COUNTRIES[0]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [nationalNumber, setNationalNumber] = useState('');
@@ -109,7 +113,7 @@ export function SignInScreen({ onRequestOtp, onConfirmOtp }: SignInScreenProps):
     setError(null);
     setBusy(true);
     try {
-      const ok = await onConfirmOtp(code.trim());
+      const ok = await onConfirmOtp(code.trim(), e164);
       if (!ok) {
         setError('Sign-in did not succeed. Request a new code and try again.');
         setCode('');
@@ -120,26 +124,36 @@ export function SignInScreen({ onRequestOtp, onConfirmOtp }: SignInScreenProps):
   };
 
   return (
-    <View style={styles.screen}>
-      <Text style={styles.title}>chat-app</Text>
+    <View style={[styles.screen, { backgroundColor: t.bg }]}>
+      <View style={[styles.logo, { backgroundColor: t.brand }]}>
+        <Text style={styles.logoGlyph}>🔒</Text>
+      </View>
+      <Text style={[styles.title, { color: t.text }]}>Lumin Chat</Text>
+      <Text style={[styles.subtitle, { color: t.subtext }]}>
+        Private, end-to-end encrypted messaging
+      </Text>
 
-      <Text style={styles.label}>Phone number</Text>
+      <Text style={[styles.label, { color: t.subtext }]}>Phone number</Text>
       <View style={styles.phoneRow}>
         <Pressable
-          style={styles.countryButton}
+          style={[styles.countryButton, { backgroundColor: t.surface, borderColor: t.divider }]}
           disabled={busy || codeRequested}
           onPress={() => setPickerOpen(true)}
           accessibilityRole="button"
           accessibilityLabel={`Country: ${country.name}, ${country.dial}`}
         >
-          <Text style={styles.countryButtonText}>
+          <Text style={[styles.countryButtonText, { color: t.text }]}>
             {country.flag} {country.dial} ▾
           </Text>
         </Pressable>
         <TextInput
-          style={styles.numberInput}
+          style={[
+            styles.numberInput,
+            { backgroundColor: t.surface, borderColor: t.divider, color: t.text },
+          ]}
           keyboardType="phone-pad"
           placeholder="9618579123"
+          placeholderTextColor={t.faint}
           value={nationalNumber}
           editable={!busy && !codeRequested}
           onChangeText={setNationalNumber}
@@ -149,41 +163,61 @@ export function SignInScreen({ onRequestOtp, onConfirmOtp }: SignInScreenProps):
 
       {!codeRequested ? (
         <Pressable
-          style={[styles.button, (!e164Valid || busy) && styles.buttonDisabled]}
+          style={[
+            styles.button,
+            { backgroundColor: t.brand },
+            (!e164Valid || busy) && styles.buttonDisabled,
+          ]}
           disabled={!e164Valid || busy}
           onPress={() => void requestCode()}
           accessibilityRole="button"
         >
-          <Text style={styles.buttonText}>Send code</Text>
+          <Text style={[styles.buttonText, { color: t.onBrand }]}>Send code</Text>
         </Pressable>
       ) : (
         <>
-          <Text style={styles.label}>Verification code</Text>
+          <Text style={[styles.label, { color: t.subtext }]}>Verification code</Text>
           <TextInput
-            style={styles.input}
+            style={[
+              styles.input,
+              { backgroundColor: t.surface, borderColor: t.divider, color: t.text },
+            ]}
             keyboardType="number-pad"
             placeholder="123456"
+            placeholderTextColor={t.faint}
             value={code}
             editable={!busy}
             onChangeText={setCode}
             accessibilityLabel="Verification code"
           />
           <Pressable
-            style={[styles.button, (!codeValid || busy) && styles.buttonDisabled]}
+            style={[
+              styles.button,
+              { backgroundColor: t.brand },
+              (!codeValid || busy) && styles.buttonDisabled,
+            ]}
             disabled={!codeValid || busy}
             onPress={() => void confirmCode()}
             accessibilityRole="button"
           >
-            <Text style={styles.buttonText}>Verify &amp; sign in</Text>
+            <Text style={[styles.buttonText, { color: t.onBrand }]}>Verify &amp; sign in</Text>
           </Pressable>
         </>
       )}
 
       {error !== null && (
-        <Text style={styles.error} accessibilityRole="alert">
+        <Text style={[styles.error, { color: t.danger }]} accessibilityRole="alert">
           {error}
         </Text>
       )}
+
+      <View style={[styles.privacyCard, { backgroundColor: t.brandFill }]}>
+        <Text style={[styles.privacyTitle, { color: t.secure }]}>🔒 End-to-end encrypted</Text>
+        <Text style={[styles.privacyBody, { color: t.subtext }]}>
+          Messages are encrypted on your device. We can't read them — and we don't store
+          them.
+        </Text>
+      </View>
 
       <Modal
         visible={pickerOpen}
@@ -192,24 +226,24 @@ export function SignInScreen({ onRequestOtp, onConfirmOtp }: SignInScreenProps):
         onRequestClose={() => setPickerOpen(false)}
       >
         <Pressable style={styles.modalBackdrop} onPress={() => setPickerOpen(false)}>
-          <View style={styles.modalSheet}>
-            <Text style={styles.modalTitle}>Select country</Text>
+          <View style={[styles.modalSheet, { backgroundColor: t.surface }]}>
+            <Text style={[styles.modalTitle, { color: t.text }]}>Select country</Text>
             <FlatList
               data={COUNTRIES}
               keyExtractor={(item) => item.iso}
               renderItem={({ item }) => (
                 <Pressable
-                  style={styles.countryRow}
+                  style={[styles.countryRow, { borderBottomColor: t.divider }]}
                   onPress={() => {
                     setCountry(item);
                     setPickerOpen(false);
                   }}
                   accessibilityRole="button"
                 >
-                  <Text style={styles.countryRowText}>
+                  <Text style={[styles.countryRowText, { color: t.text }]}>
                     {item.flag}  {item.name}
                   </Text>
-                  <Text style={styles.countryRowDial}>{item.dial}</Text>
+                  <Text style={[styles.countryRowDial, { color: t.subtext }]}>{item.dial}</Text>
                 </Pressable>
               )}
             />
@@ -221,49 +255,58 @@ export function SignInScreen({ onRequestOtp, onConfirmOtp }: SignInScreenProps):
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: '#fff', padding: 24, justifyContent: 'center' },
-  title: { fontSize: 28, fontWeight: '700', textAlign: 'center', marginBottom: 24 },
+  screen: { flex: 1, padding: 24, justifyContent: 'center' },
+  logo: {
+    width: 84,
+    height: 84,
+    borderRadius: 42,
+    alignSelf: 'center',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 18,
+  },
+  logoGlyph: { fontSize: 36 },
+  title: { fontSize: 28, fontWeight: '800', textAlign: 'center' },
+  subtitle: { fontSize: 14, textAlign: 'center', marginTop: 6, marginBottom: 28 },
   label: { fontSize: 13, fontWeight: '600', marginBottom: 6, marginTop: 12 },
   phoneRow: { flexDirection: 'row', gap: 8 },
   countryButton: {
     paddingHorizontal: 12,
     paddingVertical: 10,
-    borderRadius: 8,
+    borderRadius: 13,
     borderWidth: 1,
-    borderColor: '#cbd5e1',
     justifyContent: 'center',
   },
   countryButtonText: { fontSize: 15, fontWeight: '600' },
   numberInput: {
     flex: 1,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 13,
     borderWidth: 1,
-    borderColor: '#cbd5e1',
     fontSize: 15,
   },
   input: {
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 13,
     borderWidth: 1,
-    borderColor: '#cbd5e1',
     fontSize: 15,
   },
   button: {
-    marginTop: 16,
-    paddingVertical: 12,
-    borderRadius: 8,
-    backgroundColor: '#2563eb',
+    marginTop: 18,
+    paddingVertical: 14,
+    borderRadius: 14,
     alignItems: 'center',
   },
-  buttonDisabled: { backgroundColor: '#93c5fd' },
-  buttonText: { color: '#fff', fontWeight: '600', fontSize: 15 },
-  error: { color: '#b91c1c', fontSize: 13, marginTop: 16 },
+  buttonDisabled: { opacity: 0.45 },
+  buttonText: { fontWeight: '700', fontSize: 16 },
+  error: { fontSize: 13, marginTop: 16 },
+  privacyCard: { borderRadius: 16, padding: 16, marginTop: 28 },
+  privacyTitle: { fontSize: 13, fontWeight: '700' },
+  privacyBody: { fontSize: 12, marginTop: 6, lineHeight: 17 },
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
   modalSheet: {
-    backgroundColor: '#fff',
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
     paddingHorizontal: 20,
@@ -278,8 +321,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 14,
     borderBottomWidth: 1,
-    borderBottomColor: '#f1f5f9',
   },
   countryRowText: { fontSize: 15 },
-  countryRowDial: { fontSize: 15, color: '#64748b' },
+  countryRowDial: { fontSize: 15 },
 });
