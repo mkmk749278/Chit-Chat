@@ -169,13 +169,62 @@ jobs:
           rm -f apps/mobile/android/app/google-services.json
 
   # ---------------------------------------------------------------------------
+  # Publish the signed APK + AAB to the repo's Releases page so they have a
+  # stable download link (instead of digging into per-run Actions artifacts).
+  # Uses a single rolling pre-release tag (`android-latest`): each successful
+  # build updates that release in place and replaces its assets, so the URL
+  #   github.com/<owner>/<repo>/releases/tag/android-latest
+  # always points at the newest build. It is marked a pre-release because the
+  # app version is still 0.0.0 (pre-1.0). Switch to tag-driven versioned
+  # releases (e.g. push `v1.0.0`) when you cut a real version.
+  # ---------------------------------------------------------------------------
+  release:
+    name: Publish APK + AAB to Releases
+    runs-on: ubuntu-latest
+    needs: build-android
+    # Least privilege: only this job may write releases/tags; the rest stay read-only.
+    permissions:
+      contents: write
+    steps:
+      - name: Download APK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: app-release-apk
+          path: release-assets
+
+      - name: Download AAB artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: app-release-aab
+          path: release-assets
+
+      - name: Publish rolling pre-release (APK + AAB)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-latest
+          name: Lumin Chat (Android) — latest build
+          prerelease: true
+          # Don't flag this pre-release as the repo's "Latest release".
+          make_latest: false
+          body: |
+            Automated Lumin Chat Android build.
+
+            - **APK** (`app-release.apk`) — sideload to a device to test.
+            - **AAB** (`app-release.aab`) — upload to the Google Play Console.
+
+            Built from commit `${{ github.sha }}` (run `${{ github.run_id }}`).
+          files: |
+            release-assets/*.apk
+            release-assets/*.aab
+
+  # ---------------------------------------------------------------------------
   # Failure notification: surfaces a clear failure marker whenever the build
   # fails ("notify on failure", design §14.2).
   # ---------------------------------------------------------------------------
   notify-failure:
     name: Notify on failure
     runs-on: ubuntu-latest
-    needs: build-android
+    needs: [build-android, release]
     if: failure()
     steps:
       - name: Report failure
