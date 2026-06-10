@@ -206,3 +206,15 @@ export * from './messaging';
  * library (the platform adapter binds the engine at runtime).
  */
 export * from './in-memory-signal-store';
+
+/**
+ * Pure-TypeScript {@link LibsignalEngine} + {@link LibsignalKeyGen}
+ * (`@privacyresearch/libsignal-protocol-typescript`) — the SHIPPABLE runtime binding of
+ * the crypto ports for BOTH the web and mobile clients. Depends only on pure-JS packages
+ * (no native addon), so unlike `libsignal-engine.node` it is safe to bundle into Metro /
+ * webbundles and is exported here for the platform controllers to wire. One implementation
+ * for all clients keeps ciphertext wire-compatible across web and mobile (see
+ * `docs/messaging-runtime-binding.md`). Hosts must provide WebCrypto (`crypto.subtle` +
+ * `getRandomValues`) and `Buffer`; React Native injects these via polyfills at app entry.
+ */
+export * from './libsignal-puretsignal';

@@ -16,7 +16,7 @@
 
 import { StatusBar } from 'expo-status-bar';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { SafeAreaView, StyleSheet, useColorScheme } from 'react-native';
+import { Alert, SafeAreaView, StyleSheet, useColorScheme } from 'react-native';
 
 import {
   initialConversationState,
@@ -112,18 +112,45 @@ export default function App(): React.JSX.Element {
     [controller],
   );
 
-  const startChat = useCallback((id: string, name: string) => {
-    setConversations((prev) =>
-      prev.some((c) => c.id === id)
-        ? prev
-        : [
-            { id, name, state: initialConversationState('mobile'), lastAt: Date.now() },
-            ...prev,
-          ],
-    );
-    setOpenChatId(id);
-    setTab('chats');
-  }, []);
+  // Open a conversation: tell the controller which peer subsequent sends target, then show it.
+  const openChat = useCallback(
+    (id: string) => {
+      controller.openConversation(id);
+      setOpenChatId(id);
+    },
+    [controller],
+  );
+
+  // Start a chat from the Contacts tab. A tap on an existing peer reopens it; a phone number
+  // is resolved to a recipient UID via the backend directory, and the conversation is keyed
+  // by that UID (so sends/receives address the right device).
+  const startChat = useCallback(
+    async (phoneOrId: string, name: string) => {
+      const existing = conversations.find((c) => c.id === phoneOrId);
+      if (existing !== undefined) {
+        openChat(existing.id);
+        setTab('chats');
+        return;
+      }
+      const result = await controller.resolveContact(phoneOrId.replace(/\s+/g, ''));
+      if (!result.ok) {
+        Alert.alert('Cannot start chat', result.error);
+        return;
+      }
+      const uid = result.uid;
+      setConversations((prev) =>
+        prev.some((c) => c.id === uid)
+          ? prev
+          : [
+              { id: uid, name, state: initialConversationState('mobile'), lastAt: Date.now() },
+              ...prev,
+            ],
+      );
+      openChat(uid);
+      setTab('chats');
+    },
+    [conversations, controller, openChat],
+  );
 
   const onComposerChange = useCallback((text: string) => {
     const target = openChatRef.current;
@@ -195,7 +222,7 @@ export default function App(): React.JSX.Element {
           {tab === 'chats' && (
             <ChatsListScreen
               chats={summaries}
-              onOpenChat={setOpenChatId}
+              onOpenChat={openChat}
               onNewChat={() => setTab('contacts')}
             />
           )}

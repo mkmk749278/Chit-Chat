@@ -29,7 +29,12 @@ export class UserEntity implements User {
   @Column({ type: 'text', name: 'firebase_uid' })
   firebaseUid: string;
 
-  /** Nullable; never the discovery surface (hashed elsewhere). */
+  /**
+   * Phone number captured from the user's verified Firebase token at device registration
+   * (E.164). Nullable when the token carried no phone claim. Used by the directory surface
+   * (`POST /api/directory/resolve`) for phone→UID contact discovery — an authenticated,
+   * rate-limited lookup (see DirectoryService for the enumeration tradeoff).
+   */
   @Column({ type: 'text', name: 'phone_number', nullable: true })
   phoneNumber?: string;
 

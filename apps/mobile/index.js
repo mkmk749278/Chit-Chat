@@ -1,3 +1,7 @@
+// Crypto runtime polyfills (CSPRNG, WebCrypto subtle, Buffer) MUST load before any
+// @chat-app/crypto code runs — keep this import first.
+import './src/polyfills';
+
 import { registerRootComponent } from 'expo';
 
 import App from './App';

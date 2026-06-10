@@ -50,3 +50,20 @@ export interface RegisterDeviceResponse {
   /** Server-issued device id, used for WebSocket identification in Phase 1 (§15.3 step 5). */
   deviceId: string;
 }
+
+/**
+ * Request payload for resolving a phone number to a registered user's Firebase UID
+ * (`POST /api/directory/resolve`). The phone rides the request BODY (never the URL) so it
+ * is not captured in access logs; the lookup is authenticated and rate-limited. This is
+ * the contact-discovery surface that lets a client start a chat from a phone number.
+ */
+export interface ResolvePhoneRequest {
+  /** Recipient phone number in E.164 form (e.g. `+919618579123`). */
+  phoneNumber: string;
+}
+
+/** Successful phone-resolution response — the registered user's canonical Firebase UID. */
+export interface ResolvePhoneResponse {
+  /** Canonical Firebase UID of the user registered with the requested phone number. */
+  uid: string;
+}

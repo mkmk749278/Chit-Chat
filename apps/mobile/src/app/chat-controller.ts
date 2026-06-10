@@ -1,29 +1,59 @@
 /**
  * `ChatController` — the seam between the mobile UI screens and the shared crypto core.
  *
- * Mirrors the web controller: the screens (`SignInScreen` + `ConversationScreen`) talk
- * to authentication and messaging ONLY through this narrow interface. Task 6.9 (mobile
- * bootstrap) provides the real controller, wiring the `@react-native-firebase/auth`
- * adapter (task 6.1), the SQLCipher `KeyStore` (6.2), the native libsignal engine, the
- * RN `WebSocketTransport` / `HttpClient` adapters (6.4, 6.5), and the shared `Messaging`
- * orchestrator (2.27) behind this same surface — so the screens need no change when the
- * real transport/crypto land.
+ * The screens (`SignInScreen`, `ChatsListScreen`, `ContactsScreen`, `ConversationScreen`)
+ * talk to authentication and messaging ONLY through this narrow interface, so the real
+ * transport/crypto wiring lands here without changing the screens.
  *
- * {@link createMobileController} is the production controller for the parts that do NOT
- * require the native crypto engine: it performs REAL Firebase phone authentication via
- * the shared {@link AuthService} policy over the `@react-native-firebase/auth` adapter
- * (tasks 6.1 + 1.x). End-to-end MESSAGING still depends on the native libsignal
- * `SessionManager` + the SQLCipher `KeyStore` (tasks 6.2 + the native engine); until
- * those land, `send()` represents a message honestly — appended then marked `failed`
- * (text retained), never transmitted and never fake-encrypted.
+ * {@link createMobileController} is the PRODUCTION controller. It performs real Firebase
+ * phone authentication (shared {@link AuthService} over the `@react-native-firebase/auth`
+ * adapter) and, on sign-in, bootstraps the full encrypted-messaging stack:
  *
- * {@link createDemoController} remains an in-memory, transport-less stand-in (no real
- * auth) for local UI iteration.
+ *   IdentityManager (pure-TS keygen) → DeviceRegistrar (POST /api/devices/register) →
+ *   SessionManager (pure-TS libsignal engine over a SignalProtocolStore) →
+ *   Messaging (claim → establish → encrypt → relay → ack / inbound decrypt) over a
+ *   RealtimeClient (wss://ws.luminchat.app).
+ *
+ * Contact discovery resolves a phone number to a recipient UID via the backend directory
+ * (`POST /api/directory/resolve`); a conversation is keyed by that UID.
+ *
+ * Storage note (v1): identity/sessions/messages live in an in-memory KeyStore, so they do
+ * not survive an app restart (the device re-registers on next launch). A persistent,
+ * encrypted-at-rest SQLCipher KeyStore is a drop-in replacement behind the same port.
+ *
+ * Routing note (v1): conversation events from the orchestrator are not yet tagged with the
+ * peer, so the container applies them to the OPEN conversation. This is correct for the
+ * common case (chatting with one peer with that chat open); per-conversation tagging is a
+ * follow-up.
+ *
+ * {@link createDemoController} remains an in-memory, transport-less stand-in (no real auth)
+ * for local UI iteration.
  */
 
-import { AuthService, type ConversationEvent } from '@chat-app/crypto';
+import {
+  AuthService,
+  BackoffPolicy,
+  createEnvelopeCodec,
+  createMessaging,
+  createPureTsLibsignalEngine,
+  createPureTsLibsignalKeyGen,
+  createSessionManager,
+  DefaultDeviceRegistrar,
+  DefaultIdentityManager,
+  KeyStoreSequenceAllocator,
+  RealtimeClient,
+  type ConversationEvent,
+  type KeyStore,
+  type Messaging,
+} from '@chat-app/crypto';
 
 import { FirebaseAuthAdapter } from '../auth';
+import { API_BASE_URL, REGISTER_URL, WS_URL } from '../api/api-config';
+import { createDirectoryClient, createPreKeyClaimClient, type DirectoryClient } from '../api/api-clients';
+import { createInMemoryKeyStore } from '../crypto/in-memory-key-store';
+import { signalStoreFromIdentity } from '../crypto/signal-store';
+import { createReactNativeHttpClient } from '../transport/http-client';
+import { createReactNativeWebSocketTransport } from '../transport/web-socket-transport';
 
 export type ControllerEvent = ConversationEvent;
 
@@ -33,67 +63,174 @@ export interface RequestOtpResult {
   error?: string;
 }
 
+/** Result of resolving a phone number to a chat-able recipient. */
+export type ResolveContactResult =
+  | { ok: true; uid: string }
+  | { ok: false; error: string };
+
 export interface ChatController {
   requestOtp(e164: string): Promise<RequestOtpResult>;
   confirmOtp(code: string): Promise<string | null>;
+  /** Resolve an E.164 phone number to a recipient UID via the backend directory. */
+  resolveContact(e164: string): Promise<ResolveContactResult>;
+  /** Set the conversation that subsequent {@link ChatController.send} calls target. */
+  openConversation(recipientUid: string): void;
+  /** Send `plaintext` to the currently-open conversation (see {@link openConversation}). */
   send(plaintext: string): Promise<void>;
   subscribe(listener: (event: ControllerEvent) => void): () => void;
   /** Client-initiated sign-out (clears the auth session; Requirement 4.8). */
   signOut(): Promise<void>;
 }
 
-/**
- * Production controller: REAL Firebase phone auth (via the shared {@link AuthService}
- * over the mobile {@link FirebaseAuthAdapter}). Messaging is gated on the native engine
- * (see file header) and surfaces an honest `failed` status rather than faking delivery.
- *
- * For phone auth to succeed on a device, the app's signing SHA-1/SHA-256 fingerprints
- * must be registered on the Firebase Android app, Phone sign-in must be enabled, and the
- * baked `google-services.json` must match the project.
- */
+/** A short, collision-resistant client message id (no external uuid dependency). */
+const newId = (): string => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
 export function createMobileController(): ChatController {
   const provider = new FirebaseAuthAdapter();
   const authService = new AuthService(provider);
+  const httpClient = createReactNativeHttpClient();
+  const directory: DirectoryClient = createDirectoryClient(
+    httpClient,
+    () => authService.getCurrentToken(),
+    API_BASE_URL,
+  );
+
   const listeners = new Set<(event: ControllerEvent) => void>();
   const emit = (event: ControllerEvent): void => {
     for (const listener of listeners) {
       listener(event);
     }
   };
-  let outboundSeq = 0;
+
+  // Live messaging stack, created on sign-in and torn down on sign-out.
+  let keyStore: KeyStore | null = null;
+  let messaging: Messaging | null = null;
+  let realtime: RealtimeClient | null = null;
+  let activeRecipient: string | null = null;
+
+  /**
+   * Bring up the encrypted-messaging stack for a signed-in user: generate/load the device
+   * identity, register the device, then wire SessionManager + Messaging over the realtime
+   * client and connect. Failures here are surfaced as a disconnected status and degraded
+   * sends rather than thrown — the user stays signed in.
+   */
+  async function bootstrap(uid: string): Promise<void> {
+    const store = createInMemoryKeyStore();
+    keyStore = store;
+
+    const identityManager = new DefaultIdentityManager(store, createPureTsLibsignalKeyGen());
+    await identityManager.ensureIdentity(uid);
+
+    const registrar = new DefaultDeviceRegistrar(
+      { httpClient, keyStore: store, identityManager, auth: authService, backoff: new BackoffPolicy() },
+      { registerUrl: REGISTER_URL },
+    );
+    const registration = await registrar.ensureRegistered();
+    if (registration.status !== 'registered') {
+      // Without a deviceId the client cannot be addressed; surface a disconnected status so
+      // the UI shows the connection issue. Sends will fail honestly until re-registered.
+      emit({ type: 'connection-changed', connection: 'disconnected' });
+      return;
+    }
+
+    const record = await store.loadIdentity(uid);
+    if (record === null) {
+      emit({ type: 'connection-changed', connection: 'disconnected' });
+      return;
+    }
+    const signalStore = signalStoreFromIdentity(record);
+
+    realtime = new RealtimeClient({
+      url: WS_URL,
+      transport: createReactNativeWebSocketTransport(),
+      auth: authService,
+    });
+
+    messaging = createMessaging(
+      {
+        realtime,
+        sessions: createSessionManager(signalStore, createPureTsLibsignalEngine()),
+        sequence: new KeyStoreSequenceAllocator(store),
+        codec: createEnvelopeCodec(),
+        keyClaimer: createPreKeyClaimClient(httpClient, () => authService.getCurrentToken(), API_BASE_URL),
+        sender: {
+          resolveSender: async () => {
+            const deviceId = await store.loadDeviceId();
+            const senderUid = authService.getCurrentUid();
+            return deviceId !== null && senderUid !== null
+              ? { uid: senderUid, deviceId }
+              : null;
+          },
+        },
+        store,
+      },
+      { generateId: newId },
+    );
+
+    messaging.onConversationUpdate(emit);
+    realtime.onStatus((status) => emit({ type: 'connection-changed', connection: status }));
+    realtime.connect();
+  }
+
+  function teardown(): void {
+    messaging?.dispose();
+    realtime?.disconnect();
+    keyStore?.destroy();
+    messaging = null;
+    realtime = null;
+    keyStore = null;
+    activeRecipient = null;
+  }
 
   return {
     async requestOtp(e164: string): Promise<RequestOtpResult> {
       const result = await authService.requestOtp(e164);
       return { ok: result.ok, error: result.error };
     },
+
     async confirmOtp(code: string): Promise<string | null> {
       try {
         const { uid } = await authService.confirmOtp(code);
+        // Bring up messaging in the background; sign-in itself succeeds immediately so the
+        // UI can advance. Connection status flows back through subscription events.
+        void bootstrap(uid).catch(() => {
+          emit({ type: 'connection-changed', connection: 'disconnected' });
+        });
         return uid;
       } catch {
-        // Invalid/expired code (or provider error). The Sign_In_Screen keeps the
-        // entered phone number and shows a retry affordance (Requirement 1.5).
         return null;
       }
     },
-    async send(plaintext: string): Promise<void> {
-      // Honest stand-in until the native libsignal SessionManager + SQLCipher KeyStore
-      // are wired: show the message, then immediately mark it failed (text retained).
-      // Nothing is transmitted and nothing is fake-encrypted.
-      const seq = (outboundSeq += 1);
-      const id = `out-${seq}`;
-      emit({
-        type: 'message-appended',
-        message: { id, seq, direction: 'out', text: plaintext, status: 'sending' },
-      });
-      emit({ type: 'status-updated', id, status: 'failed' });
+
+    async resolveContact(e164: string): Promise<ResolveContactResult> {
+      try {
+        const uid = await directory.resolve(e164);
+        return uid !== null
+          ? { ok: true, uid }
+          : { ok: false, error: 'No Lumin user is registered with that phone number.' };
+      } catch {
+        return { ok: false, error: 'Could not reach the directory. Check your connection.' };
+      }
     },
+
+    openConversation(recipientUid: string): void {
+      activeRecipient = recipientUid;
+    },
+
+    async send(plaintext: string): Promise<void> {
+      if (messaging === null || activeRecipient === null) {
+        return;
+      }
+      await messaging.send(activeRecipient, plaintext);
+    },
+
     subscribe(listener: (event: ControllerEvent) => void): () => void {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
+
     async signOut(): Promise<void> {
+      teardown();
       await authService.signOut();
     },
   };
@@ -108,9 +245,15 @@ export function createDemoController(): ChatController {
     async confirmOtp(code: string): Promise<string | null> {
       return /^\d{6}$/.test(code) ? `demo:${code}` : null;
     },
+    async resolveContact(e164: string): Promise<ResolveContactResult> {
+      return { ok: true, uid: `demo:${e164}` };
+    },
+    openConversation(): void {
+      // No transport in the demo controller.
+    },
     async send(): Promise<void> {
       // No transport in the demo controller; the container's optimistic append is the
-      // only visible effect. Real send/ack/receive lands with task 6.9.
+      // only visible effect.
     },
     subscribe(listener: (event: ControllerEvent) => void): () => void {
       listeners.add(listener);

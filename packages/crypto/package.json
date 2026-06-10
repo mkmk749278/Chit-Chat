@@ -16,6 +16,7 @@
   ],
   "dependencies": {
     "@chat-app/types": "0.0.0",
+    "@privacyresearch/libsignal-protocol-typescript": "^0.0.16",
     "@signalapp/libsignal-client": "^0.47.0"
   },
   "scripts": {
