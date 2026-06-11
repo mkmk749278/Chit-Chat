@@ -1,5 +1,5 @@
 /**
- * Bottom tab bar for the Lumin shell (design/mockups: Chats / Contacts / Settings).
+ * Bottom tab bar for the Lumin shell (UX directive: Chats / Calls / Settings).
  *
  * Deliberately state-driven (no React Navigation): a 3-tab shell does not justify the
  * two extra native modules React Navigation requires (react-native-screens,
@@ -13,11 +13,13 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { useTheme } from './theme';
 
-export type Tab = 'chats' | 'contacts' | 'settings';
+export type Tab = 'chats' | 'calls' | 'settings';
 
+// UX directive navigation: Chats / Calls / Settings (max 4 tabs; new chat is an action on
+// the Chats screen, not a destination).
 const TABS: ReadonlyArray<{ key: Tab; icon: string; label: string }> = [
   { key: 'chats', icon: '💬', label: 'Chats' },
-  { key: 'contacts', icon: '👤', label: 'Contacts' },
+  { key: 'calls', icon: '📞', label: 'Calls' },
   { key: 'settings', icon: '⚙️', label: 'Settings' },
 ];
 

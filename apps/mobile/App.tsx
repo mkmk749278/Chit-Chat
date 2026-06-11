@@ -1,11 +1,11 @@
 /**
  * Lumin Chat — mobile app shell (design/mockups; Phase 1 Client Component 7: UI).
  *
- * Container that composes the Lumin 3-tab shell (Chats / Contacts / Settings) around the
- * shared crypto core. Navigation is state-driven (see TabBar.tsx for why React Navigation
- * is deliberately not used at this size): an auth gate shows `SignInScreen` until the user
- * signs in; afterwards the tab shell renders, and opening a chat pushes the
- * `ConversationScreen` over it.
+ * Container that composes the Lumin shell (UX directive: Chats / Calls / Settings) around
+ * the shared crypto core. Navigation is state-driven (see TabBar.tsx for why React
+ * Navigation is deliberately not used at this size): an auth gate shows `SignInScreen`,
+ * then a one-time onboarding step (display name + optional PIN), then the tab shell;
+ * opening a chat or "new chat" pushes the corresponding screen over it.
  *
  * Each conversation owns a `ConversationState` driven by the shared `reduce` from
  * `@chat-app/crypto` (one render path across web and mobile, Requirement 6.7). User
@@ -29,9 +29,12 @@ import {
   type ChatController,
   type SetupState,
 } from './src/app/chat-controller';
+import { CallsScreen } from './src/ui/CallsScreen';
 import { ChatsListScreen, type ChatSummary } from './src/ui/ChatsListScreen';
-import { ContactsScreen, type ContactRow } from './src/ui/ContactsScreen';
 import { ConversationScreen } from './src/ui/ConversationScreen';
+import { animateNext } from './src/ui/motion';
+import { NewChatScreen, type ContactRow } from './src/ui/NewChatScreen';
+import { OnboardingScreen } from './src/ui/OnboardingScreen';
 import { SettingsScreen } from './src/ui/SettingsScreen';
 import { SignInScreen } from './src/ui/SignInScreen';
 import { TabBar, type Tab } from './src/ui/TabBar';
@@ -78,7 +81,12 @@ export default function App(): React.JSX.Element {
 
   const [uid, setUid] = useState<string | null>(null);
   const [phone, setPhone] = useState<string>('');
+  // Onboarding result (UX directive: phone → display name → optional PIN). v1 holds these
+  // in-session; durable profile/PIN storage lands with the backend wiring pass.
+  const [displayName, setDisplayName] = useState<string | null>(null);
+  const [, setAppPin] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>('chats');
+  const [newChatOpen, setNewChatOpen] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [openChatId, setOpenChatId] = useState<string | null>(null);
   const [setup, setSetup] = useState<SetupState>({ phase: 'idle' });
@@ -95,6 +103,8 @@ export default function App(): React.JSX.Element {
         if (target === null) {
           return;
         }
+        // Smooth bubble/list transitions (UX directive motion system, 150–300ms).
+        animateNext();
         setConversations((prev) =>
           prev.map((c) =>
             c.id === target ? { ...c, state: reduce(c.state, event), lastAt: Date.now() } : c,
@@ -124,20 +134,21 @@ export default function App(): React.JSX.Element {
   const openChat = useCallback(
     (id: string) => {
       controller.openConversation(id);
+      animateNext();
       setOpenChatId(id);
     },
     [controller],
   );
 
-  // Start a chat from the Contacts tab. A tap on an existing peer reopens it; a phone number
-  // is resolved to a recipient UID via the backend directory, and the conversation is keyed
-  // by that UID (so sends/receives address the right device).
+  // Start a chat from the New-chat screen. A tap on an existing peer reopens it; a phone
+  // number is resolved to a recipient UID via the backend directory, and the conversation
+  // is keyed by that UID (so sends/receives address the right device).
   const startChat = useCallback(
     async (phoneOrId: string, name: string) => {
       const existing = conversations.find((c) => c.id === phoneOrId);
       if (existing !== undefined) {
+        setNewChatOpen(false);
         openChat(existing.id);
-        setTab('chats');
         return;
       }
       const result = await controller.resolveContact(phoneOrId.replace(/\s+/g, ''));
@@ -154,8 +165,8 @@ export default function App(): React.JSX.Element {
               ...prev,
             ],
       );
+      setNewChatOpen(false);
       openChat(uid);
-      setTab('chats');
     },
     [conversations, controller, openChat],
   );
@@ -190,12 +201,15 @@ export default function App(): React.JSX.Element {
 
   const signOut = useCallback(() => {
     void controller.signOut();
-    // Session-end hygiene: drop all conversation state with the session.
+    // Session-end hygiene: drop all conversation + profile state with the session.
     setConversations([]);
     setOpenChatId(null);
+    setNewChatOpen(false);
     setTab('chats');
     setUid(null);
     setPhone('');
+    setDisplayName(null);
+    setAppPin(null);
   }, [controller]);
 
   const openConversation = openChatId !== null
@@ -214,32 +228,54 @@ export default function App(): React.JSX.Element {
   const contacts: ContactRow[] = conversations.map((c) => ({ id: c.id, name: c.name }));
 
   return (
-    <SafeAreaView style={[styles.root, { backgroundColor: dark ? '#0C0C12' : '#FBFBFE' }]}>
+    <SafeAreaView style={[styles.root, { backgroundColor: dark ? '#15171C' : '#FAFAF9' }]}>
       {uid === null ? (
         <SignInScreen onRequestOtp={(e164) => controller.requestOtp(e164)} onConfirmOtp={confirmOtp} />
+      ) : displayName === null ? (
+        <OnboardingScreen
+          onDone={(name, pin) => {
+            animateNext();
+            setDisplayName(name);
+            setAppPin(pin);
+          }}
+        />
       ) : openConversation !== null ? (
         <ConversationScreen
           state={openConversation.state}
           peerName={openConversation.name}
           onComposerChange={onComposerChange}
           onSend={onSend}
-          onBack={() => setOpenChatId(null)}
+          onBack={() => {
+            animateNext();
+            setOpenChatId(null);
+          }}
+        />
+      ) : newChatOpen ? (
+        <NewChatScreen
+          contacts={contacts}
+          onStartChat={(id, name) => void startChat(id, name)}
+          onBack={() => {
+            animateNext();
+            setNewChatOpen(false);
+          }}
         />
       ) : (
         <>
           {setup.phase === 'registering' && (
-            <View style={[styles.banner, { backgroundColor: '#2A2A3C' }]}>
-              <Text style={styles.bannerText}>🔐 Setting up encryption…</Text>
+            <View style={[styles.banner, { backgroundColor: dark ? '#252932' : '#E9EDF5' }]}>
+              <Text style={[styles.bannerText, { color: dark ? '#ECEEF1' : '#1F2430' }]}>
+                Securing your account…
+              </Text>
             </View>
           )}
           {setup.phase === 'failed' && (
             <Pressable
-              style={[styles.banner, { backgroundColor: '#7A1F2B' }]}
+              style={[styles.banner, { backgroundColor: '#7A2D28' }]}
               onPress={() => void controller.retrySetup()}
               accessibilityRole="button"
             >
-              <Text style={styles.bannerText} numberOfLines={2}>
-                ⚠ Encryption setup failed: {setup.error ?? 'unknown error'}
+              <Text style={[styles.bannerText, { color: '#fff' }]} numberOfLines={2}>
+                Secure setup didn't finish: {setup.error ?? 'unknown error'}
               </Text>
               <Text style={styles.bannerAction}>Tap to retry</Text>
             </Pressable>
@@ -248,13 +284,16 @@ export default function App(): React.JSX.Element {
             <ChatsListScreen
               chats={summaries}
               onOpenChat={openChat}
-              onNewChat={() => setTab('contacts')}
+              onNewChat={() => {
+                animateNext();
+                setNewChatOpen(true);
+              }}
             />
           )}
-          {tab === 'contacts' && <ContactsScreen contacts={contacts} onStartChat={startChat} />}
+          {tab === 'calls' && <CallsScreen />}
           {tab === 'settings' && (
             <SettingsScreen
-              displayName="You"
+              displayName={displayName}
               phone={phone}
               diagnostics={{
                 phase: setup.phase,
@@ -271,7 +310,13 @@ export default function App(): React.JSX.Element {
               onSignOut={signOut}
             />
           )}
-          <TabBar active={tab} onSelect={setTab} />
+          <TabBar
+            active={tab}
+            onSelect={(next) => {
+              animateNext();
+              setTab(next);
+            }}
+          />
         </>
       )}
       <StatusBar style={dark ? 'light' : 'dark'} />
@@ -282,6 +327,6 @@ export default function App(): React.JSX.Element {
 const styles = StyleSheet.create({
   root: { flex: 1 },
   banner: { paddingHorizontal: 16, paddingVertical: 10 },
-  bannerText: { color: '#fff', fontSize: 13, fontWeight: '600' },
+  bannerText: { fontSize: 13, fontWeight: '600' },
   bannerAction: { color: '#fff', fontSize: 12, fontWeight: '700', marginTop: 2, opacity: 0.9 },
 });
