@@ -43,6 +43,12 @@ export interface RegisterDeviceDto {
   oneTimePreKeys: OneTimePreKeyDto[];
   /** Optional human-readable device name (<= 64 chars at the validation layer). */
   deviceName?: string;
+  /**
+   * Optional E.164 phone number the user signed in with. The server stores it for
+   * phone→UID discovery ONLY as a fallback when the verified token carries no phone claim;
+   * a token-provided phone always wins, so this cannot override a server-verified number.
+   */
+  phoneNumber?: string;
 }
 
 /** Successful registration response — the server-issued device id. */

@@ -83,7 +83,8 @@ export type ResolveContactResult =
 
 export interface ChatController {
   requestOtp(e164: string): Promise<RequestOtpResult>;
-  confirmOtp(code: string): Promise<string | null>;
+  /** Confirm the OTP. `e164` is the number the code was sent to (stored as a discovery fallback). */
+  confirmOtp(code: string, e164: string): Promise<string | null>;
   /** Resolve an E.164 phone number to a recipient UID via the backend directory. */
   resolveContact(e164: string): Promise<ResolveContactResult>;
   /** Set the conversation that subsequent {@link ChatController.send} calls target. */
@@ -133,6 +134,7 @@ export function createMobileController(): ChatController {
   let realtime: RealtimeClient | null = null;
   let activeRecipient: string | null = null;
   let currentUid: string | null = null;
+  let currentPhone: string | null = null;
   let deviceId: string | null = null;
 
   // Encryption-setup state, observable by the UI.
@@ -161,7 +163,9 @@ export function createMobileController(): ChatController {
 
     const registrar = new DefaultDeviceRegistrar(
       { httpClient, keyStore: store, identityManager, auth: authService, backoff: new BackoffPolicy() },
-      { registerUrl: REGISTER_URL },
+      // Send the signed-in number so the server can record it for discovery as a fallback
+      // when the token has no phone claim (the server prefers the verified token phone).
+      { registerUrl: REGISTER_URL, ...(currentPhone !== null ? { phoneNumber: currentPhone } : {}) },
     );
     const registration = await registrar.ensureRegistered();
     if (registration.status !== 'registered') {
@@ -241,10 +245,13 @@ export function createMobileController(): ChatController {
       return { ok: result.ok, error: result.error };
     },
 
-    async confirmOtp(code: string): Promise<string | null> {
+    async confirmOtp(code: string, e164: string): Promise<string | null> {
       try {
         const { uid } = await authService.confirmOtp(code);
         currentUid = uid;
+        // Remember the OTP-verified number so registration can send it as a discovery
+        // fallback (used only if the token has no phone claim).
+        currentPhone = e164;
         // Bring up messaging in the background; sign-in itself succeeds immediately so the
         // UI can advance. Setup progress/failure flows back through onSetupChange.
         void runBootstrap(uid);
@@ -326,6 +333,7 @@ export function createMobileController(): ChatController {
       deviceId = null;
       setSetup({ phase: 'idle' });
       currentUid = null;
+      currentPhone = null;
       await authService.signOut();
     },
   };
@@ -337,7 +345,7 @@ export function createDemoController(): ChatController {
     async requestOtp(e164: string): Promise<RequestOtpResult> {
       return { ok: /^\+[1-9]\d{6,14}$/.test(e164) };
     },
-    async confirmOtp(code: string): Promise<string | null> {
+    async confirmOtp(code: string, _e164: string): Promise<string | null> {
       return /^\d{6}$/.test(code) ? `demo:${code}` : null;
     },
     async resolveContact(e164: string): Promise<ResolveContactResult> {

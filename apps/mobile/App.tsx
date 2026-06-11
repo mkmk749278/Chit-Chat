@@ -119,7 +119,7 @@ export default function App(): React.JSX.Element {
 
   const confirmOtp = useCallback(
     async (code: string, e164: string): Promise<boolean> => {
-      const signedInUid = await controller.confirmOtp(code);
+      const signedInUid = await controller.confirmOtp(code, e164);
       if (signedInUid !== null) {
         setUid(signedInUid);
         setPhone(e164);
