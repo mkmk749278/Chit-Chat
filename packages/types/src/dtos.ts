@@ -67,3 +67,18 @@ export interface ResolvePhoneResponse {
   /** Canonical Firebase UID of the user registered with the requested phone number. */
   uid: string;
 }
+
+/**
+ * Diagnostic response for `GET /api/directory/me` — the authenticated caller's own
+ * discovery state, used to pinpoint why a lookup misses.
+ */
+export interface WhoAmIResponse {
+  /** Caller's canonical Firebase UID. */
+  uid: string;
+  /** Phone number present on the caller's verified token, or `null` if the token has none. */
+  tokenPhone: string | null;
+  /** Phone number stored on the caller's user row, or `null` if none was persisted. */
+  storedPhone: string | null;
+  /** Number of devices the caller has registered. */
+  deviceCount: number;
+}

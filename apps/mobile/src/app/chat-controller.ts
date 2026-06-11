@@ -46,6 +46,7 @@ import {
   type KeyStore,
   type Messaging,
 } from '@chat-app/crypto';
+import type { WhoAmIResponse } from '@chat-app/types';
 
 import { FirebaseAuthAdapter } from '../auth';
 import { API_BASE_URL, REGISTER_URL, WS_URL } from '../api/api-config';
@@ -100,6 +101,8 @@ export interface ChatController {
   getDeviceId(): string | null;
   /** The signed-in user's Firebase UID, else `null` (diagnostics). */
   getUid(): string | null;
+  /** Diagnostic: the caller's own discovery state from the server (token vs stored phone). */
+  whoAmI(): Promise<WhoAmIResponse | null>;
   /** Client-initiated sign-out (clears the auth session; Requirement 4.8). */
   signOut(): Promise<void>;
 }
@@ -310,6 +313,14 @@ export function createMobileController(): ChatController {
       return authService.getCurrentUid() ?? currentUid;
     },
 
+    async whoAmI(): Promise<WhoAmIResponse | null> {
+      try {
+        return await directory.whoAmI();
+      } catch {
+        return null;
+      }
+    },
+
     async signOut(): Promise<void> {
       teardown();
       deviceId = null;
@@ -358,6 +369,9 @@ export function createDemoController(): ChatController {
     },
     getUid(): string | null {
       return 'demo-uid';
+    },
+    async whoAmI(): Promise<WhoAmIResponse | null> {
+      return { uid: 'demo-uid', tokenPhone: '+910000000000', storedPhone: '+910000000000', deviceCount: 1 };
     },
     async signOut(): Promise<void> {
       // Demo controller holds no real auth session.

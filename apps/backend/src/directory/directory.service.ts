@@ -53,4 +53,24 @@ export class DirectoryService {
       return { uid: user.firebaseUid };
     });
   }
+
+  /**
+   * Diagnostic: report what the server has on record for the authenticated caller — the
+   * phone number STORED on their `users` row and how many devices they have registered.
+   * Compared against the phone the caller's TOKEN carries (read in the controller), this
+   * pinpoints whether a discovery miss is a token problem, a storage problem, or simply a
+   * not-registered peer. No PII leaves the caller's own account.
+   */
+  async whoAmI(uid: string): Promise<{ storedPhone: string | null; deviceCount: number }> {
+    return this.transactions.runInTransaction(async (manager) => {
+      const user = await manager.findOne(UserEntity, {
+        where: { firebaseUid: uid },
+        relations: { devices: true },
+      });
+      return {
+        storedPhone: user?.phoneNumber ?? null,
+        deviceCount: user?.devices?.length ?? 0,
+      };
+    });
+  }
 }

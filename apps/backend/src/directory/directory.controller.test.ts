@@ -30,15 +30,18 @@ const dto = (phoneNumber: string): ResolvePhoneDto => Object.assign(new ResolveP
 
 function makeController(overrides: {
   resolvePhone?: jest.Mock;
+  whoAmI?: jest.Mock;
   hit?: jest.Mock;
-}): { controller: DirectoryController; resolvePhone: jest.Mock; hit: jest.Mock } {
+}): { controller: DirectoryController; resolvePhone: jest.Mock; whoAmI: jest.Mock; hit: jest.Mock } {
   const resolvePhone = overrides.resolvePhone ?? jest.fn().mockResolvedValue(RESPONSE);
+  const whoAmI =
+    overrides.whoAmI ?? jest.fn().mockResolvedValue({ storedPhone: '+919618579123', deviceCount: 1 });
   const hit = overrides.hit ?? jest.fn().mockResolvedValue({ allowed: true });
   const controller = new DirectoryController(
-    { resolvePhone } as unknown as DirectoryService,
+    { resolvePhone, whoAmI } as unknown as DirectoryService,
     { hit } as unknown as RateLimiterService,
   );
-  return { controller, resolvePhone, hit };
+  return { controller, resolvePhone, whoAmI, hit };
 }
 
 describe('DirectoryController.resolve', () => {
@@ -85,6 +88,38 @@ describe('DirectoryController.resolve', () => {
   it('guards the resolve route with FirebaseAuthGuard (401 for unauthenticated callers)', () => {
     const guards = Reflect.getMetadata('__guards__', DirectoryController.prototype.resolve) as unknown[];
     expect(Array.isArray(guards)).toBe(true);
+    expect(guards).toContain(FirebaseAuthGuard);
+  });
+});
+
+describe('DirectoryController.me (diagnostics)', () => {
+  it('reports the token phone (from AuthContext) alongside the stored phone + device count', async () => {
+    const whoAmI = jest.fn().mockResolvedValue({ storedPhone: '+919618579123', deviceCount: 2 });
+    const { controller } = makeController({ whoAmI });
+
+    const result = await controller.me({ uid: 'caller-uid', phoneNumber: '+919618579123', tokenExp: 9_999_999_999 });
+
+    expect(result).toEqual({
+      uid: 'caller-uid',
+      tokenPhone: '+919618579123',
+      storedPhone: '+919618579123',
+      deviceCount: 2,
+    });
+    expect(whoAmI).toHaveBeenCalledWith('caller-uid');
+  });
+
+  it('reports tokenPhone null when the verified token carries no phone claim', async () => {
+    const whoAmI = jest.fn().mockResolvedValue({ storedPhone: null, deviceCount: 0 });
+    const { controller } = makeController({ whoAmI });
+
+    const result = await controller.me(AUTH); // AUTH has no phoneNumber
+
+    expect(result.tokenPhone).toBeNull();
+    expect(result.storedPhone).toBeNull();
+  });
+
+  it('guards the me route with FirebaseAuthGuard', () => {
+    const guards = Reflect.getMetadata('__guards__', DirectoryController.prototype.me) as unknown[];
     expect(guards).toContain(FirebaseAuthGuard);
   });
 });

@@ -7,7 +7,7 @@
  */
 
 import type { HttpClient, PreKeyClaimClient } from '@chat-app/crypto';
-import type { ClaimedPreKeyBundle, ResolvePhoneResponse } from '@chat-app/types';
+import type { ClaimedPreKeyBundle, ResolvePhoneResponse, WhoAmIResponse } from '@chat-app/types';
 
 /** Per-request timeout for the REST lookups (matches the registration budget, 3.8). */
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -46,6 +46,8 @@ export function createPreKeyClaimClient(
 export interface DirectoryClient {
   /** Resolve a phone number to a UID, or `null` when no registered user owns it / not signed in. */
   resolve(phoneNumber: string): Promise<string | null>;
+  /** Diagnostic: the caller's own discovery state (token vs stored phone, device count). */
+  whoAmI(): Promise<WhoAmIResponse | null>;
 }
 
 /**
@@ -72,6 +74,23 @@ export function createDirectoryClient(
       });
       if (response.status === 200) {
         return (JSON.parse(response.body) as ResolvePhoneResponse).uid;
+      }
+      return null;
+    },
+
+    async whoAmI(): Promise<WhoAmIResponse | null> {
+      const token = getToken();
+      if (token === null) {
+        return null;
+      }
+      const response = await http.send({
+        method: 'GET',
+        url: `${apiBaseUrl}/api/directory/me`,
+        headers: { Authorization: `Bearer ${token}` },
+        timeoutMs: REQUEST_TIMEOUT_MS,
+      });
+      if (response.status === 200) {
+        return JSON.parse(response.body) as WhoAmIResponse;
       }
       return null;
     },

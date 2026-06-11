@@ -24,13 +24,14 @@
 import {
   Body,
   Controller,
+  Get,
   HttpException,
   HttpStatus,
   Logger,
   Post,
   UseGuards,
 } from '@nestjs/common';
-import type { AuthContext, ResolvePhoneResponse } from '@chat-app/types';
+import type { AuthContext, ResolvePhoneResponse, WhoAmIResponse } from '@chat-app/types';
 
 import { Auth, FirebaseAuthGuard } from '../auth';
 import { RateLimiterService } from '../redis';
@@ -84,5 +85,25 @@ export class DirectoryController {
     }
 
     return this.directory.resolvePhone(dto.phoneNumber);
+  }
+
+  /**
+   * Diagnostic: report the caller's own discovery state — the phone the TOKEN carries
+   * (`tokenPhone`, read from the verified {@link AuthContext}), the phone STORED on their
+   * user row (`storedPhone`), and their registered `deviceCount`. Comparing the three
+   * pinpoints a discovery miss: `tokenPhone === null` ⇒ the Firebase token has no phone
+   * claim; `tokenPhone` set but `storedPhone === null` ⇒ a storage problem; both set ⇒ the
+   * lookup/format. Returns only the caller's own data.
+   */
+  @Get('me')
+  @UseGuards(FirebaseAuthGuard)
+  async me(@Auth() auth: AuthContext): Promise<WhoAmIResponse> {
+    const record = await this.directory.whoAmI(auth.uid);
+    return {
+      uid: auth.uid,
+      tokenPhone: auth.phoneNumber ?? null,
+      storedPhone: record.storedPhone,
+      deviceCount: record.deviceCount,
+    };
   }
 }
