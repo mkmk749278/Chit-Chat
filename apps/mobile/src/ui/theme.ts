@@ -43,46 +43,48 @@ export interface Theme {
   brandFill: string;
 }
 
+// UX directive palette: Near White / Charcoal / Slate / Deep Blue / soft accent.
+// Calm and trustworthy — no neon, no hacker aesthetics, no aggressive gradients.
 const light: Theme = {
   scheme: 'light',
-  bg: '#FBFBFE',
+  bg: '#FAFAF9',
   surface: '#FFFFFF',
-  field: '#F2F2F7',
-  divider: '#EFEFF4',
-  text: '#14141B',
-  subtext: '#6B7280',
-  faint: '#9AA0AC',
-  brand: '#6D5EF7',
-  brandSoft: '#9B8CFA',
+  field: '#F1F2F4',
+  divider: '#ECEDEF',
+  text: '#1F2430',
+  subtext: '#5C6470',
+  faint: '#98A0AB',
+  brand: '#2F5FE8',
+  brandSoft: '#5B82EE',
   onBrand: '#FFFFFF',
   bubbleIn: '#FFFFFF',
-  secure: '#177A3B',
-  danger: '#E0463B',
-  dangerSoft: '#FDECEC',
-  noticeText: '#8A6D1A',
-  noticeFill: '#FBF3D9',
-  brandFill: '#F3F1FE',
+  secure: '#2E7D55',
+  danger: '#D4493E',
+  dangerSoft: '#FBEDEC',
+  noticeText: '#5C6470',
+  noticeFill: '#F1F2F4',
+  brandFill: '#EDF2FD',
 };
 
 const dark: Theme = {
   scheme: 'dark',
-  bg: '#0C0C12',
-  surface: '#101019',
-  field: '#1B1B26',
-  divider: '#1E1E2A',
-  text: '#F2F2F7',
-  subtext: '#9CA3AF',
-  faint: '#6B7280',
-  brand: '#7C6CFF',
-  brandSoft: '#A99BFF',
-  onBrand: '#16131F',
-  bubbleIn: '#1C1C28',
-  secure: '#46D38A',
-  danger: '#F87171',
-  dangerSoft: '#2A1414',
-  noticeText: '#E5C16B',
-  noticeFill: '#241F12',
-  brandFill: '#191527',
+  bg: '#15171C',
+  surface: '#1B1E24',
+  field: '#252932',
+  divider: '#272B33',
+  text: '#ECEEF1',
+  subtext: '#9AA2AD',
+  faint: '#646C78',
+  brand: '#3D6BEA',
+  brandSoft: '#7C9BF1',
+  onBrand: '#FFFFFF',
+  bubbleIn: '#23272F',
+  secure: '#5FB98A',
+  danger: '#E0706A',
+  dangerSoft: '#2C1A19',
+  noticeText: '#9AA2AD',
+  noticeFill: '#21242B',
+  brandFill: '#1D2433',
 };
 
 /** Resolve the active theme from the system color scheme. */
@@ -90,8 +92,8 @@ export function useTheme(): Theme {
   return useColorScheme() === 'dark' ? dark : light;
 }
 
-/** Deterministic avatar color for a peer (stable across renders/sessions). */
-const AVATAR_COLORS = ['#10B981', '#F97316', '#3B82F6', '#EC4899', '#8B5CF6', '#14B8A6'];
+/** Deterministic avatar color for a peer (stable across renders/sessions). Muted, calm tones. */
+const AVATAR_COLORS = ['#4A7D6D', '#B07A4F', '#4A6FA8', '#A86487', '#6E6AA8', '#508487'];
 export function avatarColor(seed: string): string {
   let hash = 0;
   for (let i = 0; i < seed.length; i += 1) {

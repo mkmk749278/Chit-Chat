@@ -1,14 +1,14 @@
 /**
- * Chats tab — conversation list (design/mockups screen 02).
+ * Chats tab — conversation list (UX directive: "Simple. Clean. Fast. Familiar.").
  *
- * Presentational: renders chat summaries with avatar, last-message preview (always the
- * encrypted-preview style — plaintext previews are a product decision deferred with
- * notification design), unread badge, and the brand encryption strip. A FAB and the
- * empty state both route to the Contacts tab to start a chat.
+ * Presentational: an instant, Spotlight-style search field over the chat rows (filters as
+ * you type, no separate screen), then avatar / preview / time / unread rows. No privacy
+ * controls are visible here (directive: security stays invisible on the list); the FAB and
+ * the empty state route to the New-chat screen.
  */
 
-import React from 'react';
-import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useState } from 'react';
+import { FlatList, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { avatarColor, initials, useTheme } from './theme';
 
@@ -35,6 +35,11 @@ export function ChatsListScreen({
   onNewChat: () => void;
 }): React.JSX.Element {
   const t = useTheme();
+  const [query, setQuery] = useState('');
+  const trimmed = query.trim().toLowerCase();
+  const visible =
+    trimmed.length === 0 ? chats : chats.filter((c) => c.name.toLowerCase().includes(trimmed));
+
   return (
     <View style={[styles.screen, { backgroundColor: t.bg }]}>
       <View style={styles.header}>
@@ -49,14 +54,19 @@ export function ChatsListScreen({
         </Pressable>
       </View>
 
-      <View style={[styles.strip, { backgroundColor: t.brandFill }]}>
-        <Text style={[styles.stripText, { color: t.brandSoft }]}>
-          🔒 Your chats are end-to-end encrypted
-        </Text>
+      <View style={[styles.search, { backgroundColor: t.field }]}>
+        <TextInput
+          style={[styles.searchInput, { color: t.text }]}
+          placeholder="Search"
+          placeholderTextColor={t.faint}
+          value={query}
+          onChangeText={setQuery}
+          accessibilityLabel="Search chats"
+        />
       </View>
 
       <FlatList
-        data={chats}
+        data={visible}
         keyExtractor={(c) => c.id}
         renderItem={({ item }) => (
           <Pressable
@@ -91,9 +101,13 @@ export function ChatsListScreen({
         ListEmptyComponent={
           <View style={styles.empty}>
             <Text style={styles.emptyIcon}>💬</Text>
-            <Text style={[styles.emptyTitle, { color: t.text }]}>No chats yet</Text>
+            <Text style={[styles.emptyTitle, { color: t.text }]}>
+              {trimmed.length > 0 ? 'No matches' : 'No chats yet'}
+            </Text>
             <Text style={[styles.emptyBody, { color: t.subtext }]}>
-              Start a private conversation from the Contacts tab.
+              {trimmed.length > 0
+                ? 'Try a different name.'
+                : 'Tap + to start a private conversation.'}
             </Text>
           </View>
         }
@@ -130,14 +144,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   headerButtonText: { fontSize: 17, fontWeight: '700' },
-  strip: {
+  search: {
     marginHorizontal: 20,
-    marginBottom: 8,
-    borderRadius: 10,
-    paddingVertical: 8,
-    paddingHorizontal: 14,
+    marginBottom: 10,
+    borderRadius: 12,
+    paddingHorizontal: 6,
   },
-  stripText: { fontSize: 12 },
+  searchInput: { paddingHorizontal: 12, paddingVertical: 10, fontSize: 15 },
   row: {
     flexDirection: 'row',
     alignItems: 'center',

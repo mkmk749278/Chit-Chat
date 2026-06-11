@@ -58,8 +58,8 @@ export function ConversationScreen({
           <Text style={[styles.peerName, { color: t.text }]} numberOfLines={1}>
             {peerName}
           </Text>
-          <Text style={[styles.headerStatus, { color: connected ? t.secure : t.danger }]}>
-            {connected ? 'end-to-end encrypted · online' : 'end-to-end encrypted · connecting…'}
+          <Text style={[styles.headerStatus, { color: connected ? t.secure : t.faint }]}>
+            {connected ? 'Encrypted · online' : 'Connecting…'}
           </Text>
         </View>
       </View>
@@ -71,12 +71,11 @@ export function ConversationScreen({
         keyExtractor={(m) => `${m.direction}:${m.seq}`}
         renderItem={({ item }) => <Bubble message={item} theme={t} />}
         ListHeaderComponent={
-          <View style={[styles.notice, { backgroundColor: t.noticeFill }]}>
-            <Text style={[styles.noticeText, { color: t.noticeText }]}>
-              🔒 Messages are end-to-end encrypted. No one outside this chat can read them,
-              not even Lumin.
-            </Text>
-          </View>
+          // One quiet reassurance line, then messages own the screen (UX directive:
+          // security is felt, not displayed — no amber warning boxes).
+          <Text style={[styles.notice, { color: t.faint }]}>
+            🔒 Messages are end-to-end encrypted
+          </Text>
         }
       />
 
@@ -152,10 +151,9 @@ const styles = StyleSheet.create({
   headerStatus: { fontSize: 11, marginTop: 2 },
   list: { flex: 1 },
   listContent: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8 },
-  notice: { borderRadius: 12, paddingVertical: 8, paddingHorizontal: 14, marginBottom: 12, alignSelf: 'center' },
-  noticeText: { fontSize: 10.5, textAlign: 'center' },
+  notice: { fontSize: 11, textAlign: 'center', marginBottom: 14, marginTop: 4 },
   bubbleWrap: { maxWidth: '80%', marginVertical: 3 },
-  bubble: { borderRadius: 16, paddingHorizontal: 14, paddingVertical: 9 },
+  bubble: { borderRadius: 18, paddingHorizontal: 14, paddingVertical: 9 },
   bubbleText: { fontSize: 15 },
   bubbleTextMissing: { fontStyle: 'italic' },
   status: { fontSize: 10, marginTop: 2, alignSelf: 'flex-end' },
