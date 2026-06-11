@@ -96,6 +96,10 @@ export interface ChatController {
   onSetupChange(listener: (state: SetupState) => void): () => void;
   /** Re-run encryption setup after a failure (e.g. transient network at sign-in). */
   retrySetup(): Promise<void>;
+  /** The server-issued device id once registered, else `null` (diagnostics). */
+  getDeviceId(): string | null;
+  /** The signed-in user's Firebase UID, else `null` (diagnostics). */
+  getUid(): string | null;
   /** Client-initiated sign-out (clears the auth session; Requirement 4.8). */
   signOut(): Promise<void>;
 }
@@ -126,6 +130,7 @@ export function createMobileController(): ChatController {
   let realtime: RealtimeClient | null = null;
   let activeRecipient: string | null = null;
   let currentUid: string | null = null;
+  let deviceId: string | null = null;
 
   // Encryption-setup state, observable by the UI.
   let setup: SetupState = { phase: 'idle' };
@@ -163,6 +168,7 @@ export function createMobileController(): ChatController {
       emit({ type: 'connection-changed', connection: 'disconnected' });
       return;
     }
+    deviceId = registration.deviceId;
 
     const record = await store.loadIdentity(uid);
     if (record === null) {
@@ -296,8 +302,17 @@ export function createMobileController(): ChatController {
       await runBootstrap(uid);
     },
 
+    getDeviceId(): string | null {
+      return deviceId;
+    },
+
+    getUid(): string | null {
+      return authService.getCurrentUid() ?? currentUid;
+    },
+
     async signOut(): Promise<void> {
       teardown();
+      deviceId = null;
       setSetup({ phase: 'idle' });
       currentUid = null;
       await authService.signOut();
@@ -337,6 +352,12 @@ export function createDemoController(): ChatController {
     },
     async retrySetup(): Promise<void> {
       // Demo controller is always "ready".
+    },
+    getDeviceId(): string | null {
+      return 'demo-device';
+    },
+    getUid(): string | null {
+      return 'demo-uid';
     },
     async signOut(): Promise<void> {
       // Demo controller holds no real auth session.

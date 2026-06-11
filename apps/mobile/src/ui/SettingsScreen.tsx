@@ -4,21 +4,50 @@
  * render as disclosure rows; the container supplies the actions that exist today.
  */
 
-import React from 'react';
+import React, { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 
 import { initials, useTheme } from './theme';
 
+/** Diagnostics surfaced for troubleshooting encryption setup + discovery. */
+export interface SettingsDiagnostics {
+  phase: string;
+  error?: string;
+  deviceId: string | null;
+  uid: string | null;
+}
+
 export function SettingsScreen({
   displayName,
   phone,
+  diagnostics,
+  onSelfTest,
   onSignOut,
 }: {
   displayName: string;
   phone: string;
+  diagnostics: SettingsDiagnostics;
+  /** Resolve this device's OWN phone number through the directory (self-test). */
+  onSelfTest: () => Promise<{ ok: boolean; detail: string }>;
   onSignOut: () => void;
 }): React.JSX.Element {
   const t = useTheme();
+  const [testResult, setTestResult] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
+
+  const runSelfTest = async (): Promise<void> => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const result = await onSelfTest();
+      setTestResult(result.detail);
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const short = (value: string | null): string =>
+    value === null ? '—' : value.length > 14 ? `${value.slice(0, 14)}…` : value;
   return (
     <ScrollView style={[styles.screen, { backgroundColor: t.bg }]}>
       <Text style={[styles.title, { color: t.text }]}>Settings</Text>
@@ -42,6 +71,54 @@ export function SettingsScreen({
         <Row icon="🛡️" label="Safety number" theme={t} />
         <Divider color={t.divider} />
         <Row icon="🧹" label="Wipe data on sign-out" theme={t} toggle toggleValue />
+      </View>
+
+      <Text style={[styles.section, { color: t.faint }]}>DIAGNOSTICS</Text>
+      <View style={[styles.card, { backgroundColor: t.surface, borderColor: t.divider }]}>
+        <View style={styles.row}>
+          <Text style={styles.rowIcon}>🔐</Text>
+          <Text style={[styles.rowLabel, { color: t.text }]}>Encryption setup</Text>
+          <Text style={[styles.rowValue, { color: diagnostics.phase === 'ready' ? t.secure : t.faint }]}>
+            {diagnostics.phase}
+          </Text>
+        </View>
+        {diagnostics.error !== undefined && (
+          <>
+            <Divider color={t.divider} />
+            <View style={styles.row}>
+              <Text style={styles.rowIcon}>⚠</Text>
+              <Text style={[styles.rowLabel, { color: t.danger }]} numberOfLines={3}>
+                {diagnostics.error}
+              </Text>
+            </View>
+          </>
+        )}
+        <Divider color={t.divider} />
+        <View style={styles.row}>
+          <Text style={styles.rowIcon}>📱</Text>
+          <Text style={[styles.rowLabel, { color: t.text }]}>Device registered</Text>
+          <Text style={[styles.rowValue, { color: t.faint }]}>
+            {diagnostics.deviceId !== null ? `yes (${short(diagnostics.deviceId)})` : 'no'}
+          </Text>
+        </View>
+        <Divider color={t.divider} />
+        <Pressable style={styles.row} onPress={() => void runSelfTest()} accessibilityRole="button">
+          <Text style={styles.rowIcon}>🔎</Text>
+          <Text style={[styles.rowLabel, { color: t.brandSoft }]}>
+            {testing ? 'Testing…' : 'Test discovery (my number)'}
+          </Text>
+        </Pressable>
+        {testResult !== null && (
+          <>
+            <Divider color={t.divider} />
+            <View style={styles.row}>
+              <Text style={styles.rowIcon}>›</Text>
+              <Text style={[styles.rowLabel, { color: t.subtext }]} numberOfLines={3}>
+                {testResult}
+              </Text>
+            </View>
+          </>
+        )}
       </View>
 
       <Text style={[styles.section, { color: t.faint }]}>APP</Text>

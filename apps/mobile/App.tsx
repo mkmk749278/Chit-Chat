@@ -253,7 +253,23 @@ export default function App(): React.JSX.Element {
           )}
           {tab === 'contacts' && <ContactsScreen contacts={contacts} onStartChat={startChat} />}
           {tab === 'settings' && (
-            <SettingsScreen displayName="You" phone={phone} onSignOut={signOut} />
+            <SettingsScreen
+              displayName="You"
+              phone={phone}
+              diagnostics={{
+                phase: setup.phase,
+                error: setup.error,
+                deviceId: controller.getDeviceId(),
+                uid: controller.getUid(),
+              }}
+              onSelfTest={async () => {
+                const result = await controller.resolveContact(phone);
+                return result.ok
+                  ? { ok: true, detail: `Found: your number resolves to ${result.uid}. Discovery works.` }
+                  : { ok: false, detail: `Not found: ${result.error} (your own number isn't in the directory — registration didn't store it).` };
+              }}
+              onSignOut={signOut}
+            />
           )}
           <TabBar active={tab} onSelect={setTab} />
         </>
