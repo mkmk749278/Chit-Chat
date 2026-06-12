@@ -95,21 +95,34 @@ export default function App(): React.JSX.Element {
   const openChatRef = useRef<string | null>(null);
   openChatRef.current = openChatId;
 
-  // Controller events drive the open conversation's reducer.
+  // Controller events drive the right conversation's reducer. Events carry the peer
+  // (`remoteUid`) so inbound messages route to their own chat — and a message from someone
+  // new auto-creates a chat. `connection-changed` is global and applies to every chat.
   useEffect(
     () =>
       controller.subscribe((event) => {
-        const target = openChatRef.current;
+        if (event.type === 'connection-changed') {
+          setConversations((prev) => prev.map((c) => ({ ...c, state: reduce(c.state, event) })));
+          return;
+        }
+        const target =
+          'remoteUid' in event && event.remoteUid !== undefined ? event.remoteUid : openChatRef.current;
         if (target === null) {
           return;
         }
         // Smooth bubble/list transitions (UX directive motion system, 150–300ms).
         animateNext();
-        setConversations((prev) =>
-          prev.map((c) =>
+        setConversations((prev) => {
+          const base = prev.some((c) => c.id === target)
+            ? prev
+            : [
+                { id: target, name: target, state: initialConversationState('mobile'), lastAt: Date.now() },
+                ...prev,
+              ];
+          return base.map((c) =>
             c.id === target ? { ...c, state: reduce(c.state, event), lastAt: Date.now() } : c,
-          ),
-        );
+          );
+        });
       }),
     [controller],
   );
