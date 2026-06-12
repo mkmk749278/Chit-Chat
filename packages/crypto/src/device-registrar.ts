@@ -115,6 +115,13 @@ export interface DeviceRegistrarOptions {
   /** Optional human-readable device name; at most 64 characters (3.1). */
   deviceName?: string;
   /**
+   * Optional E.164 phone number the user signed in with. Sent so the server can record it
+   * for phone→UID discovery as a fallback when the verified token carries no phone claim;
+   * the server prefers the token's phone when present, so this can never override a
+   * server-verified number.
+   */
+  phoneNumber?: string;
+  /**
    * Per-request timeout in ms handed to the {@link HttpClient}; a request that does
    * not respond within this window is cancelled and retried with backoff (3.8).
    * Defaults to {@link DEFAULT_REQUEST_TIMEOUT_MS}.
@@ -171,6 +178,7 @@ export class DefaultDeviceRegistrar implements DeviceRegistrar {
 
   private readonly registerUrl: string;
   private readonly deviceName?: string;
+  private readonly phoneNumber?: string;
   private readonly requestTimeoutMs: number;
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
@@ -199,6 +207,7 @@ export class DefaultDeviceRegistrar implements DeviceRegistrar {
 
     this.registerUrl = options.registerUrl;
     this.deviceName = options.deviceName;
+    this.phoneNumber = options.phoneNumber;
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.now = options.now ?? Date.now;
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
@@ -245,6 +254,7 @@ export class DefaultDeviceRegistrar implements DeviceRegistrar {
       signedPreKey: bundle.signedPreKey,
       oneTimePreKeys: bundle.oneTimePreKeys,
       ...(this.deviceName !== undefined ? { deviceName: this.deviceName } : {}),
+      ...(this.phoneNumber !== undefined ? { phoneNumber: this.phoneNumber } : {}),
     };
     const payload = JSON.stringify(body);
 

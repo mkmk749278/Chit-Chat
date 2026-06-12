@@ -86,8 +86,8 @@ export interface ConversationState {
  * - `inbound-delivery-error`  — a received envelope failed decryption (5.5, 6.9).
  */
 export type ConversationEvent =
-  | { type: 'message-appended'; message: RenderableMessage }
-  | { type: 'status-updated'; id: string; status: MessageStatus }
+  | { type: 'message-appended'; message: RenderableMessage; remoteUid?: string }
+  | { type: 'status-updated'; id: string; status: MessageStatus; remoteUid?: string }
   | { type: 'composer-changed'; text: string }
   | { type: 'connection-changed'; connection: ConnectionStatus }
   | { type: 'web-warning-acknowledged' }
@@ -95,6 +95,7 @@ export type ConversationEvent =
       type: 'inbound-delivery-error';
       id: string;
       seq: number;
+      remoteUid?: string;
     };
 
 /**

@@ -95,21 +95,34 @@ export default function App(): React.JSX.Element {
   const openChatRef = useRef<string | null>(null);
   openChatRef.current = openChatId;
 
-  // Controller events drive the open conversation's reducer.
+  // Controller events drive the right conversation's reducer. Events carry the peer
+  // (`remoteUid`) so inbound messages route to their own chat — and a message from someone
+  // new auto-creates a chat. `connection-changed` is global and applies to every chat.
   useEffect(
     () =>
       controller.subscribe((event) => {
-        const target = openChatRef.current;
+        if (event.type === 'connection-changed') {
+          setConversations((prev) => prev.map((c) => ({ ...c, state: reduce(c.state, event) })));
+          return;
+        }
+        const target =
+          'remoteUid' in event && event.remoteUid !== undefined ? event.remoteUid : openChatRef.current;
         if (target === null) {
           return;
         }
         // Smooth bubble/list transitions (UX directive motion system, 150–300ms).
         animateNext();
-        setConversations((prev) =>
-          prev.map((c) =>
+        setConversations((prev) => {
+          const base = prev.some((c) => c.id === target)
+            ? prev
+            : [
+                { id: target, name: target, state: initialConversationState('mobile'), lastAt: Date.now() },
+                ...prev,
+              ];
+          return base.map((c) =>
             c.id === target ? { ...c, state: reduce(c.state, event), lastAt: Date.now() } : c,
-          ),
-        );
+          );
+        });
       }),
     [controller],
   );
@@ -119,7 +132,7 @@ export default function App(): React.JSX.Element {
 
   const confirmOtp = useCallback(
     async (code: string, e164: string): Promise<boolean> => {
-      const signedInUid = await controller.confirmOtp(code);
+      const signedInUid = await controller.confirmOtp(code, e164);
       if (signedInUid !== null) {
         setUid(signedInUid);
         setPhone(e164);
@@ -302,10 +315,28 @@ export default function App(): React.JSX.Element {
                 uid: controller.getUid(),
               }}
               onSelfTest={async () => {
-                const result = await controller.resolveContact(phone);
-                return result.ok
-                  ? { ok: true, detail: `Found: your number resolves to ${result.uid}. Discovery works.` }
-                  : { ok: false, detail: `Not found: ${result.error} (your own number isn't in the directory — registration didn't store it).` };
+                // Decisive probe: compare what the server sees on the TOKEN vs what's STORED.
+                const me = await controller.whoAmI();
+                if (me === null) {
+                  return { ok: false, detail: 'Could not reach the server (not signed in or offline).' };
+                }
+                const lines = [
+                  `token phone: ${me.tokenPhone ?? 'NONE'}`,
+                  `stored phone: ${me.storedPhone ?? 'NONE'}`,
+                  `devices: ${me.deviceCount}`,
+                ];
+                let verdict: string;
+                if (me.tokenPhone === null) {
+                  verdict = 'Your Firebase token has no phone claim — that is the bug.';
+                } else if (me.storedPhone === null) {
+                  verdict = 'Token has your phone but it was not stored — storage bug.';
+                } else {
+                  const resolved = await controller.resolveContact(me.storedPhone);
+                  verdict = resolved.ok
+                    ? 'Discovery works — others can find you at your stored number.'
+                    : `Stored, but lookup failed: ${resolved.error}`;
+                }
+                return { ok: me.tokenPhone !== null && me.storedPhone !== null, detail: `${lines.join(' · ')}\n${verdict}` };
               }}
               onSignOut={signOut}
             />

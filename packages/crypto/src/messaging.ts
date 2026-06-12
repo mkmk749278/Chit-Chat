@@ -306,12 +306,13 @@ export class DefaultMessaging implements Messaging {
     this.emitUpdate({
       type: 'message-appended',
       message: { id, seq, direction: 'out', text: plaintext, status: 'sending' },
+      remoteUid: recipientUid,
     });
 
     // Resolve the local routing identity; without it the message cannot be addressed (5.9).
     const sender = await this.sender.resolveSender();
     if (sender === null) {
-      await this.markFailed(id);
+      await this.markFailed(id, recipientUid);
       return;
     }
 
@@ -323,7 +324,7 @@ export class DefaultMessaging implements Messaging {
       if (!(await this.sessions.hasSession(recipientUid))) {
         const bundle = await this.keyClaimer.claim(recipientUid);
         if (bundle === null) {
-          await this.markFailed(id);
+          await this.markFailed(id, recipientUid);
           return;
         }
         await this.sessions.establishSession(recipientUid, bundle);
@@ -332,7 +333,7 @@ export class DefaultMessaging implements Messaging {
     } catch {
       // Do not propagate or log: the error may carry sensitive material (8.5). Retain the
       // composed text and surface a per-message failure (5.9).
-      await this.markFailed(id);
+      await this.markFailed(id, recipientUid);
       return;
     }
 
@@ -371,7 +372,7 @@ export class DefaultMessaging implements Messaging {
         createdAt: this.now(),
       };
       await this.store.appendMessage(errorRow);
-      this.emitUpdate({ type: 'inbound-delivery-error', id, seq: envelope.seq });
+      this.emitUpdate({ type: 'inbound-delivery-error', id, seq: envelope.seq, remoteUid: envelope.senderUid });
       return;
     }
 
@@ -388,6 +389,7 @@ export class DefaultMessaging implements Messaging {
     this.emitUpdate({
       type: 'message-appended',
       message: { id, seq: envelope.seq, direction: 'in', text: plaintext, status: 'received' },
+      remoteUid: envelope.senderUid,
     });
   }
 
@@ -478,7 +480,7 @@ export class DefaultMessaging implements Messaging {
     this.clearAckTimer(entry);
     this.pending.delete(key);
     await this.store.updateMessageStatus(entry.id, 'sent');
-    this.emitUpdate({ type: 'status-updated', id: entry.id, status: 'sent' });
+    this.emitUpdate({ type: 'status-updated', id: entry.id, status: 'sent', remoteUid: recipientUid });
   }
 
   /**
@@ -492,7 +494,7 @@ export class DefaultMessaging implements Messaging {
       return;
     }
     this.pending.delete(key);
-    void this.markFailed(entry.id);
+    void this.markFailed(entry.id, entry.recipientUid);
   }
 
   // -------------------------------------------------------------------------
@@ -500,9 +502,9 @@ export class DefaultMessaging implements Messaging {
   // -------------------------------------------------------------------------
 
   /** Mark an outbound message `failed` (text retained) in the store and to listeners (5.9, 5.11, 6.8). */
-  private async markFailed(id: string): Promise<void> {
+  private async markFailed(id: string, remoteUid: string): Promise<void> {
     await this.store.updateMessageStatus(id, 'failed');
-    this.emitUpdate({ type: 'status-updated', id, status: 'failed' });
+    this.emitUpdate({ type: 'status-updated', id, status: 'failed', remoteUid });
   }
 
   private clearAckTimer(entry: PendingSend): void {

@@ -95,9 +95,10 @@ export class DevicesController {
       throw new HttpException('Rate limit exceeded', HttpStatus.TOO_MANY_REQUESTS);
     }
 
-    // Persist the verified phone number (when the token carries one) so the directory can
-    // resolve a phone → this UID for contact discovery. Only the trusted token claim is
-    // used — never a client-supplied value.
-    return this.devices.registerDevice(auth.uid, dto, auth.phoneNumber);
+    // Persist the phone number so the directory can resolve a phone → this UID for contact
+    // discovery. Prefer the VERIFIED token claim; fall back to the client-supplied E.164
+    // (the number the user completed OTP for) only when the token carries no phone claim, so
+    // a server-verified number is never overridden by client input.
+    return this.devices.registerDevice(auth.uid, dto, auth.phoneNumber ?? dto.phoneNumber);
   }
 }

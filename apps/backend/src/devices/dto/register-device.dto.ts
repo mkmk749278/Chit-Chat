@@ -31,6 +31,7 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  Matches,
   MaxLength,
   Min,
   ValidateNested,
@@ -68,4 +69,13 @@ export class RegisterDeviceDto implements RegisterDeviceDtoShape {
   @IsString()
   @MaxLength(64)
   deviceName?: string;
+
+  /**
+   * Optional E.164 phone number the user signed in with (discovery fallback). Validated to
+   * E.164 so a malformed value is rejected; the server only uses it when the verified token
+   * carries no phone claim, so it can never override a server-verified number.
+   */
+  @IsOptional()
+  @Matches(/^\+[1-9]\d{6,14}$/, { message: 'phoneNumber must be a valid E.164 number' })
+  phoneNumber?: string;
 }
