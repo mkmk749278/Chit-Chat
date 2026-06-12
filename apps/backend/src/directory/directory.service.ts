@@ -37,17 +37,16 @@ export class DirectoryService {
    */
   async resolvePhone(phoneNumber: string): Promise<ResolvePhoneResponse> {
     return this.transactions.runInTransaction(async (manager) => {
-      // Require an existing device so the resolved UID is actually messageable: a sender's
-      // next step (GET /api/keys/:uid) needs a registered device or it would 404 anyway.
-      const user = await manager
-        .createQueryBuilder(UserEntity, 'user')
-        .innerJoin('user.devices', 'device')
-        .where('user.phone_number = :phoneNumber', { phoneNumber })
-        .select('user.firebase_uid', 'firebaseUid')
-        .limit(1)
-        .getRawOne<{ firebaseUid: string }>();
+      // Use findOne with the entity property `phoneNumber` (TypeORM maps it to the
+      // `phone_number` column and quotes the reserved `user` alias correctly) and load
+      // devices, so we resolve only a messageable user. This mirrors the proven whoAmI
+      // path; the previous raw query-builder form silently matched nothing.
+      const user = await manager.findOne(UserEntity, {
+        where: { phoneNumber },
+        relations: { devices: true },
+      });
 
-      if (user === undefined) {
+      if (user === null || user.devices.length === 0) {
         throw new NotFoundException('No registered user found for that phone number');
       }
       return { uid: user.firebaseUid };
