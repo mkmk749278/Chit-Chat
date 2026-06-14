@@ -35,7 +35,8 @@ function makeController(overrides: {
 }): { controller: DirectoryController; resolvePhone: jest.Mock; whoAmI: jest.Mock; hit: jest.Mock } {
   const resolvePhone = overrides.resolvePhone ?? jest.fn().mockResolvedValue(RESPONSE);
   const whoAmI =
-    overrides.whoAmI ?? jest.fn().mockResolvedValue({ storedPhone: '+919618579123', deviceCount: 1 });
+    overrides.whoAmI ??
+    jest.fn().mockResolvedValue({ storedPhone: '+919618579123', deviceCount: 1, selfLookup: 'ok:caller-uid' });
   const hit = overrides.hit ?? jest.fn().mockResolvedValue({ allowed: true });
   const controller = new DirectoryController(
     { resolvePhone, whoAmI } as unknown as DirectoryService,
@@ -94,7 +95,9 @@ describe('DirectoryController.resolve', () => {
 
 describe('DirectoryController.me (diagnostics)', () => {
   it('reports the token phone (from AuthContext) alongside the stored phone + device count', async () => {
-    const whoAmI = jest.fn().mockResolvedValue({ storedPhone: '+919618579123', deviceCount: 2 });
+    const whoAmI = jest
+      .fn()
+      .mockResolvedValue({ storedPhone: '+919618579123', deviceCount: 2, selfLookup: 'ok:caller-uid' });
     const { controller } = makeController({ whoAmI });
 
     const result = await controller.me({ uid: 'caller-uid', phoneNumber: '+919618579123', tokenExp: 9_999_999_999 });
@@ -104,12 +107,15 @@ describe('DirectoryController.me (diagnostics)', () => {
       tokenPhone: '+919618579123',
       storedPhone: '+919618579123',
       deviceCount: 2,
+      selfLookup: 'ok:caller-uid',
     });
     expect(whoAmI).toHaveBeenCalledWith('caller-uid');
   });
 
   it('reports tokenPhone null when the verified token carries no phone claim', async () => {
-    const whoAmI = jest.fn().mockResolvedValue({ storedPhone: null, deviceCount: 0 });
+    const whoAmI = jest
+      .fn()
+      .mockResolvedValue({ storedPhone: null, deviceCount: 0, selfLookup: 'no stored phone' });
     const { controller } = makeController({ whoAmI });
 
     const result = await controller.me(AUTH); // AUTH has no phoneNumber

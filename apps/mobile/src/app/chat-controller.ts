@@ -379,7 +379,13 @@ export function createDemoController(): ChatController {
       return 'demo-uid';
     },
     async whoAmI(): Promise<WhoAmIResponse | null> {
-      return { uid: 'demo-uid', tokenPhone: '+910000000000', storedPhone: '+910000000000', deviceCount: 1 };
+      return {
+        uid: 'demo-uid',
+        tokenPhone: '+910000000000',
+        storedPhone: '+910000000000',
+        deviceCount: 1,
+        selfLookup: 'ok:demo-uid',
+      };
     },
     async signOut(): Promise<void> {
       // Demo controller holds no real auth session.

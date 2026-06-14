@@ -87,4 +87,10 @@ export interface WhoAmIResponse {
   storedPhone: string | null;
   /** Number of devices the caller has registered. */
   deviceCount: number;
+  /**
+   * Server-side self-lookup result: the outcome of resolving the caller's OWN stored phone
+   * in-process. `ok:<uid>` means discovery works; `fail:<reason>` shows why it doesn't;
+   * `no stored phone` means nothing was persisted.
+   */
+  selfLookup: string;
 }

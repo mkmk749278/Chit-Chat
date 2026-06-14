@@ -325,18 +325,13 @@ export default function App(): React.JSX.Element {
                   `stored phone: ${me.storedPhone ?? 'NONE'}`,
                   `devices: ${me.deviceCount}`,
                 ];
-                let verdict: string;
-                if (me.tokenPhone === null) {
-                  verdict = 'Your Firebase token has no phone claim — that is the bug.';
-                } else if (me.storedPhone === null) {
-                  verdict = 'Token has your phone but it was not stored — storage bug.';
-                } else {
-                  const resolved = await controller.resolveContact(me.storedPhone);
-                  verdict = resolved.ok
-                    ? 'Discovery works — others can find you at your stored number.'
-                    : `Stored, but lookup failed: ${resolved.error}`;
-                }
-                return { ok: me.tokenPhone !== null && me.storedPhone !== null, detail: `${lines.join(' · ')}\n${verdict}` };
+                // selfLookup is the server's in-process resolve of your own number — ground
+                // truth, free of HTTP/rate-limit noise. `ok:<uid>` ⇒ discovery works.
+                const works = me.selfLookup.startsWith('ok:');
+                const verdict = works
+                  ? 'Discovery works — others can find you at your number.'
+                  : `Lookup result: ${me.selfLookup}`;
+                return { ok: works, detail: `${lines.join(' · ')}\nself-lookup: ${me.selfLookup}\n${verdict}` };
               }}
               onSignOut={signOut}
             />
