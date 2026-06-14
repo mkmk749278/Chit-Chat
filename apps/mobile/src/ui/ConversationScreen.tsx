@@ -127,7 +127,10 @@ function Bubble({ message, theme: t }: { message: RenderableMessage; theme: Them
         </Text>
       </View>
       {statusLabel.length > 0 && (
-        <Text style={[styles.status, { color: isError ? t.danger : t.faint }]}>{statusLabel}</Text>
+        <Text style={[styles.status, { color: isError ? t.danger : t.faint }]}>
+          {statusLabel}
+          {message.error !== undefined ? ` · ${message.error}` : ''}
+        </Text>
       )}
     </View>
   );

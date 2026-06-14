@@ -54,6 +54,8 @@ export interface RenderableMessage {
   text: string | null;
   /** Lifecycle status driving the per-message indicator (6.5, 6.8, 6.9). */
   status: MessageStatus;
+  /** Short diagnostic reason for a `failed` message (e.g. "no server ack"); optional. */
+  error?: string;
 }
 
 /**
@@ -87,7 +89,7 @@ export interface ConversationState {
  */
 export type ConversationEvent =
   | { type: 'message-appended'; message: RenderableMessage; remoteUid?: string }
-  | { type: 'status-updated'; id: string; status: MessageStatus; remoteUid?: string }
+  | { type: 'status-updated'; id: string; status: MessageStatus; remoteUid?: string; error?: string }
   | { type: 'composer-changed'; text: string }
   | { type: 'connection-changed'; connection: ConnectionStatus }
   | { type: 'web-warning-acknowledged' }
@@ -188,7 +190,9 @@ export function reduce(
       return {
         ...state,
         messages: state.messages.map((message) =>
-          message.id === event.id ? { ...message, status: event.status } : message,
+          message.id === event.id
+            ? { ...message, status: event.status, ...(event.error !== undefined ? { error: event.error } : {}) }
+            : message,
         ),
       };
 
