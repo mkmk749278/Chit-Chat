@@ -17,9 +17,11 @@
  * Contact discovery resolves a phone number to a recipient UID via the backend directory
  * (`POST /api/directory/resolve`); a conversation is keyed by that UID.
  *
- * Storage note (v1): identity/sessions/messages live in an in-memory KeyStore, so they do
- * not survive an app restart (the device re-registers on next launch). A persistent,
- * encrypted-at-rest SQLCipher KeyStore is a drop-in replacement behind the same port.
+ * Storage: identity/sessions/messages live in a persistent, encrypted-at-rest KeyStore
+ * (`createNativeVault` → AES-256-CBC+HMAC blob in AsyncStorage, key in the hardware-backed
+ * Keystore via expo-secure-store). The device therefore registers ONCE and reuses its
+ * identity across launches, instead of re-registering each launch — which removes the device
+ * churn that caused encrypted messages to be delivered to a stale device and never decrypted.
  *
  * Routing note (v1): conversation events from the orchestrator are not yet tagged with the
  * peer, so the container applies them to the OPEN conversation. This is correct for the
@@ -51,8 +53,12 @@ import type { WhoAmIResponse } from '@chat-app/types';
 import { FirebaseAuthAdapter } from '../auth';
 import { API_BASE_URL, REGISTER_URL, WS_URL } from '../api/api-config';
 import { createDirectoryClient, createPreKeyClaimClient, type DirectoryClient } from '../api/api-clients';
-import { createInMemoryKeyStore } from '../crypto/in-memory-key-store';
-import { signalStoreFromIdentity } from '../crypto/signal-store';
+import { createNativeVault } from '../crypto/native-vault';
+import {
+  createPersistentKeyStore,
+  createPersistentSignalProtocolStore,
+  type PersistentVault,
+} from '../crypto/persistent-store';
 import { createReactNativeHttpClient } from '../transport/http-client';
 import { createReactNativeWebSocketTransport } from '../transport/web-socket-transport';
 
@@ -137,6 +143,7 @@ export function createMobileController(): ChatController {
   };
 
   // Live messaging stack, created on sign-in and torn down on sign-out.
+  let vault: PersistentVault | null = null;
   let keyStore: KeyStore | null = null;
   let messaging: Messaging | null = null;
   let realtime: RealtimeClient | null = null;
@@ -183,7 +190,10 @@ export function createMobileController(): ChatController {
    */
   async function bootstrap(uid: string): Promise<void> {
     setSetup({ phase: 'registering' });
-    const store = createInMemoryKeyStore();
+    // Open the persistent, encrypted store for this user. Reused across launches so the
+    // device keeps one stable identity/deviceId (no re-registration churn).
+    vault = createNativeVault(uid);
+    const store = createPersistentKeyStore(vault);
     keyStore = store;
 
     const identityManager = new DefaultIdentityManager(store, createPureTsLibsignalKeyGen());
@@ -211,7 +221,7 @@ export function createMobileController(): ChatController {
       emit({ type: 'connection-changed', connection: 'disconnected' });
       return;
     }
-    const signalStore = signalStoreFromIdentity(record);
+    const signalStore = createPersistentSignalProtocolStore(vault, record);
 
     realtime = new RealtimeClient({
       url: WS_URL,
@@ -260,10 +270,13 @@ export function createMobileController(): ChatController {
   function teardown(): void {
     messaging?.dispose();
     realtime?.disconnect();
+    // destroy() releases the store's in-memory state but RETAINS the encrypted blob, so a
+    // retry/relaunch reuses the same identity. Explicit sign-out wipes via vault.wipe().
     keyStore?.destroy();
     messaging = null;
     realtime = null;
     keyStore = null;
+    vault = null;
     activeRecipient = null;
   }
 
@@ -394,6 +407,13 @@ export function createMobileController(): ChatController {
     },
 
     async signOut(): Promise<void> {
+      // Wipe the encrypted on-device store (identity, sessions, messages) before teardown
+      // clears the reference — explicit sign-out forgets this device (Requirement 7.4).
+      try {
+        await vault?.wipe();
+      } catch {
+        // A wipe failure must not block sign-out; the auth session is still cleared below.
+      }
       teardown();
       deviceId = null;
       bootstrappedUid = null;

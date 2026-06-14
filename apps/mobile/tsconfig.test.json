@@ -1,0 +1,21 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["DOM", "ES2022"],
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "outDir": "dist",
+    "rootDir": "src",
+    "types": ["node"],
+    "noEmit": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false
+  },
+  "include": [
+    "src/crypto/crypto-box.ts",
+    "src/crypto/persistent-store.ts",
+    "src/crypto/persistent-store.test.ts"
+  ],
+  "exclude": ["node_modules", "dist"]
+}
