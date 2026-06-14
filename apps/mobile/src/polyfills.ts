@@ -78,8 +78,9 @@ if (typeof globalScope.TextDecoder === 'undefined') {
 // 2. WebCrypto: msrcrypto for `subtle`, native CSPRNG for `getRandomValues`. Build a hybrid
 // so the actually-random bytes come from the platform CSPRNG, not msrcrypto's JS PRNG.
 const nativeCrypto = globalScope.crypto;
+const subtle = (msrcrypto as { subtle: SubtleCrypto }).subtle;
 setWebCrypto({
-  subtle: (msrcrypto as { subtle: SubtleCrypto }).subtle,
+  subtle,
   getRandomValues: <T extends ArrayBufferView | null>(array: T): T => {
     if (array !== null && nativeCrypto?.getRandomValues !== undefined) {
       nativeCrypto.getRandomValues(array as unknown as ArrayBufferView);
@@ -87,3 +88,10 @@ setWebCrypto({
     return array;
   },
 } as unknown as Crypto);
+
+// Also expose `subtle` on the global crypto object so the encrypted on-device store
+// (src/crypto/native-vault.ts → CryptoBox) can use AES-CBC/HMAC. Hermes' getRandomValues
+// (from step 1) stays the source of randomness; we only add the missing `subtle`.
+if (nativeCrypto !== undefined && (nativeCrypto as { subtle?: SubtleCrypto }).subtle === undefined) {
+  Object.defineProperty(nativeCrypto, 'subtle', { value: subtle, configurable: true, writable: false });
+}

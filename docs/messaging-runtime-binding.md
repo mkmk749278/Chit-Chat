@@ -77,3 +77,28 @@ is materially more native engineering and needs a device + toolchain to verify.)
 
 Most of steps 2–5 are verifiable in CI (Node/jsdom); the device smoke test needs a phone
 or emulator.
+
+## Mobile persistent storage (shipped)
+
+The mobile store is no longer in‑memory. `apps/mobile/src/crypto/persistent-store.ts`
+implements the `KeyStore` and `SignalProtocolStore` over a single encrypted document:
+
+- The document (identity, server‑issued `deviceId`, sequence counters, message rows, and
+  the accumulating libsignal session/identity/prekey state) is serialized to JSON and
+  encrypted with **AES‑256‑CBC + HMAC‑SHA256** (encrypt‑then‑MAC, `crypto-box.ts`) — the
+  same primitives the Double Ratchet already drives through the polyfilled WebCrypto.
+- The 64‑byte data‑encryption key lives in the **hardware‑backed Android Keystore** via
+  `expo-secure-store`; the ciphertext blob lives in `@react-native-async-storage/async-storage`
+  (`native-vault.ts`). Plaintext key material never touches AsyncStorage (Requirement 10.2).
+
+Because identity and `deviceId` now survive a relaunch, the device **registers once** and
+reuses it (the `IdentityManager`/`DeviceRegistrar` idempotence at Requirements 2.6/3.7),
+eliminating the device churn that caused encrypted messages to be delivered to a stale
+device and never decrypted ("sent ✓✓ but not received"). Sign‑out wipes the blob and key
+(Requirement 7.4). Binding the key additionally to the user's PIN (10.2) is the remaining
+follow‑up; the hardware‑backed key is in place now.
+
+The persistence logic is platform‑agnostic (storage + crypto injected as ports) and is
+covered by `persistent-store.test.ts` (round‑trip across a simulated relaunch, encrypted‑at‑rest
+assertion, prekey‑consumption persistence, TOFU identity change, wipe, and tamper rejection),
+run under Node WebCrypto via `npm test --workspace=@chat-app/mobile`.
