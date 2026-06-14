@@ -19,34 +19,38 @@
  * behind the same controller without changing clients.
  */
 
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import type { ResolvePhoneResponse } from '@chat-app/types';
 
-import { TransactionService, UserEntity } from '../database';
+import { DeviceEntity, TransactionService, UserEntity } from '../database';
+import { normalizeE164 } from './phone.util';
 
 @Injectable()
 export class DirectoryService {
+  private readonly logger = new Logger(DirectoryService.name);
+
   constructor(private readonly transactions: TransactionService) {}
 
   /**
    * Resolve an E.164 phone number to the registered owner's Firebase UID.
    *
-   * @param phoneNumber - the recipient phone number in E.164 form.
+   * Both the stored number and the query are reduced to canonical E.164 ({@link normalizeE164})
+   * so a match never depends on formatting. The user row and its device count are looked up as
+   * two simple queries (no relations join), avoiding any `findOne`+OneToMany pagination quirk —
+   * the previous relation/raw-builder forms silently matched nothing on the live DB.
+   *
    * @returns the canonical Firebase UID of the user registered with that number.
    * @throws NotFoundException (HTTP 404) when no user with that number has a device.
    */
   async resolvePhone(phoneNumber: string): Promise<ResolvePhoneResponse> {
+    const normalized = normalizeE164(phoneNumber);
     return this.transactions.runInTransaction(async (manager) => {
-      // Use findOne with the entity property `phoneNumber` (TypeORM maps it to the
-      // `phone_number` column and quotes the reserved `user` alias correctly) and load
-      // devices, so we resolve only a messageable user. This mirrors the proven whoAmI
-      // path; the previous raw query-builder form silently matched nothing.
-      const user = await manager.findOne(UserEntity, {
-        where: { phoneNumber },
-        relations: { devices: true },
-      });
-
-      if (user === null || user.devices.length === 0) {
+      const user = await manager.findOne(UserEntity, { where: { phoneNumber: normalized } });
+      if (user === null) {
+        throw new NotFoundException('No registered user found for that phone number');
+      }
+      const deviceCount = await manager.count(DeviceEntity, { where: { userId: user.id } });
+      if (deviceCount === 0) {
         throw new NotFoundException('No registered user found for that phone number');
       }
       return { uid: user.firebaseUid };
@@ -60,16 +64,32 @@ export class DirectoryService {
    * pinpoints whether a discovery miss is a token problem, a storage problem, or simply a
    * not-registered peer. No PII leaves the caller's own account.
    */
-  async whoAmI(uid: string): Promise<{ storedPhone: string | null; deviceCount: number }> {
-    return this.transactions.runInTransaction(async (manager) => {
-      const user = await manager.findOne(UserEntity, {
-        where: { firebaseUid: uid },
-        relations: { devices: true },
-      });
-      return {
-        storedPhone: user?.phoneNumber ?? null,
-        deviceCount: user?.devices?.length ?? 0,
-      };
+  async whoAmI(
+    uid: string,
+  ): Promise<{ storedPhone: string | null; deviceCount: number; selfLookup: string }> {
+    const base = await this.transactions.runInTransaction(async (manager) => {
+      const user = await manager.findOne(UserEntity, { where: { firebaseUid: uid } });
+      if (user === null) {
+        return { storedPhone: null as string | null, deviceCount: 0 };
+      }
+      const deviceCount = await manager.count(DeviceEntity, { where: { userId: user.id } });
+      return { storedPhone: user.phoneNumber ?? null, deviceCount };
     });
+
+    // Server-side self-lookup: resolve our OWN stored phone in-process. This bypasses the
+    // HTTP layer, rate limiter, and the client entirely, so its outcome is the ground truth
+    // of whether discovery works for this user. `ok:<uid>` ⇒ discovery works.
+    let selfLookup: string;
+    if (base.storedPhone === null) {
+      selfLookup = 'no stored phone';
+    } else {
+      try {
+        const resolved = await this.resolvePhone(base.storedPhone);
+        selfLookup = `ok:${resolved.uid}`;
+      } catch (err) {
+        selfLookup = `fail:${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+    return { ...base, selfLookup };
   }
 }

@@ -104,6 +104,7 @@ export class DirectoryController {
       tokenPhone: auth.phoneNumber ?? null,
       storedPhone: record.storedPhone,
       deviceCount: record.deviceCount,
+      selfLookup: record.selfLookup,
     };
   }
 }

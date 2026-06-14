@@ -38,6 +38,7 @@ import {
   UserEntity,
 } from '../database';
 import { RegisterDeviceDto } from './dto';
+import { normalizeE164 } from '../directory/phone.util';
 
 @Injectable()
 export class DevicesService {
@@ -86,7 +87,10 @@ export class DevicesService {
     uid: string,
     phoneNumber?: string,
   ): Promise<string> {
-    const row = phoneNumber !== undefined ? { firebaseUid: uid, phoneNumber } : { firebaseUid: uid };
+    const row =
+      phoneNumber !== undefined
+        ? { firebaseUid: uid, phoneNumber: normalizeE164(phoneNumber) }
+        : { firebaseUid: uid };
     await manager.upsert(UserEntity, row, ['firebaseUid']);
     const user = await manager.findOneByOrFail(UserEntity, { firebaseUid: uid });
     return user.id;
