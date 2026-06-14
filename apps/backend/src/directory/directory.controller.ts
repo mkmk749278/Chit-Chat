@@ -25,6 +25,7 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
   HttpException,
   HttpStatus,
   Logger,
@@ -41,7 +42,7 @@ import {
   DIRECTORY_RATE_WINDOW_SECONDS,
 } from './directory.constants';
 import { DirectoryService } from './directory.service';
-import { ResolvePhoneDto } from './dto';
+import { ResolvePhoneDto, SetProfileDto } from './dto';
 
 @Controller('api/directory')
 export class DirectoryController {
@@ -101,10 +102,22 @@ export class DirectoryController {
     const record = await this.directory.whoAmI(auth.uid);
     return {
       uid: auth.uid,
+      displayName: record.displayName,
       tokenPhone: auth.phoneNumber ?? null,
       storedPhone: record.storedPhone,
       deviceCount: record.deviceCount,
       selfLookup: record.selfLookup,
     };
+  }
+
+  /**
+   * Set the signed-in user's display name (shown to peers instead of their UID). Called once
+   * after onboarding; idempotent, so it can be re-sent on a name change.
+   */
+  @Post('profile')
+  @UseGuards(FirebaseAuthGuard)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async setProfile(@Auth() auth: AuthContext, @Body() dto: SetProfileDto): Promise<void> {
+    await this.directory.setDisplayName(auth.uid, dto.displayName);
   }
 }

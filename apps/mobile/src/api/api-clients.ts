@@ -44,10 +44,12 @@ export function createPreKeyClaimClient(
 
 /** Resolves an E.164 phone number to a registered user's Firebase UID for contact discovery. */
 export interface DirectoryClient {
-  /** Resolve a phone number to a UID, or `null` when no registered user owns it / not signed in. */
-  resolve(phoneNumber: string): Promise<string | null>;
+  /** Resolve a phone number to `{ uid, displayName }`, or `null` when no user owns it / not signed in. */
+  resolve(phoneNumber: string): Promise<ResolvePhoneResponse | null>;
   /** Diagnostic: the caller's own discovery state (token vs stored phone, device count). */
   whoAmI(): Promise<WhoAmIResponse | null>;
+  /** Set the signed-in user's display name (shown to peers). Resolves true on success. */
+  setProfile(displayName: string): Promise<boolean>;
 }
 
 /**
@@ -60,7 +62,7 @@ export function createDirectoryClient(
   apiBaseUrl: string,
 ): DirectoryClient {
   return {
-    async resolve(phoneNumber: string): Promise<string | null> {
+    async resolve(phoneNumber: string): Promise<ResolvePhoneResponse | null> {
       const token = getToken();
       if (token === null) {
         return null;
@@ -73,9 +75,24 @@ export function createDirectoryClient(
         timeoutMs: REQUEST_TIMEOUT_MS,
       });
       if (response.status === 200) {
-        return (JSON.parse(response.body) as ResolvePhoneResponse).uid;
+        return JSON.parse(response.body) as ResolvePhoneResponse;
       }
       return null;
+    },
+
+    async setProfile(displayName: string): Promise<boolean> {
+      const token = getToken();
+      if (token === null) {
+        return false;
+      }
+      const response = await http.send({
+        method: 'POST',
+        url: `${apiBaseUrl}/api/directory/profile`,
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ displayName }),
+        timeoutMs: REQUEST_TIMEOUT_MS,
+      });
+      return response.status === 204 || response.status === 200;
     },
 
     async whoAmI(): Promise<WhoAmIResponse | null> {

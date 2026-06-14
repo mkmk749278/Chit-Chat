@@ -72,6 +72,14 @@ export interface ResolvePhoneRequest {
 export interface ResolvePhoneResponse {
   /** Canonical Firebase UID of the user registered with the requested phone number. */
   uid: string;
+  /** The resolved user's chosen display name, or `null` if they haven't set one. */
+  displayName: string | null;
+}
+
+/** Request to set the signed-in user's display name (`POST /api/directory/profile`). */
+export interface SetProfileRequest {
+  /** Human-readable display name, 1–32 characters. */
+  displayName: string;
 }
 
 /**
@@ -81,6 +89,8 @@ export interface ResolvePhoneResponse {
 export interface WhoAmIResponse {
   /** Caller's canonical Firebase UID. */
   uid: string;
+  /** Caller's chosen display name, or `null` if not set. */
+  displayName: string | null;
   /** Phone number present on the caller's verified token, or `null` if the token has none. */
   tokenPhone: string | null;
   /** Phone number stored on the caller's user row, or `null` if none was persisted. */

@@ -24,7 +24,7 @@ import type { DirectoryService } from './directory.service';
  */
 
 const AUTH: AuthContext = { uid: 'caller-uid', tokenExp: 9_999_999_999 };
-const RESPONSE: ResolvePhoneResponse = { uid: 'recipient-uid' };
+const RESPONSE: ResolvePhoneResponse = { uid: 'recipient-uid', displayName: 'Recipient' };
 
 const dto = (phoneNumber: string): ResolvePhoneDto => Object.assign(new ResolvePhoneDto(), { phoneNumber });
 
@@ -36,7 +36,12 @@ function makeController(overrides: {
   const resolvePhone = overrides.resolvePhone ?? jest.fn().mockResolvedValue(RESPONSE);
   const whoAmI =
     overrides.whoAmI ??
-    jest.fn().mockResolvedValue({ storedPhone: '+919618579123', deviceCount: 1, selfLookup: 'ok:caller-uid' });
+    jest.fn().mockResolvedValue({
+      storedPhone: '+919618579123',
+      displayName: 'Recipient',
+      deviceCount: 1,
+      selfLookup: 'ok:caller-uid',
+    });
   const hit = overrides.hit ?? jest.fn().mockResolvedValue({ allowed: true });
   const controller = new DirectoryController(
     { resolvePhone, whoAmI } as unknown as DirectoryService,
@@ -95,15 +100,19 @@ describe('DirectoryController.resolve', () => {
 
 describe('DirectoryController.me (diagnostics)', () => {
   it('reports the token phone (from AuthContext) alongside the stored phone + device count', async () => {
-    const whoAmI = jest
-      .fn()
-      .mockResolvedValue({ storedPhone: '+919618579123', deviceCount: 2, selfLookup: 'ok:caller-uid' });
+    const whoAmI = jest.fn().mockResolvedValue({
+      storedPhone: '+919618579123',
+      displayName: 'Kishore',
+      deviceCount: 2,
+      selfLookup: 'ok:caller-uid',
+    });
     const { controller } = makeController({ whoAmI });
 
     const result = await controller.me({ uid: 'caller-uid', phoneNumber: '+919618579123', tokenExp: 9_999_999_999 });
 
     expect(result).toEqual({
       uid: 'caller-uid',
+      displayName: 'Kishore',
       tokenPhone: '+919618579123',
       storedPhone: '+919618579123',
       deviceCount: 2,
@@ -115,7 +124,7 @@ describe('DirectoryController.me (diagnostics)', () => {
   it('reports tokenPhone null when the verified token carries no phone claim', async () => {
     const whoAmI = jest
       .fn()
-      .mockResolvedValue({ storedPhone: null, deviceCount: 0, selfLookup: 'no stored phone' });
+      .mockResolvedValue({ storedPhone: null, displayName: null, deviceCount: 0, selfLookup: 'no stored phone' });
     const { controller } = makeController({ whoAmI });
 
     const result = await controller.me(AUTH); // AUTH has no phoneNumber

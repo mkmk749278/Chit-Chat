@@ -170,11 +170,13 @@ export default function App(): React.JSX.Element {
         return;
       }
       const uid = result.uid;
+      // Prefer the recipient's chosen display name; fall back to the number they were found by.
+      const peerName = result.displayName ?? name;
       setConversations((prev) =>
         prev.some((c) => c.id === uid)
           ? prev
           : [
-              { id: uid, name, state: initialConversationState('mobile'), lastAt: Date.now() },
+              { id: uid, name: peerName, state: initialConversationState('mobile'), lastAt: Date.now() },
               ...prev,
             ],
       );
@@ -250,6 +252,8 @@ export default function App(): React.JSX.Element {
             animateNext();
             setDisplayName(name);
             setAppPin(pin);
+            // Publish the name so peers see it instead of a UID (best-effort).
+            void controller.setDisplayName(name);
           }}
         />
       ) : openConversation !== null ? (

@@ -78,7 +78,7 @@ export interface RequestOtpResult {
 
 /** Result of resolving a phone number to a chat-able recipient. */
 export type ResolveContactResult =
-  | { ok: true; uid: string }
+  | { ok: true; uid: string; displayName: string | null }
   | { ok: false; error: string };
 
 export interface ChatController {
@@ -87,6 +87,8 @@ export interface ChatController {
   confirmOtp(code: string, e164: string): Promise<string | null>;
   /** Resolve an E.164 phone number to a recipient UID via the backend directory. */
   resolveContact(e164: string): Promise<ResolveContactResult>;
+  /** Set the signed-in user's display name (shown to peers); called after onboarding. */
+  setDisplayName(displayName: string): Promise<void>;
   /** Set the conversation that subsequent {@link ChatController.send} calls target. */
   openConversation(recipientUid: string): void;
   /** Send `plaintext` to the currently-open conversation (see {@link openConversation}). */
@@ -263,12 +265,20 @@ export function createMobileController(): ChatController {
 
     async resolveContact(e164: string): Promise<ResolveContactResult> {
       try {
-        const uid = await directory.resolve(e164);
-        return uid !== null
-          ? { ok: true, uid }
+        const result = await directory.resolve(e164);
+        return result !== null
+          ? { ok: true, uid: result.uid, displayName: result.displayName }
           : { ok: false, error: 'No Lumin user is registered with that phone number.' };
       } catch {
         return { ok: false, error: 'Could not reach the directory. Check your connection.' };
+      }
+    },
+
+    async setDisplayName(displayName: string): Promise<void> {
+      try {
+        await directory.setProfile(displayName);
+      } catch {
+        // Non-fatal: the name is a display nicety; failure leaves the peer showing as a UID.
       }
     },
 
@@ -349,7 +359,10 @@ export function createDemoController(): ChatController {
       return /^\d{6}$/.test(code) ? `demo:${code}` : null;
     },
     async resolveContact(e164: string): Promise<ResolveContactResult> {
-      return { ok: true, uid: `demo:${e164}` };
+      return { ok: true, uid: `demo:${e164}`, displayName: null };
+    },
+    async setDisplayName(): Promise<void> {
+      // Demo controller has no backend profile.
     },
     openConversation(): void {
       // No transport in the demo controller.
@@ -381,6 +394,7 @@ export function createDemoController(): ChatController {
     async whoAmI(): Promise<WhoAmIResponse | null> {
       return {
         uid: 'demo-uid',
+        displayName: 'Demo',
         tokenPhone: '+910000000000',
         storedPhone: '+910000000000',
         deviceCount: 1,
