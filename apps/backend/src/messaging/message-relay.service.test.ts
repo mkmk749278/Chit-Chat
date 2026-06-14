@@ -89,7 +89,7 @@ describe('MessageRelayService.relay', () => {
 
     const outcome = await service.relay(buildSender(), envelope);
 
-    expect(outcome).toEqual({ status: 'received' });
+    expect(outcome).toEqual({ status: 'received', nodes: 2 });
     expect(publish).toHaveBeenCalledTimes(2);
 
     const channels = publish.mock.calls.map((call) => call[0] as string).sort();
@@ -104,7 +104,7 @@ describe('MessageRelayService.relay', () => {
 
     const outcome = await service.relay(buildSender(), buildEnvelope());
 
-    expect(outcome).toEqual({ status: 'received' });
+    expect(outcome).toEqual({ status: 'received', nodes: 0 });
     expect(publish).not.toHaveBeenCalled();
   });
 });

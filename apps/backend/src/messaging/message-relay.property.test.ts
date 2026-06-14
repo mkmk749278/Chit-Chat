@@ -46,7 +46,7 @@ test('Property 23: relay routes iff envelope.senderUid === authenticated uid', a
 
       if (declaredSender === authUid) {
         // Bound sender ⇒ accepted for delivery (recipient online here ⇒ published).
-        expect(outcome).toEqual({ status: 'received' });
+        expect(outcome.status).toBe('received');
       } else {
         // Spoofed sender ⇒ rejected and nothing published.
         expect(outcome).toEqual({ status: 'rejected', reason: 'sender-mismatch' });
