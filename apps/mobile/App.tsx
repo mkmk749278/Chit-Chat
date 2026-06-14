@@ -130,6 +130,31 @@ export default function App(): React.JSX.Element {
   // Surface encryption-setup progress/failure (identity + device registration + connect).
   useEffect(() => controller.onSetupChange(setSetup), [controller]);
 
+  // Restore a persisted sign-in on launch: Firebase remembers the session across an app
+  // kill, so this fires with the signed-in uid and we skip the Sign_In_Screen. We then load
+  // the profile (display name + phone) so a returning user also skips onboarding.
+  useEffect(
+    () =>
+      controller.onAuthStateChanged((signedInUid) => {
+        if (signedInUid === null) {
+          return;
+        }
+        setUid(signedInUid);
+        void controller.whoAmI().then((me) => {
+          if (me === null) {
+            return;
+          }
+          if (me.displayName !== null && me.displayName.length > 0) {
+            setDisplayName(me.displayName);
+          }
+          if (me.storedPhone !== null && me.storedPhone.length > 0) {
+            setPhone(me.storedPhone);
+          }
+        });
+      }),
+    [controller],
+  );
+
   const confirmOtp = useCallback(
     async (code: string, e164: string): Promise<boolean> => {
       const signedInUid = await controller.confirmOtp(code, e164);

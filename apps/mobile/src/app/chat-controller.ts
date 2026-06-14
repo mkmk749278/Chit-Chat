@@ -94,6 +94,12 @@ export interface ChatController {
   /** Send `plaintext` to the currently-open conversation (see {@link openConversation}). */
   send(plaintext: string): Promise<void>;
   subscribe(listener: (event: ControllerEvent) => void): () => void;
+  /**
+   * Subscribe to sign-in state. Fires with the signed-in UID when Firebase restores a
+   * persisted session on launch (so the app skips the Sign_In_Screen) or after a fresh
+   * sign-in, and with `null` on sign-out. Bootstrapping is triggered automatically.
+   */
+  onAuthStateChanged(listener: (uid: string | null) => void): () => void;
   /** Current encryption-setup state (identity + device registration + connection). */
   getSetup(): SetupState;
   /** Subscribe to {@link SetupState} changes; fires immediately with the current state. */
@@ -148,6 +154,26 @@ export function createMobileController(): ChatController {
       listener(setup);
     }
   };
+
+  // Sign-in state, observable by the UI. `bootstrappedUid` dedupes bootstrap so a fresh
+  // sign-in and the auth-state restore that follows it don't both run it.
+  let bootstrappedUid: string | null = null;
+  const authListeners = new Set<(uid: string | null) => void>();
+  const notifyAuth = (uid: string | null): void => {
+    for (const listener of authListeners) {
+      listener(uid);
+    }
+  };
+
+  /** Bootstrap once per signed-in uid (idempotent across the sign-in and restore paths). */
+  function ensureBootstrapped(uid: string): void {
+    if (bootstrappedUid === uid) {
+      return;
+    }
+    bootstrappedUid = uid;
+    currentUid = uid;
+    void runBootstrap(uid);
+  }
 
   /**
    * Bring up the encrypted-messaging stack for a signed-in user: generate/load the device
@@ -241,6 +267,19 @@ export function createMobileController(): ChatController {
     activeRecipient = null;
   }
 
+  // Restore a persisted Firebase session on launch (and react to fresh sign-in / sign-out).
+  // Firebase persists auth across an app kill, so this fires with the signed-in user shortly
+  // after launch — bootstrapping and surfacing the uid so the UI skips the Sign_In_Screen.
+  authService.onAuthStateChanged((state) => {
+    if (state.status === 'signed-in') {
+      ensureBootstrapped(state.uid);
+      notifyAuth(state.uid);
+    } else {
+      bootstrappedUid = null;
+      notifyAuth(null);
+    }
+  });
+
   return {
     async requestOtp(e164: string): Promise<RequestOtpResult> {
       const result = await authService.requestOtp(e164);
@@ -248,15 +287,15 @@ export function createMobileController(): ChatController {
     },
 
     async confirmOtp(code: string, e164: string): Promise<string | null> {
+      // Remember the OTP-verified number BEFORE the auth-state listener fires, so the
+      // bootstrap it triggers can send it as a discovery fallback (used only if the token
+      // has no phone claim).
+      currentPhone = e164;
       try {
         const { uid } = await authService.confirmOtp(code);
-        currentUid = uid;
-        // Remember the OTP-verified number so registration can send it as a discovery
-        // fallback (used only if the token has no phone claim).
-        currentPhone = e164;
-        // Bring up messaging in the background; sign-in itself succeeds immediately so the
-        // UI can advance. Setup progress/failure flows back through onSetupChange.
-        void runBootstrap(uid);
+        // The auth-state listener bootstraps on sign-in; ensure it's running even if that
+        // event is delivered asynchronously, deduped so it never runs twice.
+        ensureBootstrapped(uid);
         return uid;
       } catch {
         return null;
@@ -296,6 +335,13 @@ export function createMobileController(): ChatController {
     subscribe(listener: (event: ControllerEvent) => void): () => void {
       listeners.add(listener);
       return () => listeners.delete(listener);
+    },
+
+    onAuthStateChanged(listener: (uid: string | null) => void): () => void {
+      authListeners.add(listener);
+      // Fire immediately with the current known state so a late subscriber isn't stuck.
+      listener(authService.getCurrentUid());
+      return () => authListeners.delete(listener);
     },
 
     getSetup(): SetupState {
@@ -341,6 +387,7 @@ export function createMobileController(): ChatController {
     async signOut(): Promise<void> {
       teardown();
       deviceId = null;
+      bootstrappedUid = null;
       setSetup({ phase: 'idle' });
       currentUid = null;
       currentPhone = null;
@@ -374,6 +421,9 @@ export function createDemoController(): ChatController {
     subscribe(listener: (event: ControllerEvent) => void): () => void {
       listeners.add(listener);
       return () => listeners.delete(listener);
+    },
+    onAuthStateChanged(): () => void {
+      return () => undefined;
     },
     getSetup(): SetupState {
       return { phase: 'ready' };
