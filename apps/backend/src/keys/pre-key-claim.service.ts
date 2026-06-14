@@ -94,11 +94,14 @@ export class PreKeyClaimService {
       throw new NotFoundException('Recipient has no registered device');
     }
 
-    // Phase 1: a single device per user. Pick deterministically (earliest registered)
-    // in case stale rows exist, so the bundle resolves to a stable device.
+    // Pick the MOST RECENTLY registered device. Until persistent on-device storage lands,
+    // a client regenerates its identity each launch and re-registers, leaving stale device
+    // rows; the live WebSocket connection belongs to the newest registration, so claiming
+    // the newest device makes the prekey bundle match the device that will actually receive
+    // and decrypt the message. (With persistence there is exactly one device and order is moot.)
     const device = await manager.findOne(DeviceEntity, {
       where: { userId: user.id },
-      order: { createdAt: 'ASC' },
+      order: { createdAt: 'DESC' },
     });
     if (!device) {
       throw new NotFoundException('Recipient has no registered device');
