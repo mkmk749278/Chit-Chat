@@ -74,8 +74,10 @@ export function createDirectoryClient(
         body: JSON.stringify({ phoneNumber }),
         timeoutMs: REQUEST_TIMEOUT_MS,
       });
-      if (response.status === 200) {
-        return { status: 200, user: JSON.parse(response.body) as ResolvePhoneResponse };
+      // Accept any 2xx (NestJS POST defaults to 201) so a successful lookup is never
+      // misread as a miss.
+      if (response.status >= 200 && response.status < 300) {
+        return { status: response.status, user: JSON.parse(response.body) as ResolvePhoneResponse };
       }
       return { status: response.status, user: null };
     },
