@@ -312,7 +312,7 @@ export class DefaultMessaging implements Messaging {
     // Resolve the local routing identity; without it the message cannot be addressed (5.9).
     const sender = await this.sender.resolveSender();
     if (sender === null) {
-      await this.markFailed(id, recipientUid);
+      await this.markFailed(id, recipientUid, 'not registered (no device id)');
       return;
     }
 
@@ -324,16 +324,17 @@ export class DefaultMessaging implements Messaging {
       if (!(await this.sessions.hasSession(recipientUid))) {
         const bundle = await this.keyClaimer.claim(recipientUid);
         if (bundle === null) {
-          await this.markFailed(id, recipientUid);
+          await this.markFailed(id, recipientUid, 'recipient has no published keys');
           return;
         }
         await this.sessions.establishSession(recipientUid, bundle);
       }
       body = await this.sessions.encrypt(recipientUid, plaintext);
-    } catch {
-      // Do not propagate or log: the error may carry sensitive material (8.5). Retain the
-      // composed text and surface a per-message failure (5.9).
-      await this.markFailed(id, recipientUid);
+    } catch (err) {
+      // A short reason is surfaced for diagnosis; the raw error (which may carry sensitive
+      // material, 8.5) is never logged or transmitted.
+      const reason = err instanceof Error ? err.message.slice(0, 80) : 'unknown';
+      await this.markFailed(id, recipientUid, `encrypt failed: ${reason}`);
       return;
     }
 
@@ -494,7 +495,7 @@ export class DefaultMessaging implements Messaging {
       return;
     }
     this.pending.delete(key);
-    void this.markFailed(entry.id, entry.recipientUid);
+    void this.markFailed(entry.id, entry.recipientUid, 'no server ack (timeout)');
   }
 
   // -------------------------------------------------------------------------
@@ -502,9 +503,15 @@ export class DefaultMessaging implements Messaging {
   // -------------------------------------------------------------------------
 
   /** Mark an outbound message `failed` (text retained) in the store and to listeners (5.9, 5.11, 6.8). */
-  private async markFailed(id: string, remoteUid: string): Promise<void> {
+  private async markFailed(id: string, remoteUid: string, reason?: string): Promise<void> {
     await this.store.updateMessageStatus(id, 'failed');
-    this.emitUpdate({ type: 'status-updated', id, status: 'failed', remoteUid });
+    this.emitUpdate({
+      type: 'status-updated',
+      id,
+      status: 'failed',
+      remoteUid,
+      ...(reason !== undefined ? { error: reason } : {}),
+    });
   }
 
   private clearAckTimer(entry: PendingSend): void {
