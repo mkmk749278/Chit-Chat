@@ -304,10 +304,19 @@ export function createMobileController(): ChatController {
 
     async resolveContact(e164: string): Promise<ResolveContactResult> {
       try {
-        const result = await directory.resolve(e164);
-        return result !== null
-          ? { ok: true, uid: result.uid, displayName: result.displayName }
-          : { ok: false, error: 'No Lumin user is registered with that phone number.' };
+        const { status, user } = await directory.resolve(e164);
+        if (user !== null) {
+          return { ok: true, uid: user.uid, displayName: user.displayName };
+        }
+        // Surface the HTTP status so a discovery miss is diagnosable: 404 = not registered,
+        // 429 = rate-limited, 401 = auth, 400 = bad format, 0 = not signed in / offline.
+        const reason =
+          status === 404
+            ? 'No Lumin user is registered with that number.'
+            : status === 0
+              ? 'Not signed in or offline.'
+              : `Lookup failed (HTTP ${status}).`;
+        return { ok: false, error: reason };
       } catch {
         return { ok: false, error: 'Could not reach the directory. Check your connection.' };
       }
