@@ -53,7 +53,17 @@ export class DirectoryService {
       if (deviceCount === 0) {
         throw new NotFoundException('No registered user found for that phone number');
       }
-      return { uid: user.firebaseUid };
+      return { uid: user.firebaseUid, displayName: user.displayName ?? null };
+    });
+  }
+
+  /**
+   * Set the signed-in user's display name (shown to peers instead of their UID). Upserts the
+   * `users` row so it works whether or not the user has registered a device yet.
+   */
+  async setDisplayName(uid: string, displayName: string): Promise<void> {
+    await this.transactions.runInTransaction(async (manager) => {
+      await manager.upsert(UserEntity, { firebaseUid: uid, displayName }, ['firebaseUid']);
     });
   }
 
@@ -66,14 +76,23 @@ export class DirectoryService {
    */
   async whoAmI(
     uid: string,
-  ): Promise<{ storedPhone: string | null; deviceCount: number; selfLookup: string }> {
+  ): Promise<{
+    storedPhone: string | null;
+    displayName: string | null;
+    deviceCount: number;
+    selfLookup: string;
+  }> {
     const base = await this.transactions.runInTransaction(async (manager) => {
       const user = await manager.findOne(UserEntity, { where: { firebaseUid: uid } });
       if (user === null) {
-        return { storedPhone: null as string | null, deviceCount: 0 };
+        return { storedPhone: null as string | null, displayName: null as string | null, deviceCount: 0 };
       }
       const deviceCount = await manager.count(DeviceEntity, { where: { userId: user.id } });
-      return { storedPhone: user.phoneNumber ?? null, deviceCount };
+      return {
+        storedPhone: user.phoneNumber ?? null,
+        displayName: user.displayName ?? null,
+        deviceCount,
+      };
     });
 
     // Server-side self-lookup: resolve our OWN stored phone in-process. This bypasses the

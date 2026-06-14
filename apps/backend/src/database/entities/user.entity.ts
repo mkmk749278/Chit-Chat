@@ -38,6 +38,13 @@ export class UserEntity implements User {
   @Column({ type: 'text', name: 'phone_number', nullable: true })
   phoneNumber?: string;
 
+  /**
+   * Human-readable name chosen at onboarding, shown to peers instead of the UID. Nullable;
+   * set via `POST /api/directory/profile` and returned by directory resolve + `/me`.
+   */
+  @Column({ type: 'text', name: 'display_name', nullable: true })
+  displayName?: string;
+
   @Column({ type: 'text', nullable: true })
   email?: string;
 
