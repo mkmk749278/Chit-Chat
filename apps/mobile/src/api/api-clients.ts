@@ -44,8 +44,8 @@ export function createPreKeyClaimClient(
 
 /** Resolves an E.164 phone number to a registered user's Firebase UID for contact discovery. */
 export interface DirectoryClient {
-  /** Resolve a phone number to `{ uid, displayName }`, or `null` when no user owns it / not signed in. */
-  resolve(phoneNumber: string): Promise<ResolvePhoneResponse | null>;
+  /** Resolve a phone number; `user` is null on miss and `status` is the HTTP status (0 = not sent). */
+  resolve(phoneNumber: string): Promise<{ status: number; user: ResolvePhoneResponse | null }>;
   /** Diagnostic: the caller's own discovery state (token vs stored phone, device count). */
   whoAmI(): Promise<WhoAmIResponse | null>;
   /** Set the signed-in user's display name (shown to peers). Resolves true on success. */
@@ -62,10 +62,10 @@ export function createDirectoryClient(
   apiBaseUrl: string,
 ): DirectoryClient {
   return {
-    async resolve(phoneNumber: string): Promise<ResolvePhoneResponse | null> {
+    async resolve(phoneNumber: string): Promise<{ status: number; user: ResolvePhoneResponse | null }> {
       const token = getToken();
       if (token === null) {
-        return null;
+        return { status: 0, user: null };
       }
       const response = await http.send({
         method: 'POST',
@@ -74,10 +74,12 @@ export function createDirectoryClient(
         body: JSON.stringify({ phoneNumber }),
         timeoutMs: REQUEST_TIMEOUT_MS,
       });
-      if (response.status === 200) {
-        return JSON.parse(response.body) as ResolvePhoneResponse;
+      // Accept any 2xx (NestJS POST defaults to 201) so a successful lookup is never
+      // misread as a miss.
+      if (response.status >= 200 && response.status < 300) {
+        return { status: response.status, user: JSON.parse(response.body) as ResolvePhoneResponse };
       }
-      return null;
+      return { status: response.status, user: null };
     },
 
     async setProfile(displayName: string): Promise<boolean> {

@@ -66,6 +66,7 @@ export class DirectoryController {
    */
   @Post('resolve')
   @UseGuards(FirebaseAuthGuard)
+  @HttpCode(HttpStatus.OK)
   async resolve(
     @Auth() auth: AuthContext,
     @Body() dto: ResolvePhoneDto,
