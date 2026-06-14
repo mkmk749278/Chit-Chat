@@ -30,9 +30,49 @@ import { setWebCrypto } from '@privacyresearch/libsignal-protocol-typescript';
 import msrcrypto from '@privacyresearch/libsignal-protocol-typescript/lib/msrcrypto';
 
 // 3. Buffer global for base64 at the wire boundary.
-const globalScope = globalThis as unknown as { Buffer?: typeof Buffer; crypto?: Crypto };
+const globalScope = globalThis as unknown as {
+  Buffer?: typeof Buffer;
+  crypto?: Crypto;
+  TextEncoder?: unknown;
+  TextDecoder?: unknown;
+};
 if (typeof globalScope.Buffer === 'undefined') {
   globalScope.Buffer = Buffer;
+}
+
+// 4. TextEncoder / TextDecoder — Hermes provides neither, but the pure-TS libsignal engine
+// uses them (UTF-8) when encrypting/decrypting message text. Back them with the Buffer
+// global above (UTF-8 is exactly what libsignal needs); no extra native module.
+if (typeof globalScope.TextEncoder === 'undefined') {
+  globalScope.TextEncoder = class {
+    readonly encoding = 'utf-8';
+    encode(input = ''): Uint8Array {
+      return new Uint8Array(Buffer.from(input, 'utf-8'));
+    }
+    encodeInto(source: string, destination: Uint8Array): { read: number; written: number } {
+      const encoded = this.encode(source);
+      const written = Math.min(encoded.length, destination.length);
+      destination.set(encoded.subarray(0, written));
+      return { read: source.length, written };
+    }
+  };
+}
+if (typeof globalScope.TextDecoder === 'undefined') {
+  globalScope.TextDecoder = class {
+    readonly encoding: string;
+    constructor(encoding = 'utf-8') {
+      this.encoding = encoding;
+    }
+    decode(input?: ArrayBuffer | ArrayBufferView): string {
+      if (input === undefined) {
+        return '';
+      }
+      const buf = ArrayBuffer.isView(input)
+        ? Buffer.from(input.buffer, input.byteOffset, input.byteLength)
+        : Buffer.from(input as ArrayBuffer);
+      return buf.toString('utf-8');
+    }
+  };
 }
 
 // 2. WebCrypto: msrcrypto for `subtle`, native CSPRNG for `getRandomValues`. Build a hybrid
