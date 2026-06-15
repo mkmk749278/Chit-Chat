@@ -464,7 +464,7 @@ export class DefaultMessaging implements Messaging {
       return;
     }
     if (frame.kind === 'ack') {
-      void this.handleAck(frame.recipientUid, frame.seq);
+      void this.handleAck(frame.recipientUid, frame.seq, frame.nodes);
     }
   }
 
@@ -472,7 +472,7 @@ export class DefaultMessaging implements Messaging {
    * A Backend_API acknowledgment arrived within the deadline: transition the matching
    * pending send `sending → sent` and stop tracking it (Requirements 5.6, 6.5).
    */
-  private async handleAck(recipientUid: string, seq: number): Promise<void> {
+  private async handleAck(recipientUid: string, seq: number, nodes?: number): Promise<void> {
     const key = pendingKey(recipientUid, seq);
     const entry = this.pending.get(key);
     if (entry === undefined) {
@@ -481,7 +481,16 @@ export class DefaultMessaging implements Messaging {
     this.clearAckTimer(entry);
     this.pending.delete(key);
     await this.store.updateMessageStatus(entry.id, 'sent');
-    this.emitUpdate({ type: 'status-updated', id: entry.id, status: 'sent', remoteUid: recipientUid });
+    // `nodes` (diagnostic): how many recipient nodes the server fanned the envelope to.
+    // 0 ⇒ the recipient had no live presence entry, so nothing was delivered.
+    const info = nodes !== undefined ? `delivered to ${nodes} device${nodes === 1 ? '' : 's'}` : undefined;
+    this.emitUpdate({
+      type: 'status-updated',
+      id: entry.id,
+      status: 'sent',
+      remoteUid: recipientUid,
+      ...(info !== undefined ? { error: info } : {}),
+    });
   }
 
   /**

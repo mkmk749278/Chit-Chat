@@ -49,7 +49,7 @@ import type { NodeRelayMessage } from './node-relay-message';
  * the reason the envelope was refused and nothing was published.
  */
 export type RelayOutcome =
-  | { status: 'received' }
+  | { status: 'received'; nodes: number }
   | { status: 'rejected'; reason: 'sender-mismatch' | 'malformed' };
 
 @Injectable()
@@ -98,7 +98,9 @@ export class MessageRelayService {
 
     // Accepted for delivery (the recipient may be offline; the client's 30 s timeout
     // governs that case). The gateway ACKs the sender on this outcome (task 4.7, 5.6).
-    return { status: 'received' };
+    // `nodes` = the number of distinct recipient nodes the envelope was published to
+    // (0 ⇒ the recipient has no live presence entry).
+    return { status: 'received', nodes: nodeIds.size };
   }
 
   /**
