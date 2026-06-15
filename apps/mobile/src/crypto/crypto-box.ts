@@ -9,8 +9,10 @@
  *   blob = "v1:" ‖ base64(iv ‖ ct ‖ tag)
  *
  * The 64-byte data-encryption key is split into a 32-byte AES key and a 32-byte MAC key.
- * Decryption verifies the tag (in constant time, via WebCrypto `verify`) BEFORE decrypting,
- * so a tampered or truncated blob is rejected rather than fed to the cipher.
+ * Decryption recomputes the tag with HMAC `sign` and compares it in constant time BEFORE
+ * decrypting, so a tampered or truncated blob is rejected rather than fed to the cipher.
+ * (`sign` is used rather than `verify` because it is the only HMAC path the on-device
+ * msrcrypto WebCrypto supports.)
  *
  * AES-CBC and HMAC-SHA256 are deliberately chosen over AES-GCM: they are the exact
  * primitives the Double Ratchet already drives through the same polyfilled WebCrypto
@@ -69,9 +71,17 @@ function concatBytes(...parts: Uint8Array[]): Uint8Array {
   return out;
 }
 
-/** A view's underlying bytes as a standalone `ArrayBuffer` (WebCrypto wants a buffer). */
-function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+/**
+ * A fresh, zero-offset copy of `bytes` backed by its own `ArrayBuffer`. WebCrypto inputs are
+ * passed as standalone Uint8Arrays (not subarray views into a larger buffer) to match how the
+ * on-device msrcrypto is driven by the working ratchet and to avoid byteOffset/typing quirks.
+ * Allocating with a numeric length keeps the element type `Uint8Array<ArrayBuffer>`, which the
+ * DOM `BufferSource` typings require.
+ */
+function copy(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
+  const out = new Uint8Array(bytes.length);
+  out.set(bytes);
+  return out;
 }
 
 /** Constant-time byte comparison; both inputs are MAC tags of equal length. */
@@ -100,26 +110,32 @@ export function createCryptoBox(deps: CryptoBoxDeps): CryptoBox {
     return { encKey: key.subarray(0, ENC_KEY_LENGTH), macKey: key.subarray(ENC_KEY_LENGTH, REQUIRED_KEY_LENGTH) };
   };
 
-  const importAesKey = (raw: Uint8Array): Promise<CryptoKey> =>
-    subtle.importKey('raw', toArrayBuffer(raw), { name: 'AES-CBC' }, false, ['encrypt', 'decrypt']);
+  // NOTE: the algorithm forms below mirror EXACTLY how the on-device WebCrypto (msrcrypto,
+  // via @privacyresearch/libsignal-protocol-typescript) is driven by the working Double
+  // Ratchet: AES-CBC keys imported with a SINGLE usage, HMAC with `hash: { name }` (object
+  // form) and `['sign']`, and `sign({ name: 'HMAC', hash: 'SHA-256' }, ...)`. msrcrypto
+  // rejects the string/`verify`/dual-usage forms with an "algorithm" error, so do not
+  // "simplify" these back to strings.
+  const importAesKey = (raw: Uint8Array, usage: 'encrypt' | 'decrypt'): Promise<CryptoKey> =>
+    subtle.importKey('raw', copy(raw), { name: 'AES-CBC' }, false, [usage]);
 
   const importMacKey = (raw: Uint8Array): Promise<CryptoKey> =>
-    subtle.importKey('raw', toArrayBuffer(raw), { name: 'HMAC', hash: 'SHA-256' }, false, [
-      'sign',
-      'verify',
-    ]);
+    subtle.importKey('raw', copy(raw), { name: 'HMAC', hash: { name: 'SHA-256' } }, false, ['sign']);
+
+  const hmac = async (macKey: Uint8Array, data: Uint8Array): Promise<Uint8Array> => {
+    const handle = await importMacKey(macKey);
+    return new Uint8Array(await subtle.sign({ name: 'HMAC', hash: 'SHA-256' }, handle, copy(data)));
+  };
 
   return {
     async encrypt(plaintext: string, key: Uint8Array): Promise<string> {
       const { encKey, macKey } = splitKey(key);
       const iv = getRandomValues(new Uint8Array(IV_LENGTH));
-      const aesKey = await importAesKey(encKey);
+      const aesKey = await importAesKey(encKey, 'encrypt');
       const ciphertext = new Uint8Array(
-        await subtle.encrypt({ name: 'AES-CBC', iv: toArrayBuffer(iv) }, aesKey, toArrayBuffer(utf8Encode(plaintext))),
+        await subtle.encrypt({ name: 'AES-CBC', iv: copy(iv) }, aesKey, copy(utf8Encode(plaintext))),
       );
-      const macKeyHandle = await importMacKey(macKey);
-      const signed = concatBytes(iv, ciphertext);
-      const tag = new Uint8Array(await subtle.sign('HMAC', macKeyHandle, toArrayBuffer(signed)));
+      const tag = await hmac(macKey, concatBytes(iv, ciphertext));
       return FORMAT_PREFIX + toBase64(concatBytes(iv, ciphertext, tag));
     },
 
@@ -136,19 +152,16 @@ export function createCryptoBox(deps: CryptoBoxDeps): CryptoBox {
       const ciphertext = bytes.subarray(IV_LENGTH, bytes.length - TAG_LENGTH);
 
       const { encKey, macKey } = splitKey(key);
-      const macKeyHandle = await importMacKey(macKey);
-      const signed = concatBytes(iv, ciphertext);
       // Recompute the tag with `sign` and compare in constant time rather than using
-      // `subtle.verify` — `sign` is the HMAC path the Double Ratchet already exercises in
-      // the on-device WebCrypto, so the vault depends on no additional crypto surface.
-      const expected = new Uint8Array(await subtle.sign('HMAC', macKeyHandle, toArrayBuffer(signed)));
+      // `subtle.verify` — `sign` is the only HMAC path the on-device WebCrypto supports.
+      const expected = await hmac(macKey, concatBytes(iv, ciphertext));
       if (!constantTimeEqual(expected, tag)) {
         throw new Error('CryptoBox: authentication failed (wrong key or tampered data)');
       }
 
-      const aesKey = await importAesKey(encKey);
+      const aesKey = await importAesKey(encKey, 'decrypt');
       const plaintext = new Uint8Array(
-        await subtle.decrypt({ name: 'AES-CBC', iv: toArrayBuffer(iv) }, aesKey, toArrayBuffer(ciphertext)),
+        await subtle.decrypt({ name: 'AES-CBC', iv: copy(iv) }, aesKey, copy(ciphertext)),
       );
       return utf8Decode(plaintext);
     },

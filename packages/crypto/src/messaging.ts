@@ -482,8 +482,14 @@ export class DefaultMessaging implements Messaging {
     this.pending.delete(key);
     await this.store.updateMessageStatus(entry.id, 'sent');
     // `nodes` (diagnostic): how many recipient nodes the server fanned the envelope to.
-    // 0 ⇒ the recipient had no live presence entry, so nothing was delivered.
-    const info = nodes !== undefined ? `delivered to ${nodes} device${nodes === 1 ? '' : 's'}` : undefined;
+    // 0 ⇒ the recipient had no live presence entry, so the server queued it for
+    // store-and-forward and will deliver it when they next connect.
+    const info =
+      nodes === undefined
+        ? undefined
+        : nodes === 0
+          ? 'queued (recipient offline)'
+          : `delivered to ${nodes} device${nodes === 1 ? '' : 's'}`;
     this.emitUpdate({
       type: 'status-updated',
       id: entry.id,

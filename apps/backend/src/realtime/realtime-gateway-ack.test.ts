@@ -37,6 +37,7 @@ function buildGateway(relay: Pick<MessageRelayService, 'relay'>): InboundGateway
     undefined as never,
     relay as MessageRelayService,
     undefined as never,
+    undefined as never,
   );
   return gateway as unknown as InboundGateway;
 }
@@ -91,5 +92,53 @@ describe('RealtimeGateway inbound send handling', () => {
 
     expect(relay.relay).not.toHaveBeenCalled();
     expect(socket.sent).toHaveLength(0);
+  });
+});
+
+type FlushGateway = {
+  flushOfflineQueue(uid: string, socket: { send: (frame: unknown) => void }): Promise<void>;
+};
+
+function buildFlushGateway(offlineQueue: { drain: jest.Mock }): FlushGateway {
+  const gateway = new RealtimeGateway(
+    undefined as never,
+    undefined as never,
+    undefined as never,
+    undefined as never,
+    undefined as never,
+    undefined as never,
+    offlineQueue as never,
+  );
+  return gateway as unknown as FlushGateway;
+}
+
+describe('RealtimeGateway offline-queue flush on connect', () => {
+  it('delivers each queued envelope to the socket as a deliver frame, in order', async () => {
+    const queued = [
+      { ...ENVELOPE, seq: 1 },
+      { ...ENVELOPE, seq: 2 },
+    ];
+    const offlineQueue = { drain: jest.fn().mockResolvedValue(queued) };
+    const gateway = buildFlushGateway(offlineQueue);
+    const sent: unknown[] = [];
+
+    await gateway.flushOfflineQueue('bob', { send: (frame) => sent.push(frame) });
+
+    expect(offlineQueue.drain).toHaveBeenCalledWith('bob');
+    expect(sent).toEqual([
+      { kind: 'deliver', envelope: queued[0] },
+      { kind: 'deliver', envelope: queued[1] },
+    ]);
+  });
+
+  it('swallows a drain failure so a bad queue cannot break the connection', async () => {
+    const offlineQueue = { drain: jest.fn().mockRejectedValue(new Error('redis down')) };
+    const gateway = buildFlushGateway(offlineQueue);
+    const sent: unknown[] = [];
+
+    await expect(
+      gateway.flushOfflineQueue('bob', { send: (frame) => sent.push(frame) }),
+    ).resolves.toBeUndefined();
+    expect(sent).toHaveLength(0);
   });
 });

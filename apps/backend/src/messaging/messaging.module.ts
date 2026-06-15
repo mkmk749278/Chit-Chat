@@ -16,12 +16,14 @@ import { Module } from '@nestjs/common';
 
 import { InProcessSocketRegistry, LOCAL_SOCKET_REGISTRY } from './local-socket-registry';
 import { MessageRelayService } from './message-relay.service';
+import { OfflineQueueService } from './offline-queue.service';
 
 @Module({
   providers: [
     MessageRelayService,
+    OfflineQueueService,
     { provide: LOCAL_SOCKET_REGISTRY, useClass: InProcessSocketRegistry },
   ],
-  exports: [MessageRelayService, LOCAL_SOCKET_REGISTRY],
+  exports: [MessageRelayService, OfflineQueueService, LOCAL_SOCKET_REGISTRY],
 })
 export class MessagingModule {}
