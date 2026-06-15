@@ -38,6 +38,16 @@ const DIGITS_PER_GROUP = 5;
 /** Number of 5-byte groups taken from each 32-byte fingerprint (→ 30 digits per user). */
 const GROUPS_PER_USER = 6;
 
+/**
+ * The minimal WebCrypto surface this module needs: just SHA-512 digesting. Declared locally
+ * (rather than referencing the DOM `SubtleCrypto` type) because the shared crypto package
+ * compiles with `lib: ["ES2022"]` + `types: ["node"]` and no DOM lib. The browser, Node ≥ 20,
+ * and the React Native polyfill all satisfy this at runtime.
+ */
+interface DigestProvider {
+  digest(algorithm: string, data: Uint8Array): Promise<ArrayBuffer>;
+}
+
 /** Inputs needed to compute a safety number for a 1:1 conversation. */
 export interface SafetyNumberInput {
   /** The local user's Firebase UID (stable identifier mixed into their fingerprint). */
@@ -71,8 +81,8 @@ function concatBytes(...parts: Uint8Array[]): Uint8Array {
 }
 
 /** Resolve the WebCrypto `subtle` surface, with a clear error if the host lacks it. */
-function getSubtle(): SubtleCrypto {
-  const subtle = (globalThis as { crypto?: { subtle?: SubtleCrypto } }).crypto?.subtle;
+function getSubtle(): DigestProvider {
+  const subtle = (globalThis as { crypto?: { subtle?: DigestProvider } }).crypto?.subtle;
   if (subtle === undefined) {
     throw new Error(
       'safety-number: WebCrypto subtle is unavailable. The browser and Node ≥ 20 provide it ' +
@@ -83,7 +93,7 @@ function getSubtle(): SubtleCrypto {
 }
 
 /** One SHA-512 digest over `data`, returned as raw bytes. */
-async function sha512(subtle: SubtleCrypto, data: Uint8Array): Promise<Uint8Array> {
+async function sha512(subtle: DigestProvider, data: Uint8Array): Promise<Uint8Array> {
   // Copy into a standalone ArrayBuffer so a subarray view never leaks extra bytes into the digest.
   const buf = new Uint8Array(data.length);
   buf.set(data);
@@ -96,7 +106,7 @@ async function sha512(subtle: SubtleCrypto, data: Uint8Array): Promise<Uint8Arra
  * influences every iteration.
  */
 async function userFingerprint(
-  subtle: SubtleCrypto,
+  subtle: DigestProvider,
   stableId: string,
   identityKey: Uint8Array,
 ): Promise<Uint8Array> {
