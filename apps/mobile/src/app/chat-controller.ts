@@ -47,6 +47,7 @@ import {
   type ConversationEvent,
   type KeyStore,
   type Messaging,
+  type RegistrationResult,
 } from '@chat-app/crypto';
 import type { WhoAmIResponse } from '@chat-app/types';
 
@@ -61,6 +62,7 @@ import {
 } from '../crypto/persistent-store';
 import { createInMemoryKeyStore } from '../crypto/in-memory-key-store';
 import { signalStoreFromIdentity } from '../crypto/signal-store';
+import { clearDisplayName, loadDisplayName, saveDisplayName } from './profile-store';
 import { createReactNativeHttpClient } from '../transport/http-client';
 import { createReactNativeWebSocketTransport } from '../transport/web-socket-transport';
 
@@ -97,6 +99,13 @@ export interface ChatController {
   resolveContact(e164: string): Promise<ResolveContactResult>;
   /** Set the signed-in user's display name (shown to peers); called after onboarding. */
   setDisplayName(displayName: string): Promise<void>;
+  /**
+   * The display name remembered for the signed-in user, read from durable on-device storage
+   * (falling back to the backend profile). `null` when none is known yet — the only case in
+   * which onboarding should prompt for a name. Independent of encryption setup, so a returning
+   * user skips onboarding even when the encrypted stack or backend is unavailable.
+   */
+  loadDisplayName(): Promise<string | null>;
   /** Set the conversation that subsequent {@link ChatController.send} calls target. */
   openConversation(recipientUid: string): void;
   /** Send `plaintext` to the currently-open conversation (see {@link openConversation}). */
@@ -126,6 +135,27 @@ export interface ChatController {
 
 /** A short, collision-resistant client message id (no external uuid dependency). */
 const newId = (): string => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+/**
+ * Turn a non-`registered` {@link RegistrationResult} into a human-readable setup-failure
+ * message with a clear next step. Each outcome has a different cause and remedy, so collapsing
+ * them into one opaque status word left the user (and support) unable to tell a server outage
+ * apart from an expired session or a rejected payload.
+ */
+function describeRegistrationFailure(
+  registration: Exclude<RegistrationResult, { status: 'registered' }>,
+): string {
+  switch (registration.status) {
+    case 'service-unavailable':
+      return "Couldn't reach the server to finish secure setup. Check your connection, then tap to retry.";
+    case 'sign-in-required':
+      return 'Your session expired before secure setup finished. Sign out and sign in again.';
+    case 'invalid':
+      return registration.field !== undefined
+        ? `The server rejected device registration (field: ${registration.field}). Tap to retry.`
+        : 'The server rejected device registration. Tap to retry.';
+  }
+}
 
 export function createMobileController(): ChatController {
   const provider = new FirebaseAuthAdapter();
@@ -219,9 +249,10 @@ export function createMobileController(): ChatController {
     );
     const registration = await registrar.ensureRegistered();
     if (registration.status !== 'registered') {
-      // Without a deviceId the client cannot be addressed or discovered. Surface WHY so the
-      // user sees it and can retry, instead of silently failing every lookup/send.
-      setSetup({ phase: 'failed', error: `Device registration failed (${registration.status}).` });
+      // Without a deviceId the client cannot be addressed or discovered. Surface WHY in plain
+      // language — each outcome needs a different action — instead of an opaque status word the
+      // user can't act on.
+      setSetup({ phase: 'failed', error: describeRegistrationFailure(registration) });
       emit({ type: 'connection-changed', connection: 'disconnected' });
       return;
     }
@@ -351,11 +382,43 @@ export function createMobileController(): ChatController {
     },
 
     async setDisplayName(displayName: string): Promise<void> {
+      // Persist locally FIRST so the name survives a relaunch regardless of the backend —
+      // this is what stops onboarding from re-prompting on every launch when the network or
+      // encryption setup is failing.
+      const uid = authService.getCurrentUid() ?? currentUid;
+      if (uid !== null) {
+        await saveDisplayName(uid, displayName);
+      }
       try {
         await directory.setProfile(displayName);
       } catch {
-        // Non-fatal: the name is a display nicety; failure leaves the peer showing as a UID.
+        // Non-fatal: the backend copy is what peers discover; the local copy already keeps the
+        // user out of onboarding. Failure here just leaves the peer showing as a UID.
       }
+    },
+
+    async loadDisplayName(): Promise<string | null> {
+      const uid = authService.getCurrentUid() ?? currentUid;
+      if (uid === null) {
+        return null;
+      }
+      // Prefer the durable local copy (works offline / when setup failed); fall back to the
+      // backend profile, re-persisting it locally so the next launch needs no network.
+      const local = await loadDisplayName(uid);
+      if (local !== null) {
+        return local;
+      }
+      try {
+        const me = await directory.whoAmI();
+        const remote = me?.displayName ?? null;
+        if (remote !== null && remote.length > 0) {
+          await saveDisplayName(uid, remote);
+          return remote;
+        }
+      } catch {
+        // Offline or backend down: no remembered name to restore.
+      }
+      return null;
     },
 
     openConversation(recipientUid: string): void {
@@ -429,6 +492,12 @@ export function createMobileController(): ChatController {
       } catch {
         // A wipe failure must not block sign-out; the auth session is still cleared below.
       }
+      // Forget the locally-remembered display name too, so the next account on this device
+      // starts at onboarding rather than inheriting a stale name.
+      const signedOutUid = authService.getCurrentUid() ?? currentUid;
+      if (signedOutUid !== null) {
+        await clearDisplayName(signedOutUid);
+      }
       teardown();
       deviceId = null;
       bootstrappedUid = null;
@@ -454,6 +523,10 @@ export function createDemoController(): ChatController {
     },
     async setDisplayName(): Promise<void> {
       // Demo controller has no backend profile.
+    },
+    async loadDisplayName(): Promise<string | null> {
+      // Demo controller does not persist a profile; always onboard.
+      return null;
     },
     openConversation(): void {
       // No transport in the demo controller.
