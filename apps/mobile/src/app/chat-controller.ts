@@ -47,6 +47,7 @@ import {
   type ConversationEvent,
   type KeyStore,
   type Messaging,
+  type RegistrationResult,
 } from '@chat-app/crypto';
 import type { WhoAmIResponse } from '@chat-app/types';
 
@@ -134,6 +135,27 @@ export interface ChatController {
 
 /** A short, collision-resistant client message id (no external uuid dependency). */
 const newId = (): string => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+/**
+ * Turn a non-`registered` {@link RegistrationResult} into a human-readable setup-failure
+ * message with a clear next step. Each outcome has a different cause and remedy, so collapsing
+ * them into one opaque status word left the user (and support) unable to tell a server outage
+ * apart from an expired session or a rejected payload.
+ */
+function describeRegistrationFailure(
+  registration: Exclude<RegistrationResult, { status: 'registered' }>,
+): string {
+  switch (registration.status) {
+    case 'service-unavailable':
+      return "Couldn't reach the server to finish secure setup. Check your connection, then tap to retry.";
+    case 'sign-in-required':
+      return 'Your session expired before secure setup finished. Sign out and sign in again.';
+    case 'invalid':
+      return registration.field !== undefined
+        ? `The server rejected device registration (field: ${registration.field}). Tap to retry.`
+        : 'The server rejected device registration. Tap to retry.';
+  }
+}
 
 export function createMobileController(): ChatController {
   const provider = new FirebaseAuthAdapter();
@@ -227,9 +249,10 @@ export function createMobileController(): ChatController {
     );
     const registration = await registrar.ensureRegistered();
     if (registration.status !== 'registered') {
-      // Without a deviceId the client cannot be addressed or discovered. Surface WHY so the
-      // user sees it and can retry, instead of silently failing every lookup/send.
-      setSetup({ phase: 'failed', error: `Device registration failed (${registration.status}).` });
+      // Without a deviceId the client cannot be addressed or discovered. Surface WHY in plain
+      // language — each outcome needs a different action — instead of an opaque status word the
+      // user can't act on.
+      setSetup({ phase: 'failed', error: describeRegistrationFailure(registration) });
       emit({ type: 'connection-changed', connection: 'disconnected' });
       return;
     }
