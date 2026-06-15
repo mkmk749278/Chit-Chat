@@ -17,11 +17,11 @@ Effort: S (<1 day) · M (1–3 days) · L (~1 week) · XL (multi-week).
 - [x] 2.3 (S) Tests: skipped-seq gap, backfill clears, shuffled arrival never false-positives, mid-stream join, delivery-error counts as present, duplicates. **(this PR)**
 
 ### 3. Reactions / edit / delete — Req 3
-- [ ] 3.1 (M) Introduce the versioned **content payload** in `Messaging` (encode/decode; bare-string back-compat). Migrate `text` through it.
-- [ ] 3.2 (S) `Messaging.react/edit/delete` send helpers (E2E payloads).
-- [ ] 3.3 (M) Reducer: reactions map, edited marker, delete tombstone; ignore unknown `targetSeq`.
+- [x] 3.1 (M) Versioned **content payload** codec (`content-payload.ts`): encode/decode, bare-string back-compat, forward-compat `unsupported`, total decode. **(this PR)**
+- [ ] 3.2 (M) Wire the payload through `Messaging` (encode on send incl. plain text; decode on receive → dispatch reducer events) + `react/edit/delete` send helpers + sender-relative→local target flip.
+- [x] 3.3 (M) Reducer: reactions list, edited marker, delete tombstone; unknown target ignored; deleted rejects later edits/reactions. **(this PR)**
 - [ ] 3.4 (S) UI affordances (long-press → react/edit/delete) on both clients.
-- [ ] 3.5 (S) Tests: payload round-trip, no plaintext on wire, unknown-target ignored.
+- [x] 3.5 (S) Tests: payload round-trip/back-compat/forward-compat/malformed; reducer apply + ignore-unknown. **(this PR)**
 
 ### 4. Ephemeral / self-destruct / view-once — Req 4
 - [ ] 4.1 (M) `timer` payload + per-conversation TTL state in the reducer/store.
