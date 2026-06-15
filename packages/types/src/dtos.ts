@@ -119,3 +119,24 @@ export interface WhoAmIResponse {
    */
   selfLookup: string;
 }
+
+
+/**
+ * Request to publish ADDITIONAL one-time prekeys for an already-registered device
+ * (`POST /api/devices/prekeys`). Unlike registration (which replaces the whole bundle), this
+ * APPENDS to the device's existing unconsumed one-time prekeys, so a client can replenish them
+ * before they run out — otherwise, once exhausted, senders fall back to the signed prekey only,
+ * weakening initial-message forward secrecy. The caller's device is identified by `registrationId`.
+ */
+export interface AddOneTimePreKeysRequest {
+  /** The caller device's libsignal registration id (selects which device to append to). */
+  registrationId: number;
+  /** New one-time prekeys to append; their key ids must not collide with the device's existing ones. */
+  oneTimePreKeys: OneTimePreKeyDto[];
+}
+
+/** Response to `POST /api/devices/prekeys`: how many one-time prekeys were appended. */
+export interface AddOneTimePreKeysResponse {
+  /** Count of newly-stored one-time prekeys. */
+  added: number;
+}

@@ -62,6 +62,6 @@ Effort: S (<1 day) · M (1–3 days) · L (~1 week) · XL (multi-week).
 
 ## Cross-cutting / tech-debt (fold in as we go)
 - [ ] CC1 (M) Two-client E2E integration test harness (would have caught the Phase 1 decryption bug). Prereq for marking any Wave 2+ feature done.
-- [ ] CC2 (S) One-time prekey replenishment job (today: never replenished; falls back to signed-prekey-only when exhausted).
+- [~] CC2 (S) One-time prekey replenishment. **Backend `POST /api/devices/prekeys` append endpoint + `DevicesService.addOneTimePreKeys` done (this PR).** Remaining: client trigger (detect low count, allocate fresh ids, upload) wired into the mobile bootstrap.
 - [ ] CC3 (S) Reconcile spec vs impl: mobile uses an AES-CBC+HMAC vault, not SQLCipher as Phase 1 design states — update the design or migrate.
 - [ ] CC4 (M) Rehydrate persisted message history into the UI on relaunch (vault stores it; UI starts empty today).
