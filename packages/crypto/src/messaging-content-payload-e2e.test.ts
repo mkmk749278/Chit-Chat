@@ -250,3 +250,25 @@ test('no plaintext appears on the wire for a text message', async () => {
   A.messaging.dispose();
   B.messaging.dispose();
 });
+
+test('a disappearing-timer setting propagates to the peer (both converge)', async () => {
+  const alice = await newParty('alice', 'a-dev');
+  const bob = await newParty('bob', 'b-dev');
+  const hub = makeHub();
+  const A = makeClient(alice, { [bob.uid]: bob.bundle }, hub);
+  const B = makeClient(bob, { [alice.uid]: alice.bundle }, hub);
+
+  await A.messaging.setDisappearingTimer(bob.uid, 3_600_000);
+  await flush();
+
+  // Sender applied it optimistically...
+  const onAlice = A.events.find((e) => e.type === 'timer-changed');
+  assert.ok(onAlice && onAlice.type === 'timer-changed');
+  assert.equal(onAlice.ttlMs, 3_600_000);
+  // ...and the peer received the same TTL.
+  const onBob = B.events.find((e) => e.type === 'timer-changed');
+  assert.ok(onBob && onBob.type === 'timer-changed');
+  assert.equal(onBob.ttlMs, 3_600_000);
+  A.messaging.dispose();
+  B.messaging.dispose();
+});

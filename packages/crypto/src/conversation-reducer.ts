@@ -93,6 +93,12 @@ export interface ConversationState {
    * mid-stream never produces a spurious leading gap.
    */
   missingBefore: number[];
+  /**
+   * Active disappearing-message timer for the conversation, in milliseconds; `0` means
+   * disabled. Set by a `timer-changed` event so both peers agree on the same TTL (Req 4.1).
+   * The actual scheduled deletion of expired messages is a store concern (task 4.2).
+   */
+  disappearingTtlMs: number;
   /** Composer text plus its derived send-enablement (6.3, 6.4). */
   composer: { text: string; canSend: boolean };
   /**
@@ -151,7 +157,8 @@ export type ConversationEvent =
       targetDirection: 'in' | 'out';
       targetSeq: number;
       remoteUid?: string;
-    };
+    }
+  | { type: 'timer-changed'; ttlMs: number; remoteUid?: string };
 
 /**
  * The reducer contract consumed by the platform UIs (design Component 7).
@@ -186,6 +193,7 @@ export function initialConversationState(platform: 'mobile' | 'web'): Conversati
     connection: 'disconnected',
     messages: [],
     missingBefore: [],
+    disappearingTtlMs: 0,
     composer: { text: '', canSend: false },
     webWarningAcknowledged: platform !== 'web',
   };
@@ -369,6 +377,11 @@ export function reduce(
           deleted: true,
         })),
       };
+
+    case 'timer-changed':
+      // Both peers converge on the same disappearing-message TTL (Req 4.1); negative values
+      // are clamped to 0 (disabled).
+      return { ...state, disappearingTtlMs: Math.max(0, event.ttlMs) };
 
     default: {
       // Exhaustiveness guard: a new event variant must be handled explicitly.
