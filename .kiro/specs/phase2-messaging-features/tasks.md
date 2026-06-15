@@ -53,8 +53,8 @@ Effort: S (<1 day) · M (1–3 days) · L (~1 week) · XL (multi-week).
 - [ ] 8.1 (L) Decoy-PIN app state + hidden-chat partitioning.
 
 ### 9. Multi-device sync — Req 9
-- [ ] 9.0 (L) Design doc: per-device sessions, device-authenticated linking, retire the "newest device" claim hack + stale-row cleanup.
-- [ ] 9.1 (XL) Implementation across crypto core + backend + clients.
+- [x] 9.0 (L) Design doc: per-device sessions, account-mediated device linking, fan-out, revocation, retiring the "newest device" claim hack + stale-row cleanup, migration, security checklist — see `design-multidevice.md`. **(this PR; needs review before 9.1)**
+- [ ] 9.1 (XL) Implementation across crypto core + backend + clients (phased breakdown in the design doc §8).
 
 ### 10. Group chat — Req 10
 - [ ] 10.0 (L) Design doc: sender-keys vs pairwise fanout, membership rekeying, consistency.
