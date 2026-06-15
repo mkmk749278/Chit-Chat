@@ -40,4 +40,4 @@ export type ClientToServerFrame = { kind: 'send'; envelope: CiphertextEnvelope }
 /** Server → client frames. */
 export type ServerToClientFrame =
   | { kind: 'deliver'; envelope: CiphertextEnvelope }
-  | { kind: 'ack'; recipientUid: string; seq: number; status: 'received' };
+  | { kind: 'ack'; recipientUid: string; seq: number; status: 'received'; nodes?: number };

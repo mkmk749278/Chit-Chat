@@ -440,6 +440,7 @@ export class RealtimeGateway
       recipientUid: envelope.recipientUid,
       seq: envelope.seq,
       status: 'received',
+      nodes: outcome.nodes,
     };
     socket.send(JSON.stringify(ack));
   }

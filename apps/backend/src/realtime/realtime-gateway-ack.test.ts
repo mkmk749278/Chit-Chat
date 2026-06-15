@@ -53,7 +53,7 @@ const sendFrame = (envelope: CiphertextEnvelope): string =>
 
 describe('RealtimeGateway inbound send handling', () => {
   it('ACKs the sender when the relay accepts the envelope (5.6)', async () => {
-    const relay = { relay: jest.fn().mockResolvedValue({ status: 'received' }) };
+    const relay = { relay: jest.fn().mockResolvedValue({ status: 'received', nodes: 1 }) };
     const gateway = buildGateway(relay);
     const socket = fakeSocket({ uid: 'alice', tokenExp: 9_999_999_999 });
 
@@ -66,6 +66,7 @@ describe('RealtimeGateway inbound send handling', () => {
       recipientUid: 'bob',
       seq: 5,
       status: 'received',
+      nodes: 1,
     });
   });
 

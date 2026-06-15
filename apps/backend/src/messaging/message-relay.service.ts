@@ -50,7 +50,7 @@ import { OfflineQueueService } from './offline-queue.service';
  * the reason the envelope was refused and nothing was published.
  */
 export type RelayOutcome =
-  | { status: 'received' }
+  | { status: 'received'; nodes: number }
   | { status: 'rejected'; reason: 'sender-mismatch' | 'malformed' };
 
 @Injectable()
@@ -105,7 +105,9 @@ export class MessageRelayService {
 
     // Accepted for delivery (delivered live to an online recipient, or queued for an
     // offline one). The gateway ACKs the sender on this outcome (task 4.7, 5.6).
-    return { status: 'received' };
+    // `nodes` = the number of distinct recipient nodes the envelope was published to
+    // (0 ⇒ the recipient had no live presence entry, so it was queued for store-and-forward).
+    return { status: 'received', nodes: nodeIds.size };
   }
 
   /**
