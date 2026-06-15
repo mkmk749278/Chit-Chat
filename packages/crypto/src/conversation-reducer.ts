@@ -56,6 +56,19 @@ export interface RenderableMessage {
   status: MessageStatus;
   /** Short diagnostic reason for a `failed` message (e.g. "no server ack"); optional. */
   error?: string;
+  /**
+   * Emoji reactions attached to this message (deduped), or absent when none. Applied from an
+   * inbound `reaction-applied` event carrying a reaction E2E payload (Requirement 3.1).
+   */
+  reactions?: string[];
+  /** `true` once an `message-edited` event has superseded this message's text (Req 3.2). */
+  edited?: boolean;
+  /**
+   * `true` once a `message-deleted` tombstone has removed this message's content. The UI shows
+   * a "message deleted" placeholder; distinct from `text === null` with a `delivery-error`
+   * status, which means the ciphertext could not be decrypted (Requirements 3.3, 6.9).
+   */
+  deleted?: boolean;
 }
 
 /**
@@ -99,6 +112,13 @@ export interface ConversationState {
  * - `connection-changed`      — the Realtime_Client reported a new status (6.6).
  * - `web-warning-acknowledged`— the user acknowledged the web ephemerality warning (7.7, 8.3).
  * - `inbound-delivery-error`  — a received envelope failed decryption (5.5, 6.9).
+ * - `reaction-applied`        — attach an emoji reaction to a target message (Req 3.1).
+ * - `message-edited`          — supersede a target message's text (Req 3.2).
+ * - `message-deleted`         — tombstone a target message's content (Req 3.3).
+ *
+ * The reaction/edit/delete events address their target by its LOCAL `(targetDirection,
+ * targetSeq)`; the Messaging layer maps the on-wire sender-relative reference onto local
+ * direction before dispatching. An event whose target is not in the list is ignored (3.5).
  */
 export type ConversationEvent =
   | { type: 'message-appended'; message: RenderableMessage; remoteUid?: string }
@@ -110,6 +130,26 @@ export type ConversationEvent =
       type: 'inbound-delivery-error';
       id: string;
       seq: number;
+      remoteUid?: string;
+    }
+  | {
+      type: 'reaction-applied';
+      targetDirection: 'in' | 'out';
+      targetSeq: number;
+      emoji: string;
+      remoteUid?: string;
+    }
+  | {
+      type: 'message-edited';
+      targetDirection: 'in' | 'out';
+      targetSeq: number;
+      body: string;
+      remoteUid?: string;
+    }
+  | {
+      type: 'message-deleted';
+      targetDirection: 'in' | 'out';
+      targetSeq: number;
       remoteUid?: string;
     };
 
@@ -210,6 +250,29 @@ function computeMissingBefore(messages: readonly RenderableMessage[]): number[] 
 }
 
 /**
+ * Apply `transform` to the message matching `(direction, seq)`, returning a new list. If no
+ * message matches, the original list is returned unchanged — so a reaction/edit/delete that
+ * references an unknown message is silently ignored (Requirement 3.5). The matched entry is
+ * replaced with a fresh object, never mutated.
+ */
+function transformMessage(
+  messages: readonly RenderableMessage[],
+  direction: 'in' | 'out',
+  seq: number,
+  transform: (message: RenderableMessage) => RenderableMessage,
+): RenderableMessage[] {
+  let changed = false;
+  const next = messages.map((message) => {
+    if (message.direction === direction && message.seq === seq) {
+      changed = true;
+      return transform(message);
+    }
+    return message;
+  });
+  return changed ? next : (messages as RenderableMessage[]);
+}
+
+/**
  * Pure conversation reducer (Requirements 6.2–6.9, 7.7, 8.3).
  *
  * Returns a new {@link ConversationState} for each event without mutating `state`.
@@ -270,6 +333,42 @@ export function reduce(
         missingBefore: computeMissingBefore(messages),
       };
     }
+
+    case 'reaction-applied':
+      // Attach the emoji to the target message (deduped). Unknown target → ignored (3.5).
+      // A deleted message accepts no reactions.
+      return {
+        ...state,
+        messages: transformMessage(state.messages, event.targetDirection, event.targetSeq, (m) =>
+          m.deleted === true || (m.reactions ?? []).includes(event.emoji)
+            ? m
+            : { ...m, reactions: [...(m.reactions ?? []), event.emoji] },
+        ),
+      };
+
+    case 'message-edited':
+      // Supersede the target's text and mark it edited. A deleted message is not editable.
+      return {
+        ...state,
+        messages: transformMessage(state.messages, event.targetDirection, event.targetSeq, (m) =>
+          m.deleted === true ? m : { ...m, text: event.body, edited: true },
+        ),
+      };
+
+    case 'message-deleted':
+      // Tombstone the target: drop its content, reactions, and edited/error flags; mark it
+      // deleted (3.3). Built explicitly so no stale fields linger on the tombstone.
+      return {
+        ...state,
+        messages: transformMessage(state.messages, event.targetDirection, event.targetSeq, (m) => ({
+          id: m.id,
+          seq: m.seq,
+          direction: m.direction,
+          text: null,
+          status: m.status,
+          deleted: true,
+        })),
+      };
 
     default: {
       // Exhaustiveness guard: a new event variant must be handled explicitly.

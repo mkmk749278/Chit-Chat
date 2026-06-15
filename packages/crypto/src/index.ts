@@ -228,3 +228,13 @@ export * from './libsignal-puretsignal';
  * WebCrypto `crypto.subtle`; references no private key material.
  */
 export * from './safety-number';
+
+
+/**
+ * Versioned E2E content payload (Phase 2, Requirement 3). `encodeContentPayload` /
+ * `decodeContentPayload` wrap the libsignal plaintext so reactions, edits, deletes (and later
+ * timers/attachments) ride inside the existing ciphertext — the server still sees only an
+ * opaque envelope. Decoding is total and backward-compatible: a legacy bare-string plaintext
+ * decodes as `{ type: 'text' }`, and an unknown future type as `{ type: 'unsupported' }`.
+ */
+export * from './content-payload';
