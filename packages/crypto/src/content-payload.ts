@@ -31,6 +31,8 @@ export type ContentPayload =
   | { type: 'reaction'; targetSeq: number; targetOutbound: boolean; emoji: string }
   | { type: 'edit'; targetSeq: number; targetOutbound: boolean; body: string }
   | { type: 'delete'; targetSeq: number; targetOutbound: boolean }
+  /** Set the conversation's disappearing-message timer; `ttlMs === 0` disables it (Req 4.1). */
+  | { type: 'timer'; ttlMs: number }
   /** A `{v:1}` payload whose `type` (or shape) this client version does not understand. */
   | { type: 'unsupported' };
 
@@ -94,6 +96,10 @@ export function decodeContentPayload(raw: string): ContentPayload {
     case 'delete':
       return isSeq(env.targetSeq) && typeof env.targetOutbound === 'boolean'
         ? { type: 'delete', targetSeq: env.targetSeq, targetOutbound: env.targetOutbound }
+        : { type: 'unsupported' };
+    case 'timer':
+      return typeof env.ttlMs === 'number' && Number.isFinite(env.ttlMs) && env.ttlMs >= 0
+        ? { type: 'timer', ttlMs: env.ttlMs }
         : { type: 'unsupported' };
     default:
       // A type a newer client introduced; ignore rather than misrender (forward-compat).

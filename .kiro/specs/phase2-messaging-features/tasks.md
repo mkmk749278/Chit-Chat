@@ -24,7 +24,8 @@ Effort: S (<1 day) · M (1–3 days) · L (~1 week) · XL (multi-week).
 - [x] 3.5 (S) Tests: payload round-trip/back-compat/forward-compat/malformed; reducer apply + ignore-unknown. **(this PR)**
 
 ### 4. Ephemeral / self-destruct / view-once — Req 4
-- [ ] 4.1 (M) `timer` payload + per-conversation TTL state in the reducer/store.
+- [x] 4.1a (S) `timer` content-payload variant + pure expiry math (`disappearing-timer.ts`: `computeExpiresAt`/`selectExpired`/`msUntilNextExpiry`, view-once supported). **(this PR)**
+- [ ] 4.1b (M) Per-conversation TTL state in the reducer/store; apply `timer` payloads.
 - [ ] 4.2 (M) Store-side scheduled deletion with plaintext overwrite (best-effort secure erase).
 - [ ] 4.3 (S) View-once (delete-on-display) + UI; document OS-backup/screenshot limits.
 
