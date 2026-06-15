@@ -12,9 +12,9 @@ Effort: S (<1 day) · M (1–3 days) · L (~1 week) · XL (multi-week).
 - [ ] 1.4 (M) Verification UI on the Conversation screen (show number, mark verified, "safety number changed" warning on identity change — Req 1.5).
 
 ### 2. Message-gap detection — Req 2
-- [ ] 2.1 (S) Extend `ConversationReducer` to track `highestSeq` + gap markers; clear on backfill.
+- [x] 2.1 (S) Extend `ConversationReducer` to track `missingBefore` gap markers; derived from the inbound-seq set so it's order-independent and clears on backfill. **(this PR)**
 - [ ] 2.2 (S) Render the gap marker in mobile + web Conversation screens.
-- [ ] 2.3 (S) Property test: random arrival orders never produce a false gap once complete.
+- [x] 2.3 (S) Tests: skipped-seq gap, backfill clears, shuffled arrival never false-positives, mid-stream join, delivery-error counts as present, duplicates. **(this PR)**
 
 ### 3. Reactions / edit / delete — Req 3
 - [ ] 3.1 (M) Introduce the versioned **content payload** in `Messaging` (encode/decode; bare-string back-compat). Migrate `text` through it.

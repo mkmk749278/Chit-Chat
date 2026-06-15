@@ -67,6 +67,19 @@ export interface ConversationState {
   connection: ConnectionStatus;
   /** Messages rendered ascending by `seq`, each exactly once (6.2). */
   messages: RenderableMessage[];
+  /**
+   * Inbound sequence numbers that immediately follow a detected gap — i.e. for each `s`
+   * in this list, at least one inbound `seq` between the previous received message and `s`
+   * has not (yet) arrived. The UI renders a "messages may be missing" marker above the
+   * message with that `seq` (Requirement 2.2).
+   *
+   * Derived purely from the set of received inbound seqs, so it is independent of arrival
+   * order and self-correcting: once a missing message later arrives (store-and-forward
+   * backfill) the gap simply disappears (Requirements 2.1–2.3). Only gaps strictly between
+   * the lowest and highest received inbound seq are reported, so joining a conversation
+   * mid-stream never produces a spurious leading gap.
+   */
+  missingBefore: number[];
   /** Composer text plus its derived send-enablement (6.3, 6.4). */
   composer: { text: string; canSend: boolean };
   /**
@@ -132,6 +145,7 @@ export function initialConversationState(platform: 'mobile' | 'web'): Conversati
   return {
     connection: 'disconnected',
     messages: [],
+    missingBefore: [],
     composer: { text: '', canSend: false },
     webWarningAcknowledged: platform !== 'web',
   };
@@ -168,6 +182,34 @@ function upsertMessage(
 }
 
 /**
+ * Derive the inbound sequence numbers that immediately follow a gap (Requirement 2).
+ *
+ * Computed from the SET of received inbound seqs (a `delivery-error` entry still counts as
+ * received — the message arrived, it just couldn't be decrypted), so the result depends only
+ * on which messages are present, not the order they arrived in. A seq `s` is reported when the
+ * previous present inbound seq is not `s - 1`, meaning at least one message between them is
+ * missing. Only gaps strictly between the lowest and highest received inbound seq are reported,
+ * so a recipient who joins mid-stream is not shown a spurious leading gap, and backfilled
+ * messages clear the gap automatically (Requirements 2.1, 2.3).
+ */
+function computeMissingBefore(messages: readonly RenderableMessage[]): number[] {
+  const inboundSeqs = messages
+    .filter((m) => m.direction === 'in')
+    .map((m) => m.seq);
+  if (inboundSeqs.length < 2) {
+    return [];
+  }
+  const sorted = [...new Set(inboundSeqs)].sort((a, b) => a - b);
+  const followsGap: number[] = [];
+  for (let i = 1; i < sorted.length; i += 1) {
+    if (sorted[i] !== sorted[i - 1] + 1) {
+      followsGap.push(sorted[i]);
+    }
+  }
+  return followsGap;
+}
+
+/**
  * Pure conversation reducer (Requirements 6.2–6.9, 7.7, 8.3).
  *
  * Returns a new {@link ConversationState} for each event without mutating `state`.
@@ -180,11 +222,14 @@ export function reduce(
   event: ConversationEvent,
 ): ConversationState {
   switch (event.type) {
-    case 'message-appended':
+    case 'message-appended': {
+      const messages = upsertMessage(state.messages, event.message);
       return {
         ...state,
-        messages: upsertMessage(state.messages, event.message),
+        messages,
+        missingBefore: computeMissingBefore(messages),
       };
+    }
 
     case 'status-updated':
       return {
@@ -208,19 +253,23 @@ export function reduce(
     case 'web-warning-acknowledged':
       return { ...state, webWarningAcknowledged: true };
 
-    case 'inbound-delivery-error':
+    case 'inbound-delivery-error': {
       // Render the inbound entry with no plaintext and a delivery-error status
-      // (Requirements 5.5, 6.9). Deduped/ordered like any inbound message (6.2).
+      // (Requirements 5.5, 6.9). Deduped/ordered like any inbound message (6.2). The entry
+      // still occupies its seq, so it counts as "received" for gap detection (Requirement 2).
+      const messages = upsertMessage(state.messages, {
+        id: event.id,
+        seq: event.seq,
+        direction: 'in',
+        text: null,
+        status: 'delivery-error',
+      });
       return {
         ...state,
-        messages: upsertMessage(state.messages, {
-          id: event.id,
-          seq: event.seq,
-          direction: 'in',
-          text: null,
-          status: 'delivery-error',
-        }),
+        messages,
+        missingBefore: computeMissingBefore(messages),
       };
+    }
 
     default: {
       // Exhaustiveness guard: a new event variant must be handled explicitly.
