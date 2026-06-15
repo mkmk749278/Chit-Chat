@@ -73,3 +73,29 @@ export function createNativeVault(uid: string): PersistentVault {
       webCrypto.getRandomValues(array as unknown as ArrayBufferView) as unknown as T,
   });
 }
+
+/**
+ * Verify the on-device WebCrypto can actually perform the vault's AES-CBC + HMAC round-trip
+ * BEFORE the controller commits to the encrypted store. Different RN WebCrypto shims (e.g.
+ * msrcrypto) reject some algorithm forms at runtime; running an encrypt→decrypt here lets the
+ * controller fall back to a working (in-memory) store instead of failing setup outright if
+ * the device's crypto can't support the encrypted-at-rest path.
+ *
+ * @throws if WebCrypto is missing or the AES-CBC/HMAC round-trip does not reproduce the input.
+ */
+export async function probeNativeCrypto(): Promise<void> {
+  if (webCrypto?.subtle === undefined || webCrypto.getRandomValues === undefined) {
+    throw new Error('Secure storage unavailable: WebCrypto subtle/getRandomValues missing.');
+  }
+  const crypto = createCryptoBox({
+    subtle: webCrypto.subtle,
+    getRandomValues: <T extends ArrayBufferView>(array: T): T =>
+      webCrypto.getRandomValues(array as unknown as ArrayBufferView) as unknown as T,
+  });
+  const key = webCrypto.getRandomValues(new Uint8Array(64));
+  const sentinel = 'cryptobox-probe';
+  const roundTripped = await crypto.decrypt(await crypto.encrypt(sentinel, key), key);
+  if (roundTripped !== sentinel) {
+    throw new Error('Secure storage self-test failed: crypto round-trip mismatch.');
+  }
+}

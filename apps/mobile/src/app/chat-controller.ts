@@ -53,12 +53,14 @@ import type { WhoAmIResponse } from '@chat-app/types';
 import { FirebaseAuthAdapter } from '../auth';
 import { API_BASE_URL, REGISTER_URL, WS_URL } from '../api/api-config';
 import { createDirectoryClient, createPreKeyClaimClient, type DirectoryClient } from '../api/api-clients';
-import { createNativeVault } from '../crypto/native-vault';
+import { createNativeVault, probeNativeCrypto } from '../crypto/native-vault';
 import {
   createPersistentKeyStore,
   createPersistentSignalProtocolStore,
   type PersistentVault,
 } from '../crypto/persistent-store';
+import { createInMemoryKeyStore } from '../crypto/in-memory-key-store';
+import { signalStoreFromIdentity } from '../crypto/signal-store';
 import { createReactNativeHttpClient } from '../transport/http-client';
 import { createReactNativeWebSocketTransport } from '../transport/web-socket-transport';
 
@@ -190,10 +192,20 @@ export function createMobileController(): ChatController {
    */
   async function bootstrap(uid: string): Promise<void> {
     setSetup({ phase: 'registering' });
-    // Open the persistent, encrypted store for this user. Reused across launches so the
-    // device keeps one stable identity/deviceId (no re-registration churn).
-    vault = createNativeVault(uid);
-    const store = createPersistentKeyStore(vault);
+    // Open the persistent, encrypted store for this user — reused across launches so the
+    // device keeps one stable identity/deviceId (no re-registration churn). Guard it with a
+    // crypto self-test: if the device's WebCrypto can't do the encrypted-at-rest round-trip,
+    // fall back to an in-memory store so setup still SUCCEEDS and the user can message
+    // (degraded: identity won't survive a relaunch) rather than the whole app failing.
+    let store: KeyStore;
+    try {
+      await probeNativeCrypto();
+      vault = createNativeVault(uid);
+      store = createPersistentKeyStore(vault);
+    } catch {
+      vault = null;
+      store = createInMemoryKeyStore();
+    }
     keyStore = store;
 
     const identityManager = new DefaultIdentityManager(store, createPureTsLibsignalKeyGen());
@@ -221,7 +233,10 @@ export function createMobileController(): ChatController {
       emit({ type: 'connection-changed', connection: 'disconnected' });
       return;
     }
-    const signalStore = createPersistentSignalProtocolStore(vault, record);
+    const signalStore =
+      vault !== null
+        ? createPersistentSignalProtocolStore(vault, record)
+        : signalStoreFromIdentity(record);
 
     realtime = new RealtimeClient({
       url: WS_URL,
