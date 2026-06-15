@@ -36,7 +36,7 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
-import type { AuthContext, RegisterDeviceResponse } from '@chat-app/types';
+import type { AuthContext, AddOneTimePreKeysResponse, RegisterDeviceResponse } from '@chat-app/types';
 
 import { Auth, FirebaseAuthGuard } from '../auth';
 import { RateLimiterService } from '../redis';
@@ -46,7 +46,7 @@ import {
   REGISTER_RATE_WINDOW_SECONDS,
 } from './devices.constants';
 import { DevicesService } from './devices.service';
-import { RegisterDeviceDto } from './dto';
+import { AddOneTimePreKeysDto, RegisterDeviceDto } from './dto';
 import { SignedPreKeyVerificationPipe } from './signed-prekey-verification.pipe';
 
 @Controller('api/devices')
@@ -100,5 +100,39 @@ export class DevicesController {
     // (the number the user completed OTP for) only when the token carries no phone claim, so
     // a server-verified number is never overridden by client input.
     return this.devices.registerDevice(auth.uid, dto, auth.phoneNumber ?? dto.phoneNumber);
+  }
+
+  /**
+   * Appends additional one-time prekeys to the authenticated caller's device (replenishment).
+   * Identifies the device by the `registrationId` in the body. Rate-limited per uid on a
+   * dedicated sub-scope (reusing the registration window), failing open on limiter error.
+   *
+   * @returns HTTP 200 with `{ added }` — the number of prekeys stored.
+   * @throws HttpException 429 when the per-uid limit is exceeded.
+   * @throws NotFoundException (404) when the caller has no device with that registrationId.
+   */
+  @Post('prekeys')
+  @UseGuards(FirebaseAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async addPreKeys(
+    @Auth() auth: AuthContext,
+    @Body() dto: AddOneTimePreKeysDto,
+  ): Promise<AddOneTimePreKeysResponse> {
+    let allowed = true;
+    try {
+      const result = await this.rateLimiter.hit(
+        `${REGISTER_RATE_LIMIT_SCOPE}:prekeys:${auth.uid}`,
+        REGISTER_RATE_LIMIT,
+        REGISTER_RATE_WINDOW_SECONDS,
+      );
+      allowed = result.allowed;
+    } catch {
+      this.logger.warn('Prekey-replenish rate-limit check failed; allowing request');
+    }
+    if (!allowed) {
+      throw new HttpException('Rate limit exceeded', HttpStatus.TOO_MANY_REQUESTS);
+    }
+
+    return this.devices.addOneTimePreKeys(auth.uid, dto);
   }
 }

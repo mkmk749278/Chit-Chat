@@ -26,9 +26,9 @@
  * this service.
  */
 
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import type { EntityManager } from 'typeorm';
-import type { RegisterDeviceResponse } from '@chat-app/types';
+import type { AddOneTimePreKeysResponse, RegisterDeviceResponse } from '@chat-app/types';
 
 import {
   DeviceEntity,
@@ -37,9 +37,8 @@ import {
   TransactionService,
   UserEntity,
 } from '../database';
-import { RegisterDeviceDto } from './dto';
+import { AddOneTimePreKeysDto, RegisterDeviceDto } from './dto';
 import { normalizeE164 } from '../directory/phone.util';
-
 @Injectable()
 export class DevicesService {
   constructor(private readonly transactions: TransactionService) {}
@@ -70,6 +69,51 @@ export class DevicesService {
       // Postcondition: exactly one user row for `uid`, exactly one device row for
       // `(user, registrationId)`, and the device's prekey bundle is fully replaced.
       return { deviceId };
+    });
+  }
+
+  /**
+   * Appends additional one-time prekeys to an already-registered device (replenishment).
+   *
+   * Unlike {@link registerDevice} — which REPLACES the whole bundle — this only inserts new
+   * one-time prekeys, so a client can top up before its supply is exhausted (once exhausted,
+   * the prekey-claim endpoint serves a bundle with no one-time prekey and senders fall back to
+   * the signed prekey only, weakening initial-message forward secrecy). The whole append runs
+   * in one transaction; all key material is PUBLIC `bytea` only (Requirements 2.3, 13.4).
+   *
+   * @param uid - Canonical Firebase UID from the verified token (the device owner).
+   * @param dto - Validated payload: the target device's `registrationId` + the new prekeys.
+   * @returns the count of appended prekeys.
+   * @throws NotFoundException (HTTP 404) when the caller has no device with that registrationId.
+   */
+  async addOneTimePreKeys(
+    uid: string,
+    dto: AddOneTimePreKeysDto,
+  ): Promise<AddOneTimePreKeysResponse> {
+    return this.transactions.runInTransaction(async (manager) => {
+      const user = await manager.findOneBy(UserEntity, { firebaseUid: uid });
+      if (!user) {
+        throw new NotFoundException('No registered device for this user');
+      }
+      const device = await manager.findOneBy(DeviceEntity, {
+        userId: user.id,
+        registrationId: dto.registrationId,
+      });
+      if (!device) {
+        throw new NotFoundException('No registered device for this user');
+      }
+
+      // APPEND only — never delete existing prekeys. Each row is public key bytes for this
+      // device; a keyId that collides with an existing `(device, keyId)` is rejected by the
+      // unique constraint, so the client is responsible for allocating fresh ids.
+      const rows = dto.oneTimePreKeys.map((pk) => ({
+        deviceId: device.id,
+        keyId: pk.keyId,
+        publicKey: Buffer.from(pk.publicKey, 'base64'),
+      }));
+      await manager.insert(OneTimePreKeyEntity, rows);
+
+      return { added: rows.length };
     });
   }
 
