@@ -140,6 +140,17 @@ export default function App(): React.JSX.Element {
           return;
         }
         setUid(signedInUid);
+        // Restore the display name from durable on-device storage first, so a returning user
+        // skips onboarding even when the backend is unreachable (the same condition that fails
+        // encryption setup). loadDisplayName falls back to the backend profile when no local
+        // copy exists, re-persisting it locally.
+        void controller.loadDisplayName().then((name) => {
+          if (name !== null) {
+            setDisplayName(name);
+          }
+        });
+        // Still fetch the profile for the stored phone (and to surface a server-set name if the
+        // local copy was empty); this is best-effort and must not gate onboarding.
         void controller.whoAmI().then((me) => {
           if (me === null) {
             return;

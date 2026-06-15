@@ -61,6 +61,7 @@ import {
 } from '../crypto/persistent-store';
 import { createInMemoryKeyStore } from '../crypto/in-memory-key-store';
 import { signalStoreFromIdentity } from '../crypto/signal-store';
+import { clearDisplayName, loadDisplayName, saveDisplayName } from './profile-store';
 import { createReactNativeHttpClient } from '../transport/http-client';
 import { createReactNativeWebSocketTransport } from '../transport/web-socket-transport';
 
@@ -97,6 +98,13 @@ export interface ChatController {
   resolveContact(e164: string): Promise<ResolveContactResult>;
   /** Set the signed-in user's display name (shown to peers); called after onboarding. */
   setDisplayName(displayName: string): Promise<void>;
+  /**
+   * The display name remembered for the signed-in user, read from durable on-device storage
+   * (falling back to the backend profile). `null` when none is known yet — the only case in
+   * which onboarding should prompt for a name. Independent of encryption setup, so a returning
+   * user skips onboarding even when the encrypted stack or backend is unavailable.
+   */
+  loadDisplayName(): Promise<string | null>;
   /** Set the conversation that subsequent {@link ChatController.send} calls target. */
   openConversation(recipientUid: string): void;
   /** Send `plaintext` to the currently-open conversation (see {@link openConversation}). */
@@ -351,11 +359,43 @@ export function createMobileController(): ChatController {
     },
 
     async setDisplayName(displayName: string): Promise<void> {
+      // Persist locally FIRST so the name survives a relaunch regardless of the backend —
+      // this is what stops onboarding from re-prompting on every launch when the network or
+      // encryption setup is failing.
+      const uid = authService.getCurrentUid() ?? currentUid;
+      if (uid !== null) {
+        await saveDisplayName(uid, displayName);
+      }
       try {
         await directory.setProfile(displayName);
       } catch {
-        // Non-fatal: the name is a display nicety; failure leaves the peer showing as a UID.
+        // Non-fatal: the backend copy is what peers discover; the local copy already keeps the
+        // user out of onboarding. Failure here just leaves the peer showing as a UID.
       }
+    },
+
+    async loadDisplayName(): Promise<string | null> {
+      const uid = authService.getCurrentUid() ?? currentUid;
+      if (uid === null) {
+        return null;
+      }
+      // Prefer the durable local copy (works offline / when setup failed); fall back to the
+      // backend profile, re-persisting it locally so the next launch needs no network.
+      const local = await loadDisplayName(uid);
+      if (local !== null) {
+        return local;
+      }
+      try {
+        const me = await directory.whoAmI();
+        const remote = me?.displayName ?? null;
+        if (remote !== null && remote.length > 0) {
+          await saveDisplayName(uid, remote);
+          return remote;
+        }
+      } catch {
+        // Offline or backend down: no remembered name to restore.
+      }
+      return null;
     },
 
     openConversation(recipientUid: string): void {
@@ -429,6 +469,12 @@ export function createMobileController(): ChatController {
       } catch {
         // A wipe failure must not block sign-out; the auth session is still cleared below.
       }
+      // Forget the locally-remembered display name too, so the next account on this device
+      // starts at onboarding rather than inheriting a stale name.
+      const signedOutUid = authService.getCurrentUid() ?? currentUid;
+      if (signedOutUid !== null) {
+        await clearDisplayName(signedOutUid);
+      }
       teardown();
       deviceId = null;
       bootstrappedUid = null;
@@ -454,6 +500,10 @@ export function createDemoController(): ChatController {
     },
     async setDisplayName(): Promise<void> {
       // Demo controller has no backend profile.
+    },
+    async loadDisplayName(): Promise<string | null> {
+      // Demo controller does not persist a profile; always onboard.
+      return null;
     },
     openConversation(): void {
       // No transport in the demo controller.
