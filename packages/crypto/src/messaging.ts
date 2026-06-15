@@ -46,6 +46,7 @@ import type {
 import type { ClaimedPreKeyBundle } from '@chat-app/types';
 
 import type { ConversationEvent } from './conversation-reducer';
+import { decodeContentPayload, encodeContentPayload, type ContentPayload } from './content-payload';
 import type { EnvelopeCodec } from './envelope-codec';
 import type { MessageRow, Unsubscribe } from './ports';
 import type { Scheduler, TimerHandle } from './realtime-client';
@@ -150,6 +151,14 @@ export interface MessagingOptions {
  * Conducts the 1:1 send/receive lifecycle over the shared crypto core (design Component 5;
  * Requirements 5.2, 5.5, 5.6, 5.9, 5.10, 5.11).
  */
+/** Identifies a target message within a conversation by its LOCAL direction + sequence number. */
+export interface MessageTarget {
+  /** `out` for a message this device sent, `in` for one it received. */
+  direction: 'in' | 'out';
+  /** The target message's per-conversation sequence number. */
+  seq: number;
+}
+
 export interface Messaging {
   /**
    * Send `plaintext` to `recipientUid`. Establishes a libsignal session first if needed,
@@ -159,6 +168,22 @@ export interface Messaging {
    * failure); those surface as a `failed` message with its text retained (5.9).
    */
   send(recipientUid: string, plaintext: string): Promise<void>;
+  /**
+   * React to a prior message with an emoji (Requirement 3.1). `target` identifies the message
+   * by its LOCAL direction + seq; the reaction rides as an E2E content payload and the peer
+   * renders it against the same message.
+   */
+  react(recipientUid: string, target: MessageTarget, emoji: string): Promise<void>;
+  /**
+   * Edit a prior message's text (Requirement 3.2); the latest text supersedes the original.
+   * Typically `target.direction === 'out'` (you edit your own messages).
+   */
+  editMessage(recipientUid: string, target: MessageTarget, body: string): Promise<void>;
+  /**
+   * Delete (tombstone) a prior message (Requirement 3.3); both sides replace its content with a
+   * deleted placeholder. Typically `target.direction === 'out'`.
+   */
+  deleteMessage(recipientUid: string, target: MessageTarget): Promise<void>;
   /**
    * Handle an inbound `CiphertextEnvelope` from the Realtime_Client: decrypt and render the
    * plaintext, or surface a `delivery-error` with no plaintext on decryption failure
@@ -329,7 +354,12 @@ export class DefaultMessaging implements Messaging {
         }
         await this.sessions.establishSession(recipientUid, bundle);
       }
-      body = await this.sessions.encrypt(recipientUid, plaintext);
+      body = await this.sessions.encrypt(
+        recipientUid,
+        // Wrap plain text in the versioned content payload (Phase 2). The recipient decodes it
+        // back to text; a legacy peer that decodes the JSON as a bare string still shows it.
+        encodeContentPayload({ type: 'text', body: plaintext }),
+      );
     } catch (err) {
       // A short reason is surfaced for diagnosis; the raw error (which may carry sensitive
       // material, 8.5) is never logged or transmitted.
@@ -377,21 +407,115 @@ export class DefaultMessaging implements Messaging {
       return;
     }
 
-    const row: MessageRow = {
-      id,
-      remoteUid: envelope.senderUid,
-      direction: 'in',
-      seq: envelope.seq,
-      plaintext,
-      status: 'received',
-      createdAt: this.now(),
-    };
-    await this.store.appendMessage(row);
-    this.emitUpdate({
-      type: 'message-appended',
-      message: { id, seq: envelope.seq, direction: 'in', text: plaintext, status: 'received' },
-      remoteUid: envelope.senderUid,
-    });
+    // The decrypted plaintext is a versioned content payload (Phase 2). Decoding is total and
+    // backward-compatible: a legacy Phase 1 bare-string plaintext decodes as text (Req 3.1).
+    const payload = decodeContentPayload(plaintext);
+    const remoteUid = envelope.senderUid;
+    switch (payload.type) {
+      case 'text': {
+        const row: MessageRow = {
+          id,
+          remoteUid,
+          direction: 'in',
+          seq: envelope.seq,
+          plaintext: payload.body,
+          status: 'received',
+          createdAt: this.now(),
+        };
+        await this.store.appendMessage(row);
+        this.emitUpdate({
+          type: 'message-appended',
+          message: { id, seq: envelope.seq, direction: 'in', text: payload.body, status: 'received' },
+          remoteUid,
+        });
+        return;
+      }
+      // Reaction/edit/delete reference a message in the SENDER's frame; flip `targetOutbound`
+      // to THIS device's local direction (a message the peer sent is inbound here). An unknown
+      // target is ignored by the reducer (Req 3.5).
+      case 'reaction':
+        this.emitUpdate({
+          type: 'reaction-applied',
+          targetDirection: payload.targetOutbound ? 'in' : 'out',
+          targetSeq: payload.targetSeq,
+          emoji: payload.emoji,
+          remoteUid,
+        });
+        return;
+      case 'edit':
+        this.emitUpdate({
+          type: 'message-edited',
+          targetDirection: payload.targetOutbound ? 'in' : 'out',
+          targetSeq: payload.targetSeq,
+          body: payload.body,
+          remoteUid,
+        });
+        return;
+      case 'delete':
+        this.emitUpdate({
+          type: 'message-deleted',
+          targetDirection: payload.targetOutbound ? 'in' : 'out',
+          targetSeq: payload.targetSeq,
+          remoteUid,
+        });
+        return;
+      case 'timer':
+        // Per-conversation disappearing timer. Applying it to conversation state is task 4.1b;
+        // ignore for now rather than misrender it.
+        return;
+      case 'unsupported':
+        // A payload type this client version does not understand; ignore (forward-compat).
+        return;
+      default: {
+        const _exhaustive: never = payload;
+        void _exhaustive;
+        return;
+      }
+    }
+  }
+
+  /** @inheritdoc */
+  async react(recipientUid: string, target: MessageTarget, emoji: string): Promise<void> {
+    await this.sendControl(
+      recipientUid,
+      { type: 'reaction', targetSeq: target.seq, targetOutbound: target.direction === 'out', emoji },
+      {
+        type: 'reaction-applied',
+        targetDirection: target.direction,
+        targetSeq: target.seq,
+        emoji,
+        remoteUid: recipientUid,
+      },
+    );
+  }
+
+  /** @inheritdoc */
+  async editMessage(recipientUid: string, target: MessageTarget, body: string): Promise<void> {
+    await this.sendControl(
+      recipientUid,
+      { type: 'edit', targetSeq: target.seq, targetOutbound: target.direction === 'out', body },
+      {
+        type: 'message-edited',
+        targetDirection: target.direction,
+        targetSeq: target.seq,
+        body,
+        remoteUid: recipientUid,
+      },
+    );
+  }
+
+  /** @inheritdoc */
+  async deleteMessage(recipientUid: string, target: MessageTarget): Promise<void> {
+    await this.sendControl(
+      recipientUid,
+      { type: 'delete', targetSeq: target.seq, targetOutbound: target.direction === 'out' },
+      {
+        type: 'message-deleted',
+        targetDirection: target.direction,
+        targetSeq: target.seq,
+        remoteUid: recipientUid,
+      },
+    );
   }
 
   /** @inheritdoc */
@@ -516,6 +640,56 @@ export class DefaultMessaging implements Messaging {
   // -------------------------------------------------------------------------
   // Internal helpers.
   // -------------------------------------------------------------------------
+
+  /**
+   * Encrypt and transmit a control content payload (reaction/edit/delete), optimistically
+   * applying `optimistic` to the local conversation first. Control messages carry no visible
+   * message row, so a failure is dropped silently (the optimistic local change stands). Reuses
+   * the pending-send + ack machinery so a control message also flushes on reconnect.
+   */
+  private async sendControl(
+    recipientUid: string,
+    payload: ContentPayload,
+    optimistic: ConversationEvent,
+  ): Promise<void> {
+    // Optimistically apply locally so the sender sees their own reaction/edit/delete at once.
+    this.emitUpdate(optimistic);
+    const sender = await this.sender.resolveSender();
+    if (sender === null) {
+      return;
+    }
+    const seq = await this.sequence.next(recipientUid);
+    let body;
+    try {
+      if (!(await this.sessions.hasSession(recipientUid))) {
+        const bundle = await this.keyClaimer.claim(recipientUid);
+        if (bundle === null) {
+          return;
+        }
+        await this.sessions.establishSession(recipientUid, bundle);
+      }
+      body = await this.sessions.encrypt(recipientUid, encodeContentPayload(payload));
+    } catch {
+      return;
+    }
+    const id = this.generateId();
+    const envelope = this.codec.encode(
+      { senderUid: sender.uid, recipientUid, senderDeviceId: sender.deviceId, seq },
+      body,
+    );
+    const entry: PendingSend = {
+      id,
+      recipientUid,
+      seq,
+      frame: { kind: 'send', envelope },
+      state: 'queued',
+      ackTimer: null,
+    };
+    this.pending.set(pendingKey(recipientUid, seq), entry);
+    if (this.realtime.getStatus() === 'connected') {
+      this.transmit(entry);
+    }
+  }
 
   /** Mark an outbound message `failed` (text retained) in the store and to listeners (5.9, 5.11, 6.8). */
   private async markFailed(id: string, remoteUid: string, reason?: string): Promise<void> {
