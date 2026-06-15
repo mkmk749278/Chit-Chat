@@ -83,6 +83,21 @@ export interface SetProfileRequest {
 }
 
 /**
+ * Public profile of a user resolved by their Firebase UID (`GET /api/directory/profile/:uid`).
+ *
+ * This is the reverse of phone→UID discovery: given a UID a client already knows (e.g. the
+ * `senderUid` on an inbound envelope, or a UID it just resolved), it returns that user's
+ * chosen display name so the peer is shown by name instead of a raw UID. Only the public
+ * display name is exposed — never the phone number or any other account detail.
+ */
+export interface GetProfileResponse {
+  /** Canonical Firebase UID of the looked-up user (echoes the request). */
+  uid: string;
+  /** The user's chosen display name, or `null` if they haven't set one. */
+  displayName: string | null;
+}
+
+/**
  * Diagnostic response for `GET /api/directory/me` — the authenticated caller's own
  * discovery state, used to pinpoint why a lookup misses.
  */

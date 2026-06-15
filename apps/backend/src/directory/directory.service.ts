@@ -68,6 +68,26 @@ export class DirectoryService {
   }
 
   /**
+   * Resolve a user's PUBLIC profile (display name) by their Firebase UID — the reverse of
+   * phone→UID discovery. Used so a recipient can show an inbound sender by name instead of a
+   * raw UID, even when they never started the chat themselves (the sender's UID is known from
+   * the inbound envelope, but its display name is not).
+   *
+   * Only the public display name is returned; no phone number or other account detail leaves
+   * the looked-up user's row. A UID with no user row (or no name set) yields `displayName: null`
+   * rather than a 404, so the caller can fall back to the UID without treating "no name" as an
+   * error.
+   *
+   * @returns `{ uid, displayName }` for the requested UID; `displayName` is `null` when unknown.
+   */
+  async getProfile(uid: string): Promise<{ uid: string; displayName: string | null }> {
+    return this.transactions.runInTransaction(async (manager) => {
+      const user = await manager.findOne(UserEntity, { where: { firebaseUid: uid } });
+      return { uid, displayName: user?.displayName ?? null };
+    });
+  }
+
+  /**
    * Diagnostic: report what the server has on record for the authenticated caller — the
    * phone number STORED on their `users` row and how many devices they have registered.
    * Compared against the phone the caller's TOKEN carries (read in the controller), this

@@ -29,10 +29,16 @@ import {
   HttpException,
   HttpStatus,
   Logger,
+  Param,
   Post,
   UseGuards,
 } from '@nestjs/common';
-import type { AuthContext, ResolvePhoneResponse, WhoAmIResponse } from '@chat-app/types';
+import type {
+  AuthContext,
+  GetProfileResponse,
+  ResolvePhoneResponse,
+  WhoAmIResponse,
+} from '@chat-app/types';
 
 import { Auth, FirebaseAuthGuard } from '../auth';
 import { RateLimiterService } from '../redis';
@@ -120,5 +126,18 @@ export class DirectoryController {
   @HttpCode(HttpStatus.NO_CONTENT)
   async setProfile(@Auth() auth: AuthContext, @Body() dto: SetProfileDto): Promise<void> {
     await this.directory.setDisplayName(auth.uid, dto.displayName);
+  }
+
+  /**
+   * Resolve a user's PUBLIC display name by their Firebase UID — the reverse of phone→UID
+   * discovery. A recipient uses this to show an inbound sender by name instead of a raw UID
+   * (the sender's UID is on the envelope, but not their name). Authenticated so only a signed-in
+   * caller can read profiles; returns `displayName: null` for an unknown UID rather than 404, so
+   * the caller cleanly falls back to the UID.
+   */
+  @Get('profile/:uid')
+  @UseGuards(FirebaseAuthGuard)
+  async getProfile(@Param('uid') uid: string): Promise<GetProfileResponse> {
+    return this.directory.getProfile(uid);
   }
 }

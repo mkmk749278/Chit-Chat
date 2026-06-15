@@ -60,7 +60,6 @@ import {
   createPersistentSignalProtocolStore,
   type PersistentVault,
 } from '../crypto/persistent-store';
-import { createInMemoryKeyStore } from '../crypto/in-memory-key-store';
 import { signalStoreFromIdentity } from '../crypto/signal-store';
 import { clearDisplayName, loadDisplayName, saveDisplayName } from './profile-store';
 import { createReactNativeHttpClient } from '../transport/http-client';
@@ -97,6 +96,12 @@ export interface ChatController {
   confirmOtp(code: string, e164: string): Promise<string | null>;
   /** Resolve an E.164 phone number to a recipient UID via the backend directory. */
   resolveContact(e164: string): Promise<ResolveContactResult>;
+  /**
+   * Resolve a peer's display name from their Firebase UID (reverse directory lookup). Returns
+   * `null` when unknown/offline so callers fall back to the UID. Used to name an inbound sender
+   * the user never started a chat with (so the conversation header shows a name, not a raw UID).
+   */
+  resolvePeerName(uid: string): Promise<string | null>;
   /** Set the signed-in user's display name (shown to peers); called after onboarding. */
   setDisplayName(displayName: string): Promise<void>;
   /**
@@ -224,17 +229,28 @@ export function createMobileController(): ChatController {
     setSetup({ phase: 'registering' });
     // Open the persistent, encrypted store for this user — reused across launches so the
     // device keeps one stable identity/deviceId (no re-registration churn). Guard it with a
-    // crypto self-test: if the device's WebCrypto can't do the encrypted-at-rest round-trip,
-    // fall back to an in-memory store so setup still SUCCEEDS and the user can message
-    // (degraded: identity won't survive a relaunch) rather than the whole app failing.
+    // crypto self-test. If the device's WebCrypto can't do the encrypted-at-rest round-trip we
+    // must NOT silently fall back to an in-memory store: that regenerates the identity (and
+    // re-registers a NEW device) on every launch, so a message queued for this user while they
+    // were offline was encrypted to the PREVIOUS identity and can never be decrypted — the
+    // recipient just sees "message unavailable / could not be decrypted". Surface a visible,
+    // retryable setup failure instead of silently breaking delivery.
     let store: KeyStore;
     try {
       await probeNativeCrypto();
       vault = createNativeVault(uid);
       store = createPersistentKeyStore(vault);
-    } catch {
+    } catch (err) {
       vault = null;
-      store = createInMemoryKeyStore();
+      const reason = err instanceof Error ? err.message : 'secure storage unavailable';
+      setSetup({
+        phase: 'failed',
+        error:
+          'Secure on-device storage is unavailable, so encrypted messages can’t be kept ' +
+          `readable across restarts (${reason}). Tap to retry.`,
+      });
+      emit({ type: 'connection-changed', connection: 'disconnected' });
+      return;
     }
     keyStore = store;
 
@@ -366,8 +382,7 @@ export function createMobileController(): ChatController {
         const { status, user } = await directory.resolve(e164);
         if (user !== null) {
           return { ok: true, uid: user.uid, displayName: user.displayName };
-        }
-        // Surface the HTTP status so a discovery miss is diagnosable: 404 = not registered,
+        }        // Surface the HTTP status so a discovery miss is diagnosable: 404 = not registered,
         // 429 = rate-limited, 401 = auth, 400 = bad format, 0 = not signed in / offline.
         const reason =
           status === 404
@@ -379,6 +394,10 @@ export function createMobileController(): ChatController {
       } catch {
         return { ok: false, error: 'Could not reach the directory. Check your connection.' };
       }
+    },
+
+    async resolvePeerName(peerUid: string): Promise<string | null> {
+      return directory.getProfile(peerUid);
     },
 
     async setDisplayName(displayName: string): Promise<void> {
@@ -520,6 +539,9 @@ export function createDemoController(): ChatController {
     },
     async resolveContact(e164: string): Promise<ResolveContactResult> {
       return { ok: true, uid: `demo:${e164}`, displayName: null };
+    },
+    async resolvePeerName(): Promise<string | null> {
+      return null;
     },
     async setDisplayName(): Promise<void> {
       // Demo controller has no backend profile.
