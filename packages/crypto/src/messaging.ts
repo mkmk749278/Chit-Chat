@@ -185,6 +185,12 @@ export interface Messaging {
    */
   deleteMessage(recipientUid: string, target: MessageTarget): Promise<void>;
   /**
+   * Set the conversation's disappearing-message timer (Req 4.1). `ttlMs` is the message
+   * lifetime in milliseconds; `0` disables it. Sent as an E2E payload so both peers converge
+   * on the same timer; applied optimistically locally.
+   */
+  setDisappearingTimer(recipientUid: string, ttlMs: number): Promise<void>;
+  /**
    * Handle an inbound `CiphertextEnvelope` from the Realtime_Client: decrypt and render the
    * plaintext, or surface a `delivery-error` with no plaintext on decryption failure
    * (Requirements 5.4, 5.5, 6.9).
@@ -460,8 +466,9 @@ export class DefaultMessaging implements Messaging {
         });
         return;
       case 'timer':
-        // Per-conversation disappearing timer. Applying it to conversation state is task 4.1b;
-        // ignore for now rather than misrender it.
+        // Per-conversation disappearing timer: converge both peers on the same TTL (Req 4.1).
+        // Scheduled deletion of expired messages is a store concern (task 4.2).
+        this.emitUpdate({ type: 'timer-changed', ttlMs: payload.ttlMs, remoteUid });
         return;
       case 'unsupported':
         // A payload type this client version does not understand; ignore (forward-compat).
@@ -515,6 +522,15 @@ export class DefaultMessaging implements Messaging {
         targetSeq: target.seq,
         remoteUid: recipientUid,
       },
+    );
+  }
+
+  /** @inheritdoc */
+  async setDisappearingTimer(recipientUid: string, ttlMs: number): Promise<void> {
+    await this.sendControl(
+      recipientUid,
+      { type: 'timer', ttlMs },
+      { type: 'timer-changed', ttlMs, remoteUid: recipientUid },
     );
   }
 
