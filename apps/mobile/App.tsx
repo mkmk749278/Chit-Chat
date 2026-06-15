@@ -95,6 +95,32 @@ export default function App(): React.JSX.Element {
   const openChatRef = useRef<string | null>(null);
   openChatRef.current = openChatId;
 
+  // Peers we've already kicked off a display-name lookup for, so an inbound stream doesn't
+  // refetch on every message. A ref (not state) because it's read/written inside the
+  // controller subscription closure.
+  const peerNameResolvedRef = useRef<Set<string>>(new Set());
+
+  // Resolve a peer's display name from their UID and patch the conversation's name — but only
+  // while it's still showing the raw UID, so a name the user already chose (via New-chat) or a
+  // later rename is never clobbered. Best-effort: a miss/offline leaves the UID in place.
+  const ensurePeerName = useCallback(
+    (peerUid: string) => {
+      if (peerNameResolvedRef.current.has(peerUid)) {
+        return;
+      }
+      peerNameResolvedRef.current.add(peerUid);
+      void controller.resolvePeerName(peerUid).then((name) => {
+        if (name === null || name.length === 0) {
+          return;
+        }
+        setConversations((prev) =>
+          prev.map((c) => (c.id === peerUid && c.name === peerUid ? { ...c, name } : c)),
+        );
+      });
+    },
+    [controller],
+  );
+
   // Controller events drive the right conversation's reducer. Events carry the peer
   // (`remoteUid`) so inbound messages route to their own chat — and a message from someone
   // new auto-creates a chat. `connection-changed` is global and applies to every chat.
@@ -123,8 +149,11 @@ export default function App(): React.JSX.Element {
             c.id === target ? { ...c, state: reduce(c.state, event), lastAt: Date.now() } : c,
           );
         });
+        // A message from a peer we never started a chat with arrives keyed only by UID; resolve
+        // their display name so the header shows a name instead of a raw UID (best-effort).
+        ensurePeerName(target);
       }),
-    [controller],
+    [controller, ensurePeerName],
   );
 
   // Surface encryption-setup progress/failure (identity + device registration + connect).

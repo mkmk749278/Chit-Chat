@@ -7,7 +7,12 @@
  */
 
 import type { HttpClient, PreKeyClaimClient } from '@chat-app/crypto';
-import type { ClaimedPreKeyBundle, ResolvePhoneResponse, WhoAmIResponse } from '@chat-app/types';
+import type {
+  ClaimedPreKeyBundle,
+  GetProfileResponse,
+  ResolvePhoneResponse,
+  WhoAmIResponse,
+} from '@chat-app/types';
 
 /** Per-request timeout for the REST lookups (matches the registration budget, 3.8). */
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -46,6 +51,12 @@ export function createPreKeyClaimClient(
 export interface DirectoryClient {
   /** Resolve a phone number; `user` is null on miss and `status` is the HTTP status (0 = not sent). */
   resolve(phoneNumber: string): Promise<{ status: number; user: ResolvePhoneResponse | null }>;
+  /**
+   * Resolve a user's PUBLIC display name by their Firebase UID (reverse of {@link resolve}).
+   * Returns `null` when the caller isn't signed in, the lookup fails, or no name is set — so the
+   * caller falls back to the UID. Used to name an inbound sender the user never started a chat with.
+   */
+  getProfile(uid: string): Promise<string | null>;
   /** Diagnostic: the caller's own discovery state (token vs stored phone, device count). */
   whoAmI(): Promise<WhoAmIResponse | null>;
   /** Set the signed-in user's display name (shown to peers). Resolves true on success. */
@@ -80,6 +91,30 @@ export function createDirectoryClient(
         return { status: response.status, user: JSON.parse(response.body) as ResolvePhoneResponse };
       }
       return { status: response.status, user: null };
+    },
+
+    async getProfile(uid: string): Promise<string | null> {
+      const token = getToken();
+      if (token === null) {
+        return null;
+      }
+      try {
+        const response = await http.send({
+          method: 'GET',
+          url: `${apiBaseUrl}/api/directory/profile/${encodeURIComponent(uid)}`,
+          headers: { Authorization: `Bearer ${token}` },
+          timeoutMs: REQUEST_TIMEOUT_MS,
+        });
+        if (response.status === 200) {
+          const profile = JSON.parse(response.body) as GetProfileResponse;
+          return profile.displayName !== null && profile.displayName.length > 0
+            ? profile.displayName
+            : null;
+        }
+      } catch {
+        // Offline or backend down: fall back to the UID rather than failing the chat.
+      }
+      return null;
     },
 
     async setProfile(displayName: string): Promise<boolean> {
