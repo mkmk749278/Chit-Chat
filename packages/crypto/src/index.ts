@@ -218,3 +218,13 @@ export * from './in-memory-signal-store';
  * `getRandomValues`) and `Buffer`; React Native injects these via polyfills at app entry.
  */
 export * from './libsignal-puretsignal';
+
+
+/**
+ * `computeSafetyNumber` (Phase 2, design "Identity verification"; Requirement 1). A pure,
+ * deterministic generator that derives a human-comparable 60-digit safety number from both
+ * parties' PUBLIC identity keys, so users can detect a man-in-the-middle. Symmetric (both
+ * devices compute the same number) and sensitive to any identity-key change. Depends only on
+ * WebCrypto `crypto.subtle`; references no private key material.
+ */
+export * from './safety-number';
