@@ -64,6 +64,7 @@ import {
   type LocalSocketRegistry,
   MessageRelayService,
   type NodeRelayMessage,
+  OfflineQueueService,
 } from '../messaging';
 import {
   PresenceRegistryService,
@@ -161,6 +162,7 @@ export class RealtimeGateway
     @Inject(REDIS_SUBSCRIBER_CLIENT) private readonly subscriber: Redis,
     private readonly relay: MessageRelayService,
     @Inject(LOCAL_SOCKET_REGISTRY) private readonly localSockets: LocalSocketRegistry,
+    private readonly offlineQueue: OfflineQueueService,
   ) {}
 
   /**
@@ -256,8 +258,32 @@ export class RealtimeGateway
       void this.handleInboundMessage(socket, data);
     });
 
-    // Phase 1 (task 4.7) wires the message handler above and the `node:{nodeId}`
-    // subscription callback in afterInit; the relay rides the Phase 0 backbone.
+    // 8. Store-and-forward: deliver any envelopes queued while this user was offline,
+    //    in arrival order, to the socket that just connected. Done AFTER the local socket
+    //    is registered so a concurrently-relayed live message also has a delivery target.
+    void this.flushOfflineQueue(uid, recipientSocket);
+  }
+
+  /**
+   * Drains the recipient's offline queue and pushes each queued envelope to the
+   * freshly-connected socket as a `deliver` frame, in FIFO order (Requirement 8.2: the
+   * body is never decoded). The drain is atomic, so two connections racing cannot deliver
+   * the same envelope twice. A drain failure (transient Redis issue) is logged and
+   * swallowed — it must not break an otherwise-valid connection; the messages remain
+   * queued (or expire) for the next connect.
+   */
+  private async flushOfflineQueue(uid: string, socket: LocalRecipientSocket): Promise<void> {
+    let queued: CiphertextEnvelope[];
+    try {
+      queued = await this.offlineQueue.drain(uid);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Failed to drain offline queue on connect: ${message}`);
+      return;
+    }
+    for (const envelope of queued) {
+      socket.send({ kind: 'deliver', envelope });
+    }
   }
 
   /**

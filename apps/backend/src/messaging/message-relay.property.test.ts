@@ -18,7 +18,15 @@ function buildService(presence: Record<string, string> = { 'conn-1': 'node-a' })
   const presenceRegistry = {
     lookup,
   } as unknown as ConstructorParameters<typeof MessageRelayService>[1];
-  const service = new MessageRelayService(publisher, presenceRegistry, new InProcessSocketRegistry());
+  const offlineQueue = {
+    enqueue: jest.fn().mockResolvedValue(undefined),
+  } as unknown as ConstructorParameters<typeof MessageRelayService>[3];
+  const service = new MessageRelayService(
+    publisher,
+    presenceRegistry,
+    new InProcessSocketRegistry(),
+    offlineQueue,
+  );
   return { service, publish };
 }
 

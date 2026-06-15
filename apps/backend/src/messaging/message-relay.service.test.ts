@@ -45,17 +45,20 @@ type Harness = {
   service: MessageRelayService;
   publish: jest.Mock;
   lookup: jest.Mock;
+  enqueue: jest.Mock;
   registry: InProcessSocketRegistry;
 };
 
 function buildService(presenceEntries: Record<string, string> = {}): Harness {
   const publish = jest.fn().mockResolvedValue(1);
   const lookup = jest.fn().mockResolvedValue(presenceEntries);
+  const enqueue = jest.fn().mockResolvedValue(undefined);
   const publisher = { publish } as unknown as ConstructorParameters<typeof MessageRelayService>[0];
   const presence = { lookup } as unknown as ConstructorParameters<typeof MessageRelayService>[1];
   const registry = new InProcessSocketRegistry();
-  const service = new MessageRelayService(publisher, presence, registry);
-  return { service, publish, lookup, registry };
+  const offlineQueue = { enqueue } as unknown as ConstructorParameters<typeof MessageRelayService>[3];
+  const service = new MessageRelayService(publisher, presence, registry, offlineQueue);
+  return { service, publish, lookup, enqueue, registry };
 }
 
 describe('MessageRelayService.relay', () => {
@@ -99,13 +102,23 @@ describe('MessageRelayService.relay', () => {
     expect(payload).toEqual({ targetUid: RECIPIENT_UID, envelope });
   });
 
-  it('accepts an offline recipient as received without publishing', async () => {
-    const { service, publish } = buildService({});
+  it('queues an offline recipient for store-and-forward instead of publishing', async () => {
+    const { service, publish, enqueue } = buildService({});
+    const envelope = buildEnvelope();
 
-    const outcome = await service.relay(buildSender(), buildEnvelope());
+    const outcome = await service.relay(buildSender(), envelope);
 
     expect(outcome).toEqual({ status: 'received' });
     expect(publish).not.toHaveBeenCalled();
+    expect(enqueue).toHaveBeenCalledWith(RECIPIENT_UID, envelope);
+  });
+
+  it('does not queue an online recipient (delivered live, not stored)', async () => {
+    const { service, enqueue } = buildService({ 'conn-1': 'node-a' });
+
+    await service.relay(buildSender(), buildEnvelope());
+
+    expect(enqueue).not.toHaveBeenCalled();
   });
 });
 

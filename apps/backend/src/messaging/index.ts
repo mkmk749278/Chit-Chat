@@ -5,6 +5,11 @@
 export { MessagingModule } from './messaging.module';
 export { MessageRelayService, type RelayOutcome } from './message-relay.service';
 export {
+  OfflineQueueService,
+  MAX_QUEUED_MESSAGES,
+  QUEUE_TTL_SECONDS,
+} from './offline-queue.service';
+export {
   LOCAL_SOCKET_REGISTRY,
   InProcessSocketRegistry,
   type LocalSocketRegistry,

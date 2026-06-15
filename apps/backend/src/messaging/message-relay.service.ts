@@ -16,9 +16,9 @@
  *   3. Look up `presence:{recipientUid}` → `{connId -> nodeId}`; for each DISTINCT owning
  *      node, publish a {@link NodeRelayMessage} to `node:{nodeId}` via the dedicated
  *      Redis publisher. The owning node (subscribed to its own channel) then calls
- *      {@link deliverLocal}. An offline recipient (no presence entries) publishes to no
- *      node; the envelope is still accepted for delivery so the sender is ACKed (5.6) and
- *      the client's own 30 s timeout governs (5.11).
+ *      {@link deliverLocal}. An offline recipient (no presence entries) is queued for
+ *      store-and-forward via {@link OfflineQueueService} so the message is delivered when
+ *      they next connect, instead of being dropped while the sender is still ACKed (5.6).
  *
  * `deliverLocal` (recipient node → local socket): wraps the envelope in a `deliver`
  * server→client frame and pushes it to every socket the recipient holds on this node.
@@ -42,6 +42,7 @@ import {
   type LocalSocketRegistry,
 } from './local-socket-registry';
 import type { NodeRelayMessage } from './node-relay-message';
+import { OfflineQueueService } from './offline-queue.service';
 
 /**
  * The outcome of a relay attempt. `received` means the envelope was accepted for
@@ -58,6 +59,7 @@ export class MessageRelayService {
     @Inject(REDIS_PUBLISHER_CLIENT) private readonly publisher: Redis,
     private readonly presence: PresenceRegistryService,
     @Inject(LOCAL_SOCKET_REGISTRY) private readonly localSockets: LocalSocketRegistry,
+    private readonly offlineQueue: OfflineQueueService,
   ) {}
 
   /**
@@ -94,10 +96,15 @@ export class MessageRelayService {
       await Promise.all(
         [...nodeIds].map((nodeId) => this.publisher.publish(nodeChannel(nodeId), payload)),
       );
+    } else {
+      // Recipient is offline: durably queue the opaque envelope for store-and-forward so
+      // it is delivered when they next connect (the gateway drains it on handshake),
+      // rather than dropping it while the sender is ACKed (Requirement 8.2: body opaque).
+      await this.offlineQueue.enqueue(envelope.recipientUid, envelope);
     }
 
-    // Accepted for delivery (the recipient may be offline; the client's 30 s timeout
-    // governs that case). The gateway ACKs the sender on this outcome (task 4.7, 5.6).
+    // Accepted for delivery (delivered live to an online recipient, or queued for an
+    // offline one). The gateway ACKs the sender on this outcome (task 4.7, 5.6).
     return { status: 'received' };
   }
 
