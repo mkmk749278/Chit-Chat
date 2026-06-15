@@ -238,3 +238,11 @@ export * from './safety-number';
  * decodes as `{ type: 'text' }`, and an unknown future type as `{ type: 'unsupported' }`.
  */
 export * from './content-payload';
+
+
+/**
+ * Disappearing-message expiry math (Phase 2, Requirement 4). Pure, clock-injected helpers
+ * (`computeExpiresAt`, `selectExpired`, `msUntilNextExpiry`) that decide when a timed or
+ * view-once message should be purged; the platform store performs the actual secure deletion.
+ */
+export * from './disappearing-timer';

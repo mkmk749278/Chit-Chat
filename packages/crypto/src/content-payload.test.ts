@@ -35,6 +35,21 @@ test('delete payload round-trips', () => {
   assert.deepEqual(roundTrip(p), p);
 });
 
+test('timer payload round-trips', () => {
+  const p: ContentPayload = { type: 'timer', ttlMs: 86_400_000 };
+  assert.deepEqual(roundTrip(p), p);
+});
+
+test('timer with ttlMs 0 (disable) round-trips', () => {
+  const p: ContentPayload = { type: 'timer', ttlMs: 0 };
+  assert.deepEqual(roundTrip(p), p);
+});
+
+test('timer with a negative ttl is unsupported', () => {
+  const bad = JSON.stringify({ v: 1, type: 'timer', ttlMs: -5 });
+  assert.deepEqual(decodeContentPayload(bad), { type: 'unsupported' });
+});
+
 test('legacy bare-string plaintext decodes as text (back-compat)', () => {
   assert.deepEqual(decodeContentPayload('just plain text'), { type: 'text', body: 'just plain text' });
 });

@@ -77,7 +77,14 @@ test('CryptoBox round-trips and rejects tampering and wrong keys', async () => {
   const wrongKey = getRandomValues(new Uint8Array(REQUIRED_KEY_LENGTH));
   await assert.rejects(() => cryptoBox.decrypt(blob, wrongKey));
 
-  const tampered = `${blob.slice(0, -2)}${blob.endsWith('A') ? 'B' : 'A'}=`;
+  // Tamper a DEFINITE payload byte: the first base64 char after the "v1:" prefix maps fully
+  // into the IV's first byte (its 6 bits are not padding bits), so swapping it to a char
+  // guaranteed to differ always changes a real byte and the MAC always rejects. Rewriting the
+  // trailing base64 char instead is flaky — base64 padding discards the last char's low bits,
+  // so ~1/16 of the time the "tampered" string decodes to the identical bytes.
+  const prefix = 'v1:';
+  const body = blob.slice(prefix.length);
+  const tampered = `${prefix}${body[0] === 'A' ? 'B' : 'A'}${body.slice(1)}`;
   await assert.rejects(() => cryptoBox.decrypt(tampered, key));
 });
 
