@@ -158,6 +158,14 @@ export class InMemoryKeyStore implements KeyStore {
     }
   }
 
+  /** @inheritdoc */
+  async loadMessages(): Promise<MessageRow[]> {
+    this.assertLive();
+    // Web storage is process-memory only (wiped on tab close / sign-out by design), so this
+    // returns history accumulated within the current session — not across relaunches.
+    return [...this.messages.values()].map((row) => ({ ...row }));
+  }
+
   /**
    * Synchronously wipe ALL in-memory identity, session, sequence, and message
    * material. Private-key and session bytes are overwritten with zeros before their

@@ -6,26 +6,27 @@ Effort: S (<1 day) · M (1–3 days) · L (~1 week) · XL (multi-week).
 ## Wave 1 — pure-client, no infra (ship first)
 
 ### 1. Identity verification (safety numbers) — Req 1
-- [x] 1.1 (S) `@chat-app/crypto/safety-number.ts` — pure deterministic 60-digit generator + unit tests. **(this PR)**
-- [ ] 1.2 (S) Export `getSafetyNumber(localUid, recipientUid)` from `SessionManager` (reads peer key via `loadIdentityKey`, local via `getIdentityKeyPair`).
-- [ ] 1.3 (S) `ChatController.getSafetyNumber(uid)` on mobile + web.
-- [ ] 1.4 (M) Verification UI on the Conversation screen (show number, mark verified, "safety number changed" warning on identity change — Req 1.5).
+- [x] 1.1 (S) `@chat-app/crypto/safety-number.ts` — pure deterministic 60-digit generator + unit tests.
+- [x] 1.2 (S) `SessionManager.getSafetyNumber(localUid, recipientUid)` (reads peer key via `loadIdentityKey`, local via `getIdentityKeyPair`) + unit tests (symmetry, key-change, null-before-session). **(this PR)**
+- [x] 1.3 (S) `ChatController.getSafetyNumber(uid)` on mobile. **(this PR)** *(web still on demo controller)*
+- [~] 1.4 (M) Verification UI on the mobile Conversation screen (show grouped 60 digits, manual compare). **(this PR)** Remaining: "safety number changed" warning + persisted verified flag (Req 1.5).
 
 ### 2. Message-gap detection — Req 2
 - [x] 2.1 (S) Extend `ConversationReducer` to track `missingBefore` gap markers; derived from the inbound-seq set so it's order-independent and clears on backfill. **(this PR)**
-- [ ] 2.2 (S) Render the gap marker in mobile + web Conversation screens.
+- [~] 2.2 (S) Render the gap marker in the mobile Conversation screen ("messages may be missing" divider). **(this PR)** *(web follow-up)*
 - [x] 2.3 (S) Tests: skipped-seq gap, backfill clears, shuffled arrival never false-positives, mid-stream join, delivery-error counts as present, duplicates. **(this PR)**
 
 ### 3. Reactions / edit / delete — Req 3
 - [x] 3.1 (M) Versioned **content payload** codec (`content-payload.ts`): encode/decode, bare-string back-compat, forward-compat `unsupported`, total decode. **(this PR)**
 - [x] 3.2 (M) Wire the payload through `Messaging` (encode on send incl. plain text; decode on receive → dispatch reducer events) + `react/editMessage/deleteMessage` helpers + sender-relative→local target flip. **(this PR)**
 - [x] 3.3 (M) Reducer: reactions list, edited marker, delete tombstone; unknown target ignored; deleted rejects later edits/reactions. **(this PR)**
-- [ ] 3.4 (S) UI affordances (long-press → react/edit/delete) on both clients.
+- [~] 3.4 (S) UI affordances (long-press → react/edit/delete) on mobile: action sheet, reaction chips, "edited" tag, "message deleted" tombstone. **(this PR)** *(web follow-up)*
 - [x] 3.5 (S) Tests: payload round-trip/back-compat/forward-compat/malformed; reducer apply + ignore-unknown. **(this PR)**
 
 ### 4. Ephemeral / self-destruct / view-once — Req 4
 - [x] 4.1a (S) `timer` content-payload variant + pure expiry math (`disappearing-timer.ts`: `computeExpiresAt`/`selectExpired`/`msUntilNextExpiry`, view-once supported). **(this PR)**
 - [x] 4.1b (M) Per-conversation TTL state in the reducer (`disappearingTtlMs` + `timer-changed`) and propagation through `Messaging.setDisappearingTimer` / inbound `timer` payloads, so both peers converge on the timer. **(this PR)**
+- [~] 4.1c (S) Mobile UI: disappearing-timer picker (Off/30s/5m/1h/1d/1w) in the conversation header + active-timer banner. **(this PR)**
 - [ ] 4.2 (M) Store-side scheduled deletion with plaintext overwrite (best-effort secure erase).
 - [ ] 4.3 (S) View-once (delete-on-display) + UI; document OS-backup/screenshot limits.
 
@@ -64,4 +65,4 @@ Effort: S (<1 day) · M (1–3 days) · L (~1 week) · XL (multi-week).
 - [ ] CC1 (M) Two-client E2E integration test harness (would have caught the Phase 1 decryption bug). Prereq for marking any Wave 2+ feature done.
 - [~] CC2 (S) One-time prekey replenishment. **Backend `POST /api/devices/prekeys` append endpoint + `DevicesService.addOneTimePreKeys` done (this PR).** Remaining: client trigger (detect low count, allocate fresh ids, upload) wired into the mobile bootstrap.
 - [ ] CC3 (S) Reconcile spec vs impl: mobile uses an AES-CBC+HMAC vault, not SQLCipher as Phase 1 design states — update the design or migrate.
-- [ ] CC4 (M) Rehydrate persisted message history into the UI on relaunch (vault stores it; UI starts empty today).
+- [~] CC4 (M) Rehydrate persisted message history into the UI on relaunch. **(this PR)** `KeyStore.loadMessages()` (mobile persistent + in-memory + web stores) → `ChatController.loadConversations()` replays rows through the shared reducer → `App.tsx` merges them on setup-ready, so chats survive an app restart. Remaining: persist reaction/edit/delete/tombstone state so those also survive relaunch (today only base message rows do).

@@ -389,6 +389,11 @@ export function createPersistentKeyStore(vault: PersistentVault): KeyStore {
         }
       });
     },
+    async loadMessages(): Promise<MessageRow[]> {
+      // Persisted history for relaunch rehydration (CC4): every stored row, copied out so a
+      // mutation of the returned value can't reach back into the cached document.
+      return vault.read((doc) => Object.values(doc.messages).map((row) => ({ ...row })));
+    },
 
     destroy(): void {
       // Release the in-memory document; the encrypted blob is retained for the next launch.

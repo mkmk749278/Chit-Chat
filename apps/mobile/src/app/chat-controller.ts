@@ -42,12 +42,18 @@ import {
   createSessionManager,
   DefaultDeviceRegistrar,
   DefaultIdentityManager,
+  initialConversationState,
   KeyStoreSequenceAllocator,
+  reduce,
   RealtimeClient,
   type ConversationEvent,
+  type ConversationState,
   type KeyStore,
+  type MessageTarget,
   type Messaging,
   type RegistrationResult,
+  type SafetyNumber,
+  type SessionManager,
 } from '@chat-app/crypto';
 import type { WhoAmIResponse } from '@chat-app/types';
 
@@ -90,6 +96,20 @@ export type ResolveContactResult =
   | { ok: true; uid: string; displayName: string | null }
   | { ok: false; error: string };
 
+/**
+ * A conversation reconstructed from persisted on-device history for relaunch rehydration
+ * (Phase 2 CC4). `state` is a fully-reduced {@link ConversationState} (so the UI renders it
+ * exactly like a live one); `lastAt` is the newest message's timestamp for list ordering.
+ */
+export interface RehydratedConversation {
+  /** The peer's Firebase UID (the conversation key). */
+  id: string;
+  /** Newest message timestamp (unix ms) for chat-list ordering. */
+  lastAt: number;
+  /** The reduced render state, ready to hand to the Conversation_Screen. */
+  state: ConversationState;
+}
+
 export interface ChatController {
   requestOtp(e164: string): Promise<RequestOtpResult>;
   /** Confirm the OTP. `e164` is the number the code was sent to (stored as a discovery fallback). */
@@ -115,6 +135,25 @@ export interface ChatController {
   openConversation(recipientUid: string): void;
   /** Send `plaintext` to the currently-open conversation (see {@link openConversation}). */
   send(plaintext: string): Promise<void>;
+  /** React to a message in the open conversation with an emoji (Req 3.1). */
+  react(target: MessageTarget, emoji: string): Promise<void>;
+  /** Edit a message's text in the open conversation (Req 3.2). */
+  editMessage(target: MessageTarget, body: string): Promise<void>;
+  /** Delete (tombstone) a message in the open conversation (Req 3.3). */
+  deleteMessage(target: MessageTarget): Promise<void>;
+  /** Set the open conversation's disappearing-message timer; `0` disables it (Req 4.1). */
+  setDisappearingTimer(ttlMs: number): Promise<void>;
+  /**
+   * Compute the deterministic safety number for the open conversation, or `null` until a
+   * message has been exchanged with the peer (so their identity key is known) (Req 1.1–1.3).
+   */
+  getSafetyNumber(recipientUid: string): Promise<SafetyNumber | null>;
+  /**
+   * Rehydrate every conversation from persisted on-device history (Phase 2 CC4), so chats
+   * survive an app restart instead of starting empty. Returns an empty list before the
+   * encrypted store is open.
+   */
+  loadConversations(): Promise<RehydratedConversation[]>;
   subscribe(listener: (event: ControllerEvent) => void): () => void;
   /**
    * Subscribe to sign-in state. Fires with the signed-in UID when Firebase restores a
@@ -183,6 +222,7 @@ export function createMobileController(): ChatController {
   let vault: PersistentVault | null = null;
   let keyStore: KeyStore | null = null;
   let messaging: Messaging | null = null;
+  let sessions: SessionManager | null = null;
   let realtime: RealtimeClient | null = null;
   let activeRecipient: string | null = null;
   let currentUid: string | null = null;
@@ -291,10 +331,11 @@ export function createMobileController(): ChatController {
       auth: authService,
     });
 
+    sessions = createSessionManager(signalStore, createPureTsLibsignalEngine());
     messaging = createMessaging(
       {
         realtime,
-        sessions: createSessionManager(signalStore, createPureTsLibsignalEngine()),
+        sessions,
         sequence: new KeyStoreSequenceAllocator(store),
         codec: createEnvelopeCodec(),
         keyClaimer: createPreKeyClaimClient(httpClient, () => authService.getCurrentToken(), API_BASE_URL),
@@ -336,6 +377,7 @@ export function createMobileController(): ChatController {
     // retry/relaunch reuses the same identity. Explicit sign-out wipes via vault.wipe().
     keyStore?.destroy();
     messaging = null;
+    sessions = null;
     realtime = null;
     keyStore = null;
     vault = null;
@@ -451,6 +493,96 @@ export function createMobileController(): ChatController {
       await messaging.send(activeRecipient, plaintext);
     },
 
+    async react(target: MessageTarget, emoji: string): Promise<void> {
+      if (messaging === null || activeRecipient === null) {
+        return;
+      }
+      await messaging.react(activeRecipient, target, emoji);
+    },
+
+    async editMessage(target: MessageTarget, body: string): Promise<void> {
+      if (messaging === null || activeRecipient === null) {
+        return;
+      }
+      await messaging.editMessage(activeRecipient, target, body);
+    },
+
+    async deleteMessage(target: MessageTarget): Promise<void> {
+      if (messaging === null || activeRecipient === null) {
+        return;
+      }
+      await messaging.deleteMessage(activeRecipient, target);
+    },
+
+    async setDisappearingTimer(ttlMs: number): Promise<void> {
+      if (messaging === null || activeRecipient === null) {
+        return;
+      }
+      await messaging.setDisappearingTimer(activeRecipient, ttlMs);
+    },
+
+    async getSafetyNumber(recipientUid: string): Promise<SafetyNumber | null> {
+      const localUid = authService.getCurrentUid() ?? currentUid;
+      if (sessions === null || localUid === null) {
+        return null;
+      }
+      try {
+        return await sessions.getSafetyNumber(localUid, recipientUid);
+      } catch {
+        return null;
+      }
+    },
+
+    async loadConversations(): Promise<RehydratedConversation[]> {
+      if (keyStore === null) {
+        return [];
+      }
+      let rows;
+      try {
+        rows = await keyStore.loadMessages();
+      } catch {
+        return [];
+      }
+      // Group persisted rows by peer, then replay them through the shared reducer so the
+      // rehydrated state is byte-for-byte what a live session would have produced (Req 6.7).
+      const byPeer = new Map<string, typeof rows>();
+      for (const row of rows) {
+        const list = byPeer.get(row.remoteUid) ?? [];
+        list.push(row);
+        byPeer.set(row.remoteUid, list);
+      }
+      const conversations: RehydratedConversation[] = [];
+      for (const [peerUid, peerRows] of byPeer) {
+        let state = initialConversationState('mobile');
+        let lastAt = 0;
+        // Apply oldest-first so ordering/gap detection matches live arrival semantics.
+        for (const row of [...peerRows].sort((a, b) => a.createdAt - b.createdAt)) {
+          lastAt = Math.max(lastAt, row.createdAt);
+          // A row still `sending` at relaunch never got its server ack (the ack timer died
+          // with the previous process), so surface it as `failed` — text retained — rather
+          // than a spinner that can never resolve.
+          const status = row.status === 'sending' ? 'failed' : row.status;
+          const event: ConversationEvent =
+            row.direction === 'in' && row.plaintext === null && status === 'delivery-error'
+              ? { type: 'inbound-delivery-error', id: row.id, seq: row.seq, remoteUid: peerUid }
+              : {
+                  type: 'message-appended',
+                  message: {
+                    id: row.id,
+                    seq: row.seq,
+                    direction: row.direction,
+                    text: row.plaintext,
+                    status,
+                  },
+                  remoteUid: peerUid,
+                };
+          state = reduce(state, event);
+        }
+        conversations.push({ id: peerUid, lastAt, state });
+      }
+      return conversations;
+    },
+
     subscribe(listener: (event: ControllerEvent) => void): () => void {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -556,6 +688,24 @@ export function createDemoController(): ChatController {
     async send(): Promise<void> {
       // No transport in the demo controller; the container's optimistic append is the
       // only visible effect.
+    },
+    async react(): Promise<void> {
+      // No transport in the demo controller.
+    },
+    async editMessage(): Promise<void> {
+      // No transport in the demo controller.
+    },
+    async deleteMessage(): Promise<void> {
+      // No transport in the demo controller.
+    },
+    async setDisappearingTimer(): Promise<void> {
+      // No transport in the demo controller.
+    },
+    async getSafetyNumber(): Promise<SafetyNumber | null> {
+      return null;
+    },
+    async loadConversations(): Promise<RehydratedConversation[]> {
+      return [];
     },
     subscribe(listener: (event: ControllerEvent) => void): () => void {
       listeners.add(listener);

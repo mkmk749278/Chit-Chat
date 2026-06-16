@@ -98,6 +98,9 @@ class FakeSessions implements SessionManager {
     if (this.decryptResult instanceof Error) throw this.decryptResult;
     return this.decryptResult;
   }
+  async getSafetyNumber(): Promise<null> {
+    return null;
+  }
 }
 
 class FakeSequence implements SequenceAllocator {

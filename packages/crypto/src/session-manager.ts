@@ -31,6 +31,7 @@ import type { CiphertextBody, CiphertextEnvelope } from '@chat-app/types';
 import type { ClaimedPreKeyBundle } from '@chat-app/types';
 
 import type { SignalAddress, SignalProtocolStore } from './ports';
+import { computeSafetyNumber, type SafetyNumber } from './safety-number';
 
 /**
  * A libsignal-encrypted message in raw byte form. `type` is the libsignal framing
@@ -117,6 +118,14 @@ export interface SessionManager {
    * surface a delivery-error without rendering plaintext (5.5).
    */
   decrypt(envelope: CiphertextEnvelope): Promise<string>;
+  /**
+   * Derive the conversation's deterministic 60-digit safety number from BOTH parties' PUBLIC
+   * identity keys (Requirement 1.1–1.3). Resolves `null` until the peer's identity key is known
+   * (no session established and no message received yet), so the UI can show "not available
+   * until you exchange a message". Entirely client-side; no private material is referenced
+   * beyond the local identity key already held on-device (Requirement 1.6).
+   */
+  getSafetyNumber(localUid: string, recipientUid: string): Promise<SafetyNumber | null>;
 }
 
 /**
@@ -214,6 +223,25 @@ export class DefaultSessionManager implements SessionManager {
       this.store,
     );
     return bytesToUtf8(plaintext);
+  }
+
+  /** @inheritdoc */
+  async getSafetyNumber(localUid: string, recipientUid: string): Promise<SafetyNumber | null> {
+    const address = this.resolveAddress(recipientUid);
+    if (address === null) {
+      return null;
+    }
+    const remoteIdentityKey = await this.store.loadIdentityKey(address);
+    if (remoteIdentityKey === null) {
+      return null;
+    }
+    const localKeyPair = await this.store.getIdentityKeyPair();
+    return computeSafetyNumber({
+      localUid,
+      localIdentityKey: localKeyPair.publicKey,
+      remoteUid: recipientUid,
+      remoteIdentityKey,
+    });
   }
 
   /**

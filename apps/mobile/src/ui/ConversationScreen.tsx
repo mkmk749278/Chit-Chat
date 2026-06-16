@@ -4,15 +4,34 @@
  *
  * Presentational React Native component: renders a {@link ConversationState} produced by
  * the shared `ConversationReducer` (from `@chat-app/crypto`) and reports user intent via
- * callbacks. It holds no state and does no I/O, so it shares the exact render contract
- * with the web `ConversationScreen` (Requirement 6.7). The container owns the reducer,
- * transport, and crypto wiring.
+ * callbacks. The conversation render contract is shared with the web `ConversationScreen`
+ * (Requirement 6.7); the container owns the reducer, transport, and crypto wiring.
+ *
+ * Phase 2 surfaces the Wave-1 features that already exist in the shared core but were
+ * previously invisible: message-gap markers (Req 2.2), reactions / edit / delete via a
+ * long-press action sheet (Req 3.4), a per-conversation disappearing-message timer (Req 4.1),
+ * and a safety-number verification panel (Req 1.4). Local UI state (which sheet is open,
+ * the edit draft) lives here; conversation state stays in the shared reducer.
  */
 
-import React from 'react';
-import { FlatList, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import React, { useState } from 'react';
+import {
+  FlatList,
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 
-import type { ConversationState, RenderableMessage } from '@chat-app/crypto';
+import type {
+  ConversationState,
+  MessageTarget,
+  RenderableMessage,
+  SafetyNumber,
+} from '@chat-app/crypto';
 
 import { avatarColor, initials, useTheme, type Theme } from './theme';
 
@@ -24,6 +43,16 @@ export interface ConversationScreenProps {
   onSend: () => void;
   /** Back to the chats list. */
   onBack: () => void;
+  /** React to a message with an emoji (Req 3.1). */
+  onReact: (target: MessageTarget, emoji: string) => void;
+  /** Replace a message's text (Req 3.2). */
+  onEdit: (target: MessageTarget, body: string) => void;
+  /** Delete (tombstone) a message (Req 3.3). */
+  onDelete: (target: MessageTarget) => void;
+  /** Set the conversation's disappearing-message timer in ms; `0` disables it (Req 4.1). */
+  onSetTimer: (ttlMs: number) => void;
+  /** Compute the conversation safety number, or `null` if not yet available (Req 1.1–1.3). */
+  getSafetyNumber: () => Promise<SafetyNumber | null>;
 }
 
 const STATUS_LABEL: Record<RenderableMessage['status'], string> = {
@@ -34,16 +63,69 @@ const STATUS_LABEL: Record<RenderableMessage['status'], string> = {
   'delivery-error': '⚠ could not be decrypted',
 };
 
+/** Quick-reaction palette shown in the long-press action sheet. */
+const REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
+
+/** Disappearing-timer presets, label → milliseconds (`0` = off). */
+const TIMER_PRESETS: ReadonlyArray<{ label: string; ms: number }> = [
+  { label: 'Off', ms: 0 },
+  { label: '30 seconds', ms: 30_000 },
+  { label: '5 minutes', ms: 5 * 60_000 },
+  { label: '1 hour', ms: 60 * 60_000 },
+  { label: '1 day', ms: 24 * 60 * 60_000 },
+  { label: '1 week', ms: 7 * 24 * 60 * 60_000 },
+];
+
+/** Human label for an active timer (matches a preset, else a coarse fallback). */
+function timerLabel(ttlMs: number): string {
+  if (ttlMs <= 0) {
+    return 'Off';
+  }
+  return TIMER_PRESETS.find((p) => p.ms === ttlMs)?.label ?? `${Math.round(ttlMs / 1000)}s`;
+}
+
 export function ConversationScreen({
   state,
   peerName,
   onComposerChange,
   onSend,
   onBack,
+  onReact,
+  onEdit,
+  onDelete,
+  onSetTimer,
+  getSafetyNumber,
 }: ConversationScreenProps): React.JSX.Element {
   const t = useTheme();
   const connected = state.connection === 'connected';
   const canSend = state.composer.canSend && state.webWarningAcknowledged;
+
+  // Local UI state: which message the action sheet targets, the edit draft, and which
+  // header panel (timer / safety) is open. None of this is conversation state.
+  const [actionTarget, setActionTarget] = useState<RenderableMessage | null>(null);
+  const [editDraft, setEditDraft] = useState<{ target: MessageTarget; text: string } | null>(null);
+  const [timerOpen, setTimerOpen] = useState(false);
+  const [safety, setSafety] = useState<{ open: boolean; value: SafetyNumber | null; loading: boolean }>(
+    { open: false, value: null, loading: false },
+  );
+
+  const targetOf = (m: RenderableMessage): MessageTarget => ({ direction: m.direction, seq: m.seq });
+
+  const openSafety = (): void => {
+    setSafety({ open: true, value: null, loading: true });
+    void getSafetyNumber().then((value) => setSafety({ open: true, value, loading: false }));
+  };
+
+  const submitEdit = (): void => {
+    if (editDraft === null) {
+      return;
+    }
+    const body = editDraft.text.trim();
+    if (body.length > 0) {
+      onEdit(editDraft.target, body);
+    }
+    setEditDraft(null);
+  };
 
   return (
     <View style={[styles.screen, { backgroundColor: t.bg }]}>
@@ -62,6 +144,26 @@ export function ConversationScreen({
             {connected ? 'Encrypted · online' : 'Connecting…'}
           </Text>
         </View>
+        <Pressable
+          onPress={() => setTimerOpen(true)}
+          accessibilityRole="button"
+          accessibilityLabel="Disappearing messages"
+          hitSlop={10}
+          style={styles.headerAction}
+        >
+          <Text style={[styles.headerActionIcon, { color: state.disappearingTtlMs > 0 ? t.secure : t.faint }]}>
+            ⏲
+          </Text>
+        </Pressable>
+        <Pressable
+          onPress={openSafety}
+          accessibilityRole="button"
+          accessibilityLabel="Verify safety number"
+          hitSlop={10}
+          style={styles.headerAction}
+        >
+          <Text style={[styles.headerActionIcon, { color: t.brandSoft }]}>🛡</Text>
+        </Pressable>
       </View>
 
       <FlatList
@@ -69,13 +171,29 @@ export function ConversationScreen({
         contentContainerStyle={styles.listContent}
         data={state.messages}
         keyExtractor={(m) => `${m.direction}:${m.seq}`}
-        renderItem={({ item }) => <Bubble message={item} theme={t} />}
+        renderItem={({ item }) => (
+          <>
+            {item.direction === 'in' && state.missingBefore.includes(item.seq) && (
+              <View style={styles.gap}>
+                <View style={[styles.gapLine, { backgroundColor: t.divider }]} />
+                <Text style={[styles.gapText, { color: t.faint }]}>⚠ Messages may be missing</Text>
+                <View style={[styles.gapLine, { backgroundColor: t.divider }]} />
+              </View>
+            )}
+            <Bubble message={item} theme={t} onLongPress={() => setActionTarget(item)} />
+          </>
+        )}
         ListHeaderComponent={
           // One quiet reassurance line, then messages own the screen (UX directive:
           // security is felt, not displayed — no amber warning boxes).
-          <Text style={[styles.notice, { color: t.faint }]}>
-            🔒 Messages are end-to-end encrypted
-          </Text>
+          <View>
+            <Text style={[styles.notice, { color: t.faint }]}>🔒 Messages are end-to-end encrypted</Text>
+            {state.disappearingTtlMs > 0 && (
+              <Text style={[styles.notice, { color: t.secure }]}>
+                ⏲ Disappearing messages: {timerLabel(state.disappearingTtlMs)}
+              </Text>
+            )}
+          </View>
         }
       />
 
@@ -98,16 +216,193 @@ export function ConversationScreen({
           <Text style={[styles.sendText, { color: t.onBrand }]}>➤</Text>
         </Pressable>
       </View>
+
+      {/* Long-press action sheet: react / edit / delete (Req 3.4). */}
+      <SheetModal visible={actionTarget !== null} onClose={() => setActionTarget(null)} theme={t}>
+        {actionTarget !== null && (
+          <>
+            <View style={styles.reactionRow}>
+              {REACTIONS.map((emoji) => (
+                <Pressable
+                  key={emoji}
+                  style={styles.reactionPick}
+                  accessibilityRole="button"
+                  accessibilityLabel={`React ${emoji}`}
+                  onPress={() => {
+                    onReact(targetOf(actionTarget), emoji);
+                    setActionTarget(null);
+                  }}
+                >
+                  <Text style={styles.reactionPickText}>{emoji}</Text>
+                </Pressable>
+              ))}
+            </View>
+            {actionTarget.direction === 'out' && actionTarget.deleted !== true && (
+              <SheetItem
+                label="Edit"
+                theme={t}
+                onPress={() => {
+                  setEditDraft({ target: targetOf(actionTarget), text: actionTarget.text ?? '' });
+                  setActionTarget(null);
+                }}
+              />
+            )}
+            {actionTarget.deleted !== true && (
+              <SheetItem
+                label="Delete"
+                destructive
+                theme={t}
+                onPress={() => {
+                  onDelete(targetOf(actionTarget));
+                  setActionTarget(null);
+                }}
+              />
+            )}
+            <SheetItem label="Cancel" theme={t} onPress={() => setActionTarget(null)} />
+          </>
+        )}
+      </SheetModal>
+
+      {/* Edit draft (Req 3.2). */}
+      <SheetModal visible={editDraft !== null} onClose={() => setEditDraft(null)} theme={t}>
+        {editDraft !== null && (
+          <>
+            <Text style={[styles.sheetTitle, { color: t.text }]}>Edit message</Text>
+            <TextInput
+              style={[styles.editInput, { backgroundColor: t.field, color: t.text }]}
+              value={editDraft.text}
+              onChangeText={(text) => setEditDraft({ ...editDraft, text })}
+              accessibilityLabel="Edit message text"
+              multiline
+              autoFocus
+            />
+            <SheetItem label="Save" theme={t} onPress={submitEdit} />
+            <SheetItem label="Cancel" theme={t} onPress={() => setEditDraft(null)} />
+          </>
+        )}
+      </SheetModal>
+
+      {/* Disappearing-message timer (Req 4.1). */}
+      <SheetModal visible={timerOpen} onClose={() => setTimerOpen(false)} theme={t}>
+        <Text style={[styles.sheetTitle, { color: t.text }]}>Disappearing messages</Text>
+        <Text style={[styles.sheetHint, { color: t.faint }]}>
+          New messages disappear from both devices after the timer.
+        </Text>
+        {TIMER_PRESETS.map((preset) => {
+          const active = state.disappearingTtlMs === preset.ms;
+          return (
+            <SheetItem
+              key={preset.label}
+              label={active ? `✓ ${preset.label}` : preset.label}
+              theme={t}
+              onPress={() => {
+                onSetTimer(preset.ms);
+                setTimerOpen(false);
+              }}
+            />
+          );
+        })}
+      </SheetModal>
+
+      {/* Safety-number verification (Req 1.4). */}
+      <SheetModal visible={safety.open} onClose={() => setSafety({ ...safety, open: false })} theme={t}>
+        <Text style={[styles.sheetTitle, { color: t.text }]}>Verify safety number</Text>
+        <Text style={[styles.sheetHint, { color: t.faint }]}>
+          Compare these digits with {peerName} in person or over a trusted channel. If they match, no
+          one is intercepting your conversation.
+        </Text>
+        {safety.loading ? (
+          <Text style={[styles.safetyDigits, { color: t.faint }]}>Computing…</Text>
+        ) : safety.value !== null ? (
+          <Text style={[styles.safetyDigits, { color: t.text }]} selectable>
+            {safety.value.formatted}
+          </Text>
+        ) : (
+          <Text style={[styles.safetyDigits, { color: t.faint }]}>
+            Not available yet — send or receive a message first.
+          </Text>
+        )}
+        <SheetItem label="Done" theme={t} onPress={() => setSafety({ ...safety, open: false })} />
+      </SheetModal>
     </View>
   );
 }
 
-function Bubble({ message, theme: t }: { message: RenderableMessage; theme: Theme }): React.JSX.Element {
+/** A bottom-sheet-style modal used by every action panel. */
+function SheetModal({
+  visible,
+  onClose,
+  theme: t,
+  children,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  theme: Theme;
+  children: React.ReactNode;
+}): React.JSX.Element {
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable style={styles.backdrop} onPress={onClose} accessibilityLabel="Dismiss">
+        <Pressable style={[styles.sheet, { backgroundColor: t.surface }]} onPress={() => undefined}>
+          <ScrollView>{children}</ScrollView>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
+/** A single tappable row inside a {@link SheetModal}. */
+function SheetItem({
+  label,
+  onPress,
+  theme: t,
+  destructive,
+}: {
+  label: string;
+  onPress: () => void;
+  theme: Theme;
+  destructive?: boolean;
+}): React.JSX.Element {
+  return (
+    <Pressable
+      style={[styles.sheetItem, { borderTopColor: t.divider }]}
+      onPress={onPress}
+      accessibilityRole="button"
+    >
+      <Text style={[styles.sheetItemText, { color: destructive === true ? t.danger : t.brandSoft }]}>
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+function Bubble({
+  message,
+  theme: t,
+  onLongPress,
+}: {
+  message: RenderableMessage;
+  theme: Theme;
+  onLongPress: () => void;
+}): React.JSX.Element {
   const outbound = message.direction === 'out';
   const isError = message.status === 'delivery-error' || message.status === 'failed';
   const statusLabel = STATUS_LABEL[message.status];
+  const body =
+    message.deleted === true
+      ? '🚫 message deleted'
+      : message.text === null
+        ? '⚠ message unavailable'
+        : message.text;
+  const muted = message.deleted === true || message.text === null;
   return (
-    <View style={[styles.bubbleWrap, { alignSelf: outbound ? 'flex-end' : 'flex-start' }]}>
+    <Pressable
+      style={[styles.bubbleWrap, { alignSelf: outbound ? 'flex-end' : 'flex-start' }]}
+      onLongPress={message.deleted === true ? undefined : onLongPress}
+      delayLongPress={250}
+      accessibilityRole="button"
+      accessibilityLabel={`Message: ${typeof body === 'string' ? body : ''}`}
+    >
       <View
         style={[
           styles.bubble,
@@ -120,19 +415,31 @@ function Bubble({ message, theme: t }: { message: RenderableMessage; theme: Them
           style={[
             styles.bubbleText,
             { color: outbound ? t.onBrand : t.text },
-            message.text === null && styles.bubbleTextMissing,
+            muted && styles.bubbleTextMissing,
           ]}
         >
-          {message.text === null ? '⚠ message unavailable' : message.text}
+          {body}
         </Text>
+        {message.edited === true && message.deleted !== true && (
+          <Text style={[styles.editedTag, { color: outbound ? t.onBrand : t.faint }]}>edited</Text>
+        )}
       </View>
+      {message.reactions !== undefined && message.reactions.length > 0 && (
+        <View style={[styles.reactionsBar, { alignSelf: outbound ? 'flex-end' : 'flex-start' }]}>
+          {message.reactions.map((emoji) => (
+            <View key={emoji} style={[styles.reactionChip, { backgroundColor: t.field, borderColor: t.divider }]}>
+              <Text style={styles.reactionChipText}>{emoji}</Text>
+            </View>
+          ))}
+        </View>
+      )}
       {statusLabel.length > 0 && (
         <Text style={[styles.status, { color: isError ? t.danger : t.faint }]}>
           {statusLabel}
           {message.error !== undefined ? ` · ${message.error}` : ''}
         </Text>
       )}
-    </View>
+    </Pressable>
   );
 }
 
@@ -152,17 +459,51 @@ const styles = StyleSheet.create({
   headerBody: { flex: 1 },
   peerName: { fontSize: 16, fontWeight: '700' },
   headerStatus: { fontSize: 11, marginTop: 2 },
+  headerAction: { paddingHorizontal: 4, paddingVertical: 2 },
+  headerActionIcon: { fontSize: 18 },
   list: { flex: 1 },
   listContent: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8 },
-  notice: { fontSize: 11, textAlign: 'center', marginBottom: 14, marginTop: 4 },
+  notice: { fontSize: 11, textAlign: 'center', marginBottom: 8, marginTop: 4 },
+  gap: { flexDirection: 'row', alignItems: 'center', gap: 8, marginVertical: 8 },
+  gapLine: { flex: 1, height: 1 },
+  gapText: { fontSize: 10, fontWeight: '600' },
   bubbleWrap: { maxWidth: '80%', marginVertical: 3 },
   bubble: { borderRadius: 18, paddingHorizontal: 14, paddingVertical: 9 },
   bubbleText: { fontSize: 15 },
   bubbleTextMissing: { fontStyle: 'italic' },
+  editedTag: { fontSize: 9, marginTop: 2, opacity: 0.8 },
+  reactionsBar: { flexDirection: 'row', gap: 4, marginTop: 3 },
+  reactionChip: { borderRadius: 10, borderWidth: 1, paddingHorizontal: 6, paddingVertical: 1 },
+  reactionChipText: { fontSize: 12 },
   status: { fontSize: 10, marginTop: 2, alignSelf: 'flex-end' },
   composer: { flexDirection: 'row', alignItems: 'center', padding: 12, borderTopWidth: 1, gap: 10 },
   input: { flex: 1, borderRadius: 20, paddingHorizontal: 16, paddingVertical: 10, fontSize: 15 },
   sendButton: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
   sendDisabled: { opacity: 0.4 },
   sendText: { fontSize: 16 },
+  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
+  sheet: {
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 28,
+    maxHeight: '70%',
+  },
+  sheetTitle: { fontSize: 16, fontWeight: '700', marginBottom: 6 },
+  sheetHint: { fontSize: 12, marginBottom: 12, lineHeight: 17 },
+  sheetItem: { paddingVertical: 14, borderTopWidth: 1 },
+  sheetItemText: { fontSize: 15, fontWeight: '600', textAlign: 'center' },
+  reactionRow: { flexDirection: 'row', justifyContent: 'space-around', paddingVertical: 8 },
+  reactionPick: { padding: 6 },
+  reactionPickText: { fontSize: 26 },
+  editInput: { borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10, fontSize: 15, minHeight: 64 },
+  safetyDigits: {
+    fontSize: 17,
+    letterSpacing: 1,
+    lineHeight: 28,
+    textAlign: 'center',
+    marginVertical: 16,
+    fontVariant: ['tabular-nums'],
+  },
 });

@@ -178,6 +178,12 @@ export interface KeyStore {
   appendMessage(row: MessageRow): Promise<void>;
   /** Update a message's status by id (5.6, 5.11, 6.5, 6.8). */
   updateMessageStatus(id: string, status: MessageStatus): Promise<void>;
+  /**
+   * Load every persisted message row, across all conversations, for rehydrating the UI on
+   * relaunch (so chats survive an app restart rather than starting empty — Phase 2 CC4).
+   * Order is unspecified; callers group by `remoteUid` and sort by `seq` themselves.
+   */
+  loadMessages(): Promise<MessageRow[]>;
 
   /** Web only: wipe all in-memory material within the current event cycle (7.4). */
   destroy(): void;

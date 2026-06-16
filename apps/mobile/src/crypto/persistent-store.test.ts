@@ -149,6 +149,36 @@ test('sequence counters and message rows persist and advance monotonically', asy
   await store2.updateMessageStatus('m1', 'received');
 });
 
+test('loadMessages rehydrates persisted history across a relaunch (CC4)', async () => {
+  const secure = fakeStorage();
+  const blob = fakeStorage();
+  const uid = 'user-rehydrate';
+  const store1 = createPersistentKeyStore(createPersistentVault(uid, deps(secure, blob)));
+  await store1.appendMessage({
+    id: 'a1', remoteUid: 'alice', direction: 'out', seq: 1, plaintext: 'hi alice', status: 'sent', createdAt: 10,
+  });
+  await store1.appendMessage({
+    id: 'b1', remoteUid: 'bob', direction: 'in', seq: 1, plaintext: 'hi from bob', status: 'received', createdAt: 20,
+  });
+  store1.destroy();
+
+  // Fresh launch: the encrypted blob is reopened and history is intact.
+  const store2 = createPersistentKeyStore(createPersistentVault(uid, deps(secure, blob)));
+  const rows = await store2.loadMessages();
+  assert.equal(rows.length, 2);
+  const alice = rows.find((r) => r.remoteUid === 'alice');
+  const bob = rows.find((r) => r.remoteUid === 'bob');
+  assert.equal(alice?.plaintext, 'hi alice');
+  assert.equal(bob?.plaintext, 'hi from bob');
+
+  // The returned rows are copies — mutating them must not corrupt the cached document.
+  if (alice !== undefined) {
+    alice.plaintext = 'tampered';
+  }
+  const again = await store2.loadMessages();
+  assert.equal(again.find((r) => r.remoteUid === 'alice')?.plaintext, 'hi alice');
+});
+
 test('signal sessions and prekey consumption survive a relaunch', async () => {
   const secure = fakeStorage();
   const blob = fakeStorage();
