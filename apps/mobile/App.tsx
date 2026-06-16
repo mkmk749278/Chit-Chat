@@ -22,6 +22,7 @@ import {
   initialConversationState,
   reduce,
   type ConversationState,
+  type MessageTarget,
 } from '@chat-app/crypto';
 
 import {
@@ -159,6 +160,37 @@ export default function App(): React.JSX.Element {
   // Surface encryption-setup progress/failure (identity + device registration + connect).
   useEffect(() => controller.onSetupChange(setSetup), [controller]);
 
+  // Rehydrate persisted conversation history once the encrypted store is open, so chats
+  // survive an app restart instead of starting empty (Phase 2 CC4). Guarded by a ref so it
+  // runs once per signed-in session even though `ready` may be reported more than once.
+  const rehydratedRef = useRef(false);
+  useEffect(
+    () =>
+      controller.onSetupChange((next) => {
+        if (next.phase !== 'ready' || rehydratedRef.current) {
+          return;
+        }
+        rehydratedRef.current = true;
+        void controller.loadConversations().then((restored) => {
+          if (restored.length === 0) {
+            return;
+          }
+          setConversations((prev) => {
+            const present = new Set(prev.map((c) => c.id));
+            const added = restored
+              .filter((r) => !present.has(r.id))
+              .map((r) => ({ id: r.id, name: r.id, state: r.state, lastAt: r.lastAt }));
+            return [...added, ...prev];
+          });
+          // Resolve display names so rehydrated rows show a name instead of a raw UID.
+          for (const r of restored) {
+            ensurePeerName(r.id);
+          }
+        });
+      }),
+    [controller, ensurePeerName],
+  );
+
   // Restore a persisted sign-in on launch: Firebase remembers the session across an app
   // kill, so this fires with the signed-in uid and we skip the Sign_In_Screen. We then load
   // the profile (display name + phone) so a returning user also skips onboarding.
@@ -279,9 +311,33 @@ export default function App(): React.JSX.Element {
     void controller.send(text);
   }, [conversations, controller, onComposerChange]);
 
+  // Reaction / edit / delete / timer all target the OPEN conversation (the controller's
+  // active recipient); the optimistic reducer events flow back through the subscription.
+  const onReact = useCallback(
+    (target: MessageTarget, emoji: string) => void controller.react(target, emoji),
+    [controller],
+  );
+  const onEdit = useCallback(
+    (target: MessageTarget, body: string) => void controller.editMessage(target, body),
+    [controller],
+  );
+  const onDelete = useCallback(
+    (target: MessageTarget) => void controller.deleteMessage(target),
+    [controller],
+  );
+  const onSetTimer = useCallback(
+    (ttlMs: number) => void controller.setDisappearingTimer(ttlMs),
+    [controller],
+  );
+  const getSafetyNumber = useCallback(() => {
+    const target = openChatRef.current;
+    return target !== null ? controller.getSafetyNumber(target) : Promise.resolve(null);
+  }, [controller]);
+
   const signOut = useCallback(() => {
     void controller.signOut();
     // Session-end hygiene: drop all conversation + profile state with the session.
+    rehydratedRef.current = false;
     setConversations([]);
     setOpenChatId(null);
     setNewChatOpen(false);
@@ -327,6 +383,11 @@ export default function App(): React.JSX.Element {
           peerName={openConversation.name}
           onComposerChange={onComposerChange}
           onSend={onSend}
+          onReact={onReact}
+          onEdit={onEdit}
+          onDelete={onDelete}
+          onSetTimer={onSetTimer}
+          getSafetyNumber={getSafetyNumber}
           onBack={() => {
             animateNext();
             setOpenChatId(null);

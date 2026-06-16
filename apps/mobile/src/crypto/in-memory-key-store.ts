@@ -83,6 +83,9 @@ export function createInMemoryKeyStore(): KeyStore {
         row.status = status;
       }
     },
+    async loadMessages(): Promise<MessageRow[]> {
+      return [...messages.values()].map((row) => ({ ...row }));
+    },
 
     destroy(): void {
       identity = null;

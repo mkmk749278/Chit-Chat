@@ -80,6 +80,9 @@ function harness() {
       async decrypt() {
         return 'x';
       },
+      async getSafetyNumber() {
+        return null;
+      },
     },
     sequence: (() => {
       const c = new Map<string, number>();
