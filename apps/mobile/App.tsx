@@ -295,21 +295,27 @@ export default function App(): React.JSX.Element {
     );
   }, []);
 
-  const onSend = useCallback(() => {
-    const target = openChatRef.current;
-    if (target === null) {
-      return;
-    }
-    const open = conversations.find((c) => c.id === target);
-    const text = open?.state.composer.text.trim() ?? '';
-    if (text.length === 0) {
-      return;
-    }
-    // The controller owns the message lifecycle (message-appended + status updates flow
-    // back through the subscription); the container only clears the composer.
-    onComposerChange('');
-    void controller.send(text);
-  }, [conversations, controller, onComposerChange]);
+  const onSend = useCallback(
+    (options?: { viewOnce?: boolean }) => {
+      const target = openChatRef.current;
+      if (target === null) {
+        return;
+      }
+      const open = conversations.find((c) => c.id === target);
+      const text = open?.state.composer.text.trim() ?? '';
+      if (text.length === 0) {
+        return;
+      }
+      // The controller owns the message lifecycle (message-appended + status updates flow
+      // back through the subscription); the container only clears the composer.
+      onComposerChange('');
+      void controller.send(text, options);
+    },
+    [conversations, controller, onComposerChange],
+  );
+
+  // A view-once message was displayed: purge it (delete-on-display) via the controller (Req 4.3).
+  const onView = useCallback((id: string) => void controller.markViewed(id), [controller]);
 
   // Reaction / edit / delete / timer all target the OPEN conversation (the controller's
   // active recipient); the optimistic reducer events flow back through the subscription.
@@ -386,6 +392,7 @@ export default function App(): React.JSX.Element {
           onReact={onReact}
           onEdit={onEdit}
           onDelete={onDelete}
+          onView={onView}
           onSetTimer={onSetTimer}
           getSafetyNumber={getSafetyNumber}
           onBack={() => {

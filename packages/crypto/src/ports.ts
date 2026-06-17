@@ -127,6 +127,11 @@ export interface MessageRow {
    * from the UI (Phase 2 Req 4.2). Stamped at append time from the conversation's active timer.
    */
   expiresAt?: number;
+  /**
+   * `true` for a view-once message: on the recipient it is hidden behind a "tap to view" gate and
+   * purged from the store the instant it is first displayed, and is not re-openable (Req 4.3).
+   */
+  viewOnce?: boolean;
 }
 
 // ---------------------------------------------------------------------------

@@ -40,7 +40,7 @@ export interface ConversationScreenProps {
   /** Display name of the chat peer (header). */
   peerName: string;
   onComposerChange: (text: string) => void;
-  onSend: () => void;
+  onSend: (options?: { viewOnce?: boolean }) => void;
   /** Back to the chats list. */
   onBack: () => void;
   /** React to a message with an emoji (Req 3.1). */
@@ -49,6 +49,8 @@ export interface ConversationScreenProps {
   onEdit: (target: MessageTarget, body: string) => void;
   /** Delete (tombstone) a message (Req 3.3). */
   onDelete: (target: MessageTarget) => void;
+  /** A view-once message was opened: purge it (delete-on-display) by its row id (Req 4.3). */
+  onView: (id: string) => void;
   /** Set the conversation's disappearing-message timer in ms; `0` disables it (Req 4.1). */
   onSetTimer: (ttlMs: number) => void;
   /** Compute the conversation safety number, or `null` if not yet available (Req 1.1–1.3). */
@@ -93,12 +95,29 @@ export function ConversationScreen({
   onReact,
   onEdit,
   onDelete,
+  onView,
   onSetTimer,
   getSafetyNumber,
 }: ConversationScreenProps): React.JSX.Element {
   const t = useTheme();
   const connected = state.connection === 'connected';
   const canSend = state.composer.canSend && state.webWarningAcknowledged;
+  // Local composer affordance: the next message is sent view-once (Req 4.3).
+  const [composeViewOnce, setComposeViewOnce] = useState(false);
+  // Captured content of a view-once message being revealed (the row is purged on open).
+  const [reveal, setReveal] = useState<string | null>(null);
+
+  const send = (): void => {
+    onSend(composeViewOnce ? { viewOnce: true } : undefined);
+    setComposeViewOnce(false);
+  };
+
+  // Open a received view-once message: capture its text, then purge it immediately so it can
+  // never be re-opened (Req 4.3). The captured text stays in the modal until dismissed.
+  const revealViewOnce = (message: RenderableMessage): void => {
+    setReveal(message.text ?? '');
+    onView(message.id);
+  };
 
   // Local UI state: which message the action sheet targets, the edit draft, and which
   // header panel (timer / safety) is open. None of this is conversation state.
@@ -180,7 +199,12 @@ export function ConversationScreen({
                 <View style={[styles.gapLine, { backgroundColor: t.divider }]} />
               </View>
             )}
-            <Bubble message={item} theme={t} onLongPress={() => setActionTarget(item)} />
+            <Bubble
+              message={item}
+              theme={t}
+              onLongPress={() => setActionTarget(item)}
+              onReveal={() => revealViewOnce(item)}
+            />
           </>
         )}
         ListHeaderComponent={
@@ -198,10 +222,23 @@ export function ConversationScreen({
       />
 
       <View style={[styles.composer, { backgroundColor: t.surface, borderTopColor: t.divider }]}>
+        <Pressable
+          onPress={() => setComposeViewOnce((v) => !v)}
+          accessibilityRole="button"
+          accessibilityLabel="View once"
+          accessibilityState={{ selected: composeViewOnce }}
+          hitSlop={8}
+          style={[
+            styles.viewOnceToggle,
+            { borderColor: composeViewOnce ? t.brand : t.divider, backgroundColor: composeViewOnce ? t.brandFill : 'transparent' },
+          ]}
+        >
+          <Text style={[styles.viewOnceToggleIcon, { color: composeViewOnce ? t.brand : t.faint }]}>👁</Text>
+        </Pressable>
         <TextInput
           style={[styles.input, { backgroundColor: t.field, color: t.text }]}
           value={state.composer.text}
-          placeholder="Message…"
+          placeholder={composeViewOnce ? 'View-once message…' : 'Message…'}
           placeholderTextColor={t.faint}
           onChangeText={onComposerChange}
           accessibilityLabel="Message"
@@ -209,7 +246,7 @@ export function ConversationScreen({
         <Pressable
           style={[styles.sendButton, { backgroundColor: t.brand }, !canSend && styles.sendDisabled]}
           disabled={!canSend}
-          onPress={onSend}
+          onPress={send}
           accessibilityRole="button"
           accessibilityLabel="Send"
         >
@@ -324,6 +361,18 @@ export function ConversationScreen({
         )}
         <SheetItem label="Done" theme={t} onPress={() => setSafety({ ...safety, open: false })} />
       </SheetModal>
+
+      {/* View-once reveal (Req 4.3): the message is already purged; this shows its captured text once. */}
+      <SheetModal visible={reveal !== null} onClose={() => setReveal(null)} theme={t}>
+        <Text style={[styles.sheetTitle, { color: t.text }]}>👁 View once</Text>
+        <Text style={[styles.sheetHint, { color: t.faint }]}>
+          This message disappears when you close it and can’t be opened again.
+        </Text>
+        <Text style={[styles.viewOnceBody, { color: t.text }]} selectable>
+          {reveal}
+        </Text>
+        <SheetItem label="Close" theme={t} onPress={() => setReveal(null)} />
+      </SheetModal>
     </View>
   );
 }
@@ -380,28 +429,35 @@ function Bubble({
   message,
   theme: t,
   onLongPress,
+  onReveal,
 }: {
   message: RenderableMessage;
   theme: Theme;
   onLongPress: () => void;
+  onReveal: () => void;
 }): React.JSX.Element {
   const outbound = message.direction === 'out';
   const isError = message.status === 'delivery-error' || message.status === 'failed';
   const statusLabel = STATUS_LABEL[message.status];
+  // A received view-once message is gated behind "tap to view" until opened (Req 4.3).
+  const gated = message.viewOnce === true && !outbound && message.deleted !== true && message.text !== null;
   const body =
     message.deleted === true
       ? '🚫 message deleted'
-      : message.text === null
-        ? '⚠ message unavailable'
-        : message.text;
+      : gated
+        ? '👁 Tap to view · disappears after viewing'
+        : message.text === null
+          ? '⚠ message unavailable'
+          : message.text;
   const muted = message.deleted === true || message.text === null;
   return (
     <Pressable
       style={[styles.bubbleWrap, { alignSelf: outbound ? 'flex-end' : 'flex-start' }]}
-      onLongPress={message.deleted === true ? undefined : onLongPress}
+      onPress={gated ? onReveal : undefined}
+      onLongPress={message.deleted === true || gated ? undefined : onLongPress}
       delayLongPress={250}
       accessibilityRole="button"
-      accessibilityLabel={`Message: ${typeof body === 'string' ? body : ''}`}
+      accessibilityLabel={gated ? 'View-once message, tap to view' : `Message: ${typeof body === 'string' ? body : ''}`}
     >
       <View
         style={[
@@ -409,17 +465,21 @@ function Bubble({
           outbound
             ? { backgroundColor: t.brand, opacity: message.status === 'sending' ? 0.55 : 1 }
             : { backgroundColor: t.bubbleIn, borderWidth: 1, borderColor: t.divider },
+          gated && { borderStyle: 'dashed', borderWidth: 1, borderColor: t.brandSoft },
         ]}
       >
         <Text
           style={[
             styles.bubbleText,
             { color: outbound ? t.onBrand : t.text },
-            muted && styles.bubbleTextMissing,
+            (muted || gated) && styles.bubbleTextMissing,
           ]}
         >
           {body}
         </Text>
+        {message.viewOnce === true && outbound && message.deleted !== true && (
+          <Text style={[styles.editedTag, { color: t.onBrand }]}>👁 view once</Text>
+        )}
         {message.edited === true && message.deleted !== true && (
           <Text style={[styles.editedTag, { color: outbound ? t.onBrand : t.faint }]}>edited</Text>
         )}
@@ -476,7 +536,17 @@ const styles = StyleSheet.create({
   reactionChip: { borderRadius: 10, borderWidth: 1, paddingHorizontal: 6, paddingVertical: 1 },
   reactionChipText: { fontSize: 12 },
   status: { fontSize: 10, marginTop: 2, alignSelf: 'flex-end' },
-  composer: { flexDirection: 'row', alignItems: 'center', padding: 12, borderTopWidth: 1, gap: 10 },
+  composer: { flexDirection: 'row', alignItems: 'center', padding: 12, borderTopWidth: 1, gap: 8 },
+  viewOnceToggle: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  viewOnceToggleIcon: { fontSize: 16 },
+  viewOnceBody: { fontSize: 16, lineHeight: 23, marginVertical: 14 },
   input: { flex: 1, borderRadius: 20, paddingHorizontal: 16, paddingVertical: 10, fontSize: 15 },
   sendButton: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
   sendDisabled: { opacity: 0.4 },

@@ -27,7 +27,8 @@ export const CONTENT_PAYLOAD_VERSION = 1;
 
 /** A decoded content payload. Discriminated on `type`. */
 export type ContentPayload =
-  | { type: 'text'; body: string }
+  /** A text message. `viewOnce` marks it for delete-on-display on the recipient (Req 4.3). */
+  | { type: 'text'; body: string; viewOnce?: boolean }
   | { type: 'reaction'; targetSeq: number; targetOutbound: boolean; emoji: string }
   | { type: 'edit'; targetSeq: number; targetOutbound: boolean; body: string }
   | { type: 'delete'; targetSeq: number; targetOutbound: boolean }
@@ -78,7 +79,9 @@ export function decodeContentPayload(raw: string): ContentPayload {
   switch (env.type) {
     case 'text':
       return typeof env.body === 'string'
-        ? { type: 'text', body: env.body }
+        ? env.viewOnce === true
+          ? { type: 'text', body: env.body, viewOnce: true }
+          : { type: 'text', body: env.body }
         : { type: 'unsupported' };
     case 'reaction':
       return isSeq(env.targetSeq) &&
