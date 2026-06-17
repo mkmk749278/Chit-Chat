@@ -108,6 +108,14 @@ export interface MessagingStore {
   appendMessage(row: MessageRow): Promise<void>;
   /** Update a message's status by id (5.6, 5.11, 6.5, 6.8). */
   updateMessageStatus(id: string, status: MessageStatus): Promise<void>;
+  /** Persist a reaction onto the target message so it survives a relaunch (Req 3.1). */
+  applyReaction(remoteUid: string, direction: 'in' | 'out', seq: number, emoji: string): Promise<void>;
+  /** Persist an edit onto the target message (Req 3.2). */
+  applyEdit(remoteUid: string, direction: 'in' | 'out', seq: number, body: string): Promise<void>;
+  /** Persist a delete tombstone onto the target message (Req 3.3). */
+  applyDelete(remoteUid: string, direction: 'in' | 'out', seq: number): Promise<void>;
+  /** Persist the per-conversation disappearing-message timer (Req 4.1). */
+  setConversationTimer(remoteUid: string, ttlMs: number): Promise<void>;
 }
 
 /** The injected ports + collaborators {@link DefaultMessaging} depends on. */
@@ -438,36 +446,47 @@ export class DefaultMessaging implements Messaging {
       }
       // Reaction/edit/delete reference a message in the SENDER's frame; flip `targetOutbound`
       // to THIS device's local direction (a message the peer sent is inbound here). An unknown
-      // target is ignored by the reducer (Req 3.5).
-      case 'reaction':
+      // target is ignored by the reducer and the store (Req 3.5). The store write keeps the
+      // mutation durable so it survives a relaunch alongside the base message rows.
+      case 'reaction': {
+        const targetDirection = payload.targetOutbound ? 'in' : 'out';
+        await this.store.applyReaction(remoteUid, targetDirection, payload.targetSeq, payload.emoji);
         this.emitUpdate({
           type: 'reaction-applied',
-          targetDirection: payload.targetOutbound ? 'in' : 'out',
+          targetDirection,
           targetSeq: payload.targetSeq,
           emoji: payload.emoji,
           remoteUid,
         });
         return;
-      case 'edit':
+      }
+      case 'edit': {
+        const targetDirection = payload.targetOutbound ? 'in' : 'out';
+        await this.store.applyEdit(remoteUid, targetDirection, payload.targetSeq, payload.body);
         this.emitUpdate({
           type: 'message-edited',
-          targetDirection: payload.targetOutbound ? 'in' : 'out',
+          targetDirection,
           targetSeq: payload.targetSeq,
           body: payload.body,
           remoteUid,
         });
         return;
-      case 'delete':
+      }
+      case 'delete': {
+        const targetDirection = payload.targetOutbound ? 'in' : 'out';
+        await this.store.applyDelete(remoteUid, targetDirection, payload.targetSeq);
         this.emitUpdate({
           type: 'message-deleted',
-          targetDirection: payload.targetOutbound ? 'in' : 'out',
+          targetDirection,
           targetSeq: payload.targetSeq,
           remoteUid,
         });
         return;
+      }
       case 'timer':
         // Per-conversation disappearing timer: converge both peers on the same TTL (Req 4.1).
         // Scheduled deletion of expired messages is a store concern (task 4.2).
+        await this.store.setConversationTimer(remoteUid, Math.max(0, payload.ttlMs));
         this.emitUpdate({ type: 'timer-changed', ttlMs: payload.ttlMs, remoteUid });
         return;
       case 'unsupported':
@@ -483,6 +502,8 @@ export class DefaultMessaging implements Messaging {
 
   /** @inheritdoc */
   async react(recipientUid: string, target: MessageTarget, emoji: string): Promise<void> {
+    // Persist first so the reaction survives a relaunch even if the network send fails.
+    await this.store.applyReaction(recipientUid, target.direction, target.seq, emoji);
     await this.sendControl(
       recipientUid,
       { type: 'reaction', targetSeq: target.seq, targetOutbound: target.direction === 'out', emoji },
@@ -498,6 +519,7 @@ export class DefaultMessaging implements Messaging {
 
   /** @inheritdoc */
   async editMessage(recipientUid: string, target: MessageTarget, body: string): Promise<void> {
+    await this.store.applyEdit(recipientUid, target.direction, target.seq, body);
     await this.sendControl(
       recipientUid,
       { type: 'edit', targetSeq: target.seq, targetOutbound: target.direction === 'out', body },
@@ -513,6 +535,7 @@ export class DefaultMessaging implements Messaging {
 
   /** @inheritdoc */
   async deleteMessage(recipientUid: string, target: MessageTarget): Promise<void> {
+    await this.store.applyDelete(recipientUid, target.direction, target.seq);
     await this.sendControl(
       recipientUid,
       { type: 'delete', targetSeq: target.seq, targetOutbound: target.direction === 'out' },
@@ -527,6 +550,7 @@ export class DefaultMessaging implements Messaging {
 
   /** @inheritdoc */
   async setDisappearingTimer(recipientUid: string, ttlMs: number): Promise<void> {
+    await this.store.setConversationTimer(recipientUid, Math.max(0, ttlMs));
     await this.sendControl(
       recipientUid,
       { type: 'timer', ttlMs },

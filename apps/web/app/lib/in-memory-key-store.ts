@@ -66,8 +66,21 @@ export class InMemoryKeyStore implements KeyStore {
   /** Conversation/message rows for display, keyed by client-generated id. */
   private messages = new Map<string, MessageRow>();
 
+  /** Per-conversation disappearing-message timer in ms, keyed by peer uid (Req 4.1). */
+  private timers = new Map<string, number>();
+
   /** Set once {@link destroy} runs; further reads return nothing retrievable. */
   private destroyed = false;
+
+  /** Find a stored row by its conversation + LOCAL `(direction, seq)`, or `undefined`. */
+  private findRow(remoteUid: string, direction: 'in' | 'out', seq: number): MessageRow | undefined {
+    for (const row of this.messages.values()) {
+      if (row.remoteUid === remoteUid && row.direction === direction && row.seq === seq) {
+        return row;
+      }
+    }
+    return undefined;
+  }
 
   /** @inheritdoc */
   async saveIdentity(record: IdentityRecord): Promise<void> {
@@ -166,6 +179,57 @@ export class InMemoryKeyStore implements KeyStore {
     return [...this.messages.values()].map((row) => ({ ...row }));
   }
 
+  /** @inheritdoc */
+  async applyReaction(remoteUid: string, direction: 'in' | 'out', seq: number, emoji: string): Promise<void> {
+    this.assertLive();
+    const row = this.findRow(remoteUid, direction, seq);
+    if (!row || row.deleted === true) {
+      return;
+    }
+    const reactions = row.reactions ?? [];
+    if (!reactions.includes(emoji)) {
+      row.reactions = [...reactions, emoji];
+    }
+  }
+
+  /** @inheritdoc */
+  async applyEdit(remoteUid: string, direction: 'in' | 'out', seq: number, body: string): Promise<void> {
+    this.assertLive();
+    const row = this.findRow(remoteUid, direction, seq);
+    if (!row || row.deleted === true) {
+      return;
+    }
+    row.plaintext = body;
+    row.edited = true;
+  }
+
+  /** @inheritdoc */
+  async applyDelete(remoteUid: string, direction: 'in' | 'out', seq: number): Promise<void> {
+    this.assertLive();
+    const row = this.findRow(remoteUid, direction, seq);
+    if (!row) {
+      return;
+    }
+    row.plaintext = null;
+    row.deleted = true;
+    row.edited = false;
+    delete row.reactions;
+  }
+
+  /** @inheritdoc */
+  async setConversationTimer(remoteUid: string, ttlMs: number): Promise<void> {
+    this.assertLive();
+    this.timers.set(remoteUid, Math.max(0, ttlMs));
+  }
+
+  /** @inheritdoc */
+  async loadConversationTimers(): Promise<Record<string, number>> {
+    if (this.destroyed) {
+      return {};
+    }
+    return Object.fromEntries(this.timers);
+  }
+
   /**
    * Synchronously wipe ALL in-memory identity, session, sequence, and message
    * material. Private-key and session bytes are overwritten with zeros before their
@@ -193,6 +257,7 @@ export class InMemoryKeyStore implements KeyStore {
     this.sessions.clear();
     this.seqCounters.clear();
     this.messages.clear();
+    this.timers.clear();
     this.deviceId = null;
     this.destroyed = true;
   }

@@ -131,11 +131,25 @@ class FakeSender implements LocalSenderResolver {
 class FakeStore implements MessagingStore {
   readonly rows: MessageRow[] = [];
   readonly statuses: Array<{ id: string; status: MessageStatus }> = [];
+  readonly mutations: Array<{ kind: string; remoteUid: string; direction: 'in' | 'out'; seq: number; extra?: string }> = [];
+  readonly timers = new Map<string, number>();
   async appendMessage(row: MessageRow): Promise<void> {
     this.rows.push(row);
   }
   async updateMessageStatus(id: string, status: MessageStatus): Promise<void> {
     this.statuses.push({ id, status });
+  }
+  async applyReaction(remoteUid: string, direction: 'in' | 'out', seq: number, emoji: string): Promise<void> {
+    this.mutations.push({ kind: 'reaction', remoteUid, direction, seq, extra: emoji });
+  }
+  async applyEdit(remoteUid: string, direction: 'in' | 'out', seq: number, body: string): Promise<void> {
+    this.mutations.push({ kind: 'edit', remoteUid, direction, seq, extra: body });
+  }
+  async applyDelete(remoteUid: string, direction: 'in' | 'out', seq: number): Promise<void> {
+    this.mutations.push({ kind: 'delete', remoteUid, direction, seq });
+  }
+  async setConversationTimer(remoteUid: string, ttlMs: number): Promise<void> {
+    this.timers.set(remoteUid, ttlMs);
   }
 }
 

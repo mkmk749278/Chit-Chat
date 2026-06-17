@@ -37,6 +37,16 @@ export function createInMemoryKeyStore(): KeyStore {
   const sessions = new Map<string, Uint8Array>();
   const sequences = new Map<string, number>();
   const messages = new Map<string, MessageRow>();
+  const timers = new Map<string, number>();
+
+  const findRow = (
+    remoteUid: string,
+    direction: 'in' | 'out',
+    seq: number,
+  ): MessageRow | undefined =>
+    [...messages.values()].find(
+      (row) => row.remoteUid === remoteUid && row.direction === direction && row.seq === seq,
+    );
 
   return {
     async saveIdentity(record: IdentityRecord): Promise<void> {
@@ -86,6 +96,40 @@ export function createInMemoryKeyStore(): KeyStore {
     async loadMessages(): Promise<MessageRow[]> {
       return [...messages.values()].map((row) => ({ ...row }));
     },
+    async applyReaction(remoteUid, direction, seq, emoji): Promise<void> {
+      const row = findRow(remoteUid, direction, seq);
+      if (row === undefined || row.deleted === true) {
+        return;
+      }
+      const reactions = row.reactions ?? [];
+      if (!reactions.includes(emoji)) {
+        row.reactions = [...reactions, emoji];
+      }
+    },
+    async applyEdit(remoteUid, direction, seq, body): Promise<void> {
+      const row = findRow(remoteUid, direction, seq);
+      if (row === undefined || row.deleted === true) {
+        return;
+      }
+      row.plaintext = body;
+      row.edited = true;
+    },
+    async applyDelete(remoteUid, direction, seq): Promise<void> {
+      const row = findRow(remoteUid, direction, seq);
+      if (row === undefined) {
+        return;
+      }
+      row.plaintext = null;
+      row.deleted = true;
+      row.edited = false;
+      delete row.reactions;
+    },
+    async setConversationTimer(remoteUid, ttlMs): Promise<void> {
+      timers.set(remoteUid, Math.max(0, ttlMs));
+    },
+    async loadConversationTimers(): Promise<Record<string, number>> {
+      return Object.fromEntries(timers);
+    },
 
     destroy(): void {
       identity = null;
@@ -93,6 +137,7 @@ export function createInMemoryKeyStore(): KeyStore {
       sessions.clear();
       sequences.clear();
       messages.clear();
+      timers.clear();
     },
   };
 }

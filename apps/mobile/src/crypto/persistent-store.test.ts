@@ -179,6 +179,48 @@ test('loadMessages rehydrates persisted history across a relaunch (CC4)', async 
   assert.equal(again.find((r) => r.remoteUid === 'alice')?.plaintext, 'hi alice');
 });
 
+test('reactions, edits, deletes and timers persist across a relaunch', async () => {
+  const secure = fakeStorage();
+  const blob = fakeStorage();
+  const uid = 'user-faithful';
+  const store1 = createPersistentKeyStore(createPersistentVault(uid, deps(secure, blob)));
+  await store1.appendMessage({
+    id: 'm-react', remoteUid: 'p', direction: 'out', seq: 1, plaintext: 'one', status: 'sent', createdAt: 1,
+  });
+  await store1.appendMessage({
+    id: 'm-edit', remoteUid: 'p', direction: 'out', seq: 2, plaintext: 'two', status: 'sent', createdAt: 2,
+  });
+  await store1.appendMessage({
+    id: 'm-del', remoteUid: 'p', direction: 'out', seq: 3, plaintext: 'three', status: 'sent', createdAt: 3,
+  });
+  await store1.applyReaction('p', 'out', 1, '👍');
+  await store1.applyReaction('p', 'out', 1, '👍'); // deduped
+  await store1.applyEdit('p', 'out', 2, 'two (edited)');
+  await store1.applyDelete('p', 'out', 3);
+  await store1.setConversationTimer('p', 30_000);
+  store1.destroy();
+
+  const store2 = createPersistentKeyStore(createPersistentVault(uid, deps(secure, blob)));
+  const rows = await store2.loadMessages();
+  const react = rows.find((r) => r.id === 'm-react');
+  const edit = rows.find((r) => r.id === 'm-edit');
+  const del = rows.find((r) => r.id === 'm-del');
+  assert.deepEqual(react?.reactions, ['👍']);
+  assert.equal(edit?.plaintext, 'two (edited)');
+  assert.equal(edit?.edited, true);
+  assert.equal(del?.deleted, true);
+  assert.equal(del?.plaintext, null);
+  assert.deepEqual(await store2.loadConversationTimers(), { p: 30_000 });
+
+  // A delete tombstone rejects later reactions/edits (matches the reducer's invariant).
+  await store2.applyReaction('p', 'out', 3, '❤️');
+  await store2.applyEdit('p', 'out', 3, 'resurrected');
+  const after = (await store2.loadMessages()).find((r) => r.id === 'm-del');
+  assert.equal(after?.deleted, true);
+  assert.equal(after?.plaintext, null);
+  assert.equal(after?.reactions, undefined);
+});
+
 test('signal sessions and prekey consumption survive a relaunch', async () => {
   const secure = fakeStorage();
   const blob = fakeStorage();
