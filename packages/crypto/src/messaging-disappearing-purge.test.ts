@@ -252,3 +252,13 @@ test('a message with no timer is never purged', async () => {
   scheduler.advance(10_000_000);
   assert.equal([...store.rows.values()].some((r) => r.plaintext === 'permanent'), true);
 });
+
+test('send({ viewOnce }) stamps the row and the emitted message (Req 4.3)', async () => {
+  const store = new FakeStore();
+  const { messaging, events } = make(store);
+  await messaging.send('bob', 'peek', { viewOnce: true });
+  const row = [...store.rows.values()].find((r) => r.plaintext === 'peek');
+  assert.equal(row?.viewOnce, true);
+  const appended = events.find((e) => e.type === 'message-appended');
+  assert.equal(appended?.type === 'message-appended' && appended.message.viewOnce, true);
+});

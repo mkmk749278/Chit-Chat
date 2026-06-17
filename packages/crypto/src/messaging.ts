@@ -172,6 +172,12 @@ export interface MessageTarget {
   seq: number;
 }
 
+/** Options for {@link Messaging.send}. */
+export interface SendOptions {
+  /** Send as a view-once message: the recipient may open it once, then it is purged (Req 4.3). */
+  viewOnce?: boolean;
+}
+
 export interface Messaging {
   /**
    * Send `plaintext` to `recipientUid`. Establishes a libsignal session first if needed,
@@ -180,7 +186,7 @@ export interface Messaging {
    * Never throws for an expected delivery problem (offline, no recipient device, encrypt
    * failure); those surface as a `failed` message with its text retained (5.9).
    */
-  send(recipientUid: string, plaintext: string): Promise<void>;
+  send(recipientUid: string, plaintext: string, options?: SendOptions): Promise<void>;
   /**
    * React to a prior message with an emoji (Requirement 3.1). `target` identifies the message
    * by its LOCAL direction + seq; the reaction rides as an E2E content payload and the peer
@@ -347,11 +353,12 @@ export class DefaultMessaging implements Messaging {
   // -------------------------------------------------------------------------
 
   /** @inheritdoc */
-  async send(recipientUid: string, plaintext: string): Promise<void> {
+  async send(recipientUid: string, plaintext: string, options?: SendOptions): Promise<void> {
     // Allocate the per-conversation sequence number up front so the row and the envelope
     // share one strictly-increasing seq (Requirements 5.3, 6.2).
     const seq = await this.sequence.next(recipientUid);
     const id = this.generateId();
+    const viewOnce = options?.viewOnce === true;
 
     // Optimistically render the outbound message as `sending` before any network work
     // (design §12 optimistic UI; Requirements 5.10, 6.2).
@@ -363,6 +370,7 @@ export class DefaultMessaging implements Messaging {
       plaintext,
       status: 'sending',
       createdAt: this.now(),
+      ...(viewOnce ? { viewOnce: true } : {}),
     };
     // Stamp the disappearing-message expiry from the conversation's active timer (Req 4.2):
     // the sender's clock starts at send time.
@@ -370,7 +378,14 @@ export class DefaultMessaging implements Messaging {
     await this.store.appendMessage(row);
     this.emitUpdate({
       type: 'message-appended',
-      message: { id, seq, direction: 'out', text: plaintext, status: 'sending' },
+      message: {
+        id,
+        seq,
+        direction: 'out',
+        text: plaintext,
+        status: 'sending',
+        ...(viewOnce ? { viewOnce: true } : {}),
+      },
       remoteUid: recipientUid,
     });
 
@@ -398,7 +413,7 @@ export class DefaultMessaging implements Messaging {
         recipientUid,
         // Wrap plain text in the versioned content payload (Phase 2). The recipient decodes it
         // back to text; a legacy peer that decodes the JSON as a bare string still shows it.
-        encodeContentPayload({ type: 'text', body: plaintext }),
+        encodeContentPayload({ type: 'text', body: plaintext, ...(viewOnce ? { viewOnce: true } : {}) }),
       );
     } catch (err) {
       // A short reason is surfaced for diagnosis; the raw error (which may carry sensitive
@@ -453,6 +468,7 @@ export class DefaultMessaging implements Messaging {
     const remoteUid = envelope.senderUid;
     switch (payload.type) {
       case 'text': {
+        const viewOnce = payload.viewOnce === true;
         const row: MessageRow = {
           id,
           remoteUid,
@@ -461,13 +477,21 @@ export class DefaultMessaging implements Messaging {
           plaintext: payload.body,
           status: 'received',
           createdAt: this.now(),
+          ...(viewOnce ? { viewOnce: true } : {}),
         };
         // The recipient's disappearing-message clock starts when the message arrives (Req 4.2).
         this.stampExpiry(row);
         await this.store.appendMessage(row);
         this.emitUpdate({
           type: 'message-appended',
-          message: { id, seq: envelope.seq, direction: 'in', text: payload.body, status: 'received' },
+          message: {
+            id,
+            seq: envelope.seq,
+            direction: 'in',
+            text: payload.body,
+            status: 'received',
+            ...(viewOnce ? { viewOnce: true } : {}),
+          },
           remoteUid,
         });
         return;

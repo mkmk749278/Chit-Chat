@@ -69,6 +69,11 @@ export interface RenderableMessage {
    * status, which means the ciphertext could not be decrypted (Requirements 3.3, 6.9).
    */
   deleted?: boolean;
+  /**
+   * `true` for a view-once message. On the recipient the UI gates it behind "tap to view" and
+   * removes it (delete-on-display) once shown; on the sender it is just labelled (Req 4.3).
+   */
+  viewOnce?: boolean;
 }
 
 /**

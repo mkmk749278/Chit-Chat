@@ -20,6 +20,22 @@ test('text payload round-trips', () => {
   assert.deepEqual(roundTrip({ type: 'text', body: 'hello 🔐' }), { type: 'text', body: 'hello 🔐' });
 });
 
+test('view-once text payload round-trips with the flag (Req 4.3)', () => {
+  assert.deepEqual(roundTrip({ type: 'text', body: 'secret', viewOnce: true }), {
+    type: 'text',
+    body: 'secret',
+    viewOnce: true,
+  });
+});
+
+test('a plain text payload decodes without a viewOnce flag', () => {
+  // No viewOnce key on a normal message — the field is absent, not `false`.
+  assert.deepEqual(decodeContentPayload(encodeContentPayload({ type: 'text', body: 'hi' })), {
+    type: 'text',
+    body: 'hi',
+  });
+});
+
 test('reaction payload round-trips', () => {
   const p: ContentPayload = { type: 'reaction', targetSeq: 7, targetOutbound: true, emoji: '👍' };
   assert.deepEqual(roundTrip(p), p);

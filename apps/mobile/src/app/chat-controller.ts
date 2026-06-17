@@ -134,7 +134,12 @@ export interface ChatController {
   /** Set the conversation that subsequent {@link ChatController.send} calls target. */
   openConversation(recipientUid: string): void;
   /** Send `plaintext` to the currently-open conversation (see {@link openConversation}). */
-  send(plaintext: string): Promise<void>;
+  send(plaintext: string, options?: { viewOnce?: boolean }): Promise<void>;
+  /**
+   * Mark a view-once message as displayed: purge it from the store and remove it from the UI so
+   * it cannot be re-opened (Req 4.3). `id` is the message's stable row id.
+   */
+  markViewed(id: string): Promise<void>;
   /** React to a message in the open conversation with an emoji (Req 3.1). */
   react(target: MessageTarget, emoji: string): Promise<void>;
   /** Edit a message's text in the open conversation (Req 3.2). */
@@ -486,11 +491,23 @@ export function createMobileController(): ChatController {
       activeRecipient = recipientUid;
     },
 
-    async send(plaintext: string): Promise<void> {
+    async send(plaintext: string, options?: { viewOnce?: boolean }): Promise<void> {
       if (messaging === null || activeRecipient === null) {
         return;
       }
-      await messaging.send(activeRecipient, plaintext);
+      await messaging.send(activeRecipient, plaintext, options);
+    },
+
+    async markViewed(id: string): Promise<void> {
+      if (keyStore === null || activeRecipient === null) {
+        return;
+      }
+      try {
+        await keyStore.purgeMessages([id]);
+      } catch {
+        // A purge failure must not crash the UI; the message stays until a later relaunch.
+      }
+      emit({ type: 'messages-expired', ids: [id], remoteUid: activeRecipient });
     },
 
     async react(target: MessageTarget, emoji: string): Promise<void> {
@@ -707,6 +724,9 @@ export function createDemoController(): ChatController {
     async send(): Promise<void> {
       // No transport in the demo controller; the container's optimistic append is the
       // only visible effect.
+    },
+    async markViewed(): Promise<void> {
+      // No store in the demo controller.
     },
     async react(): Promise<void> {
       // No transport in the demo controller.
