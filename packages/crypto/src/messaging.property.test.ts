@@ -113,6 +113,10 @@ function harness() {
       async updateMessageStatus(id: string, s: MessageStatus) {
         store.status.set(id, s);
       },
+      async applyReaction() {},
+      async applyEdit() {},
+      async applyDelete() {},
+      async setConversationTimer() {},
     },
   };
   const messaging = new DefaultMessaging(deps, {

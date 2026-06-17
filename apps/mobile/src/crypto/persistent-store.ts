@@ -111,6 +111,8 @@ interface VaultDoc {
   deviceId: string | null;
   sequences: Record<string, number>;
   messages: Record<string, MessageRow>;
+  /** Per-conversation disappearing-message timer in ms, keyed by peer uid (Req 4.1). */
+  timers: Record<string, number>;
   /** KeyStore-port session blobs (interface completeness; the live ratchet uses `signal`). */
   keyStoreSessions: Record<string, string>;
   /** `null` until seeded from the identity on first use, then accumulates across launches. */
@@ -123,9 +125,22 @@ const emptyDoc = (): VaultDoc => ({
   deviceId: null,
   sequences: {},
   messages: {},
+  timers: {},
   keyStoreSessions: {},
   signal: null,
 });
+
+/** Find a stored message row by its conversation + LOCAL `(direction, seq)`, or `undefined`. */
+function findRow(
+  doc: VaultDoc,
+  remoteUid: string,
+  direction: 'in' | 'out',
+  seq: number,
+): MessageRow | undefined {
+  return Object.values(doc.messages).find(
+    (row) => row.remoteUid === remoteUid && row.direction === direction && row.seq === seq,
+  );
+}
 
 const b64 = (bytes: Uint8Array): string => Buffer.from(bytes).toString('base64');
 const unb64 = (value: string): Uint8Array => new Uint8Array(Buffer.from(value, 'base64'));
@@ -393,6 +408,48 @@ export function createPersistentKeyStore(vault: PersistentVault): KeyStore {
       // Persisted history for relaunch rehydration (CC4): every stored row, copied out so a
       // mutation of the returned value can't reach back into the cached document.
       return vault.read((doc) => Object.values(doc.messages).map((row) => ({ ...row })));
+    },
+    async applyReaction(remoteUid, direction, seq, emoji): Promise<void> {
+      await vault.mutate((doc) => {
+        const row = findRow(doc, remoteUid, direction, seq);
+        if (row === undefined || row.deleted === true) {
+          return;
+        }
+        const reactions = row.reactions ?? [];
+        if (!reactions.includes(emoji)) {
+          row.reactions = [...reactions, emoji];
+        }
+      });
+    },
+    async applyEdit(remoteUid, direction, seq, body): Promise<void> {
+      await vault.mutate((doc) => {
+        const row = findRow(doc, remoteUid, direction, seq);
+        if (row === undefined || row.deleted === true) {
+          return;
+        }
+        row.plaintext = body;
+        row.edited = true;
+      });
+    },
+    async applyDelete(remoteUid, direction, seq): Promise<void> {
+      await vault.mutate((doc) => {
+        const row = findRow(doc, remoteUid, direction, seq);
+        if (row === undefined) {
+          return;
+        }
+        row.plaintext = null;
+        row.deleted = true;
+        row.edited = false;
+        delete row.reactions;
+      });
+    },
+    async setConversationTimer(remoteUid, ttlMs): Promise<void> {
+      await vault.mutate((doc) => {
+        doc.timers[remoteUid] = Math.max(0, ttlMs);
+      });
+    },
+    async loadConversationTimers(): Promise<Record<string, number>> {
+      return vault.read((doc) => ({ ...doc.timers }));
     },
 
     destroy(): void {

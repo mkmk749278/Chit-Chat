@@ -107,6 +107,33 @@ function makeStore(): MessagingStore & { rows: Map<string, MessageRow> } {
         r.status = status;
       }
     },
+    async applyReaction(remoteUid, direction, seq, emoji) {
+      for (const r of rows.values()) {
+        if (r.remoteUid === remoteUid && r.direction === direction && r.seq === seq && r.deleted !== true) {
+          const reactions = r.reactions ?? [];
+          if (!reactions.includes(emoji)) r.reactions = [...reactions, emoji];
+        }
+      }
+    },
+    async applyEdit(remoteUid, direction, seq, body) {
+      for (const r of rows.values()) {
+        if (r.remoteUid === remoteUid && r.direction === direction && r.seq === seq && r.deleted !== true) {
+          r.plaintext = body;
+          r.edited = true;
+        }
+      }
+    },
+    async applyDelete(remoteUid, direction, seq) {
+      for (const r of rows.values()) {
+        if (r.remoteUid === remoteUid && r.direction === direction && r.seq === seq) {
+          r.plaintext = null;
+          r.deleted = true;
+          r.edited = false;
+          delete r.reactions;
+        }
+      }
+    },
+    async setConversationTimer() {},
   };
 }
 

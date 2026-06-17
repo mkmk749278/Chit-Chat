@@ -112,6 +112,15 @@ export interface MessageRow {
   status: MessageStatus;
   /** Creation timestamp (unix ms). */
   createdAt: number;
+  /**
+   * Emoji reactions applied to this message (deduped), persisted so they survive a relaunch
+   * (Phase 2 Req 3.1). Absent when none.
+   */
+  reactions?: string[];
+  /** `true` once an edit has superseded this message's text (persisted; Req 3.2). */
+  edited?: boolean;
+  /** `true` once a delete tombstone has removed this message's content (persisted; Req 3.3). */
+  deleted?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -184,6 +193,20 @@ export interface KeyStore {
    * Order is unspecified; callers group by `remoteUid` and sort by `seq` themselves.
    */
   loadMessages(): Promise<MessageRow[]>;
+  /**
+   * Persist an emoji reaction onto the target message so it survives a relaunch (Req 3.1).
+   * The target is identified by its LOCAL `(direction, seq)`. A no-op if the target is absent
+   * or already deleted; reactions are deduped.
+   */
+  applyReaction(remoteUid: string, direction: 'in' | 'out', seq: number, emoji: string): Promise<void>;
+  /** Persist an edit (supersede text + mark edited) onto the target message (Req 3.2). */
+  applyEdit(remoteUid: string, direction: 'in' | 'out', seq: number, body: string): Promise<void>;
+  /** Persist a delete tombstone onto the target message (drop content + flags) (Req 3.3). */
+  applyDelete(remoteUid: string, direction: 'in' | 'out', seq: number): Promise<void>;
+  /** Persist the per-conversation disappearing-message timer in ms (`0` disables) (Req 4.1). */
+  setConversationTimer(remoteUid: string, ttlMs: number): Promise<void>;
+  /** Load every persisted per-conversation timer, keyed by peer uid, for relaunch rehydration. */
+  loadConversationTimers(): Promise<Record<string, number>>;
 
   /** Web only: wipe all in-memory material within the current event cycle (7.4). */
   destroy(): void;

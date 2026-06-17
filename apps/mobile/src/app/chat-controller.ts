@@ -538,8 +538,10 @@ export function createMobileController(): ChatController {
         return [];
       }
       let rows;
+      let timers: Record<string, number>;
       try {
         rows = await keyStore.loadMessages();
+        timers = await keyStore.loadConversationTimers();
       } catch {
         return [];
       }
@@ -573,10 +575,19 @@ export function createMobileController(): ChatController {
                     direction: row.direction,
                     text: row.plaintext,
                     status,
+                    // Persisted reaction/edit/delete state, so those survive a relaunch too.
+                    ...(row.reactions !== undefined ? { reactions: row.reactions } : {}),
+                    ...(row.edited === true ? { edited: true } : {}),
+                    ...(row.deleted === true ? { deleted: true } : {}),
                   },
                   remoteUid: peerUid,
                 };
           state = reduce(state, event);
+        }
+        // Rehydrate the per-conversation disappearing-message timer (Req 4.1).
+        const ttlMs = timers[peerUid] ?? 0;
+        if (ttlMs > 0) {
+          state = reduce(state, { type: 'timer-changed', ttlMs, remoteUid: peerUid });
         }
         conversations.push({ id: peerUid, lastAt, state });
       }
