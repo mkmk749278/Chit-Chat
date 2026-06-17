@@ -121,6 +121,12 @@ export interface MessageRow {
   edited?: boolean;
   /** `true` once a delete tombstone has removed this message's content (persisted; Req 3.3). */
   deleted?: boolean;
+  /**
+   * Absolute expiry instant (unix ms) for a disappearing message, or absent/non-finite when the
+   * message has no timer. When `now >= expiresAt` the row is purged from the store and removed
+   * from the UI (Phase 2 Req 4.2). Stamped at append time from the conversation's active timer.
+   */
+  expiresAt?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +213,13 @@ export interface KeyStore {
   setConversationTimer(remoteUid: string, ttlMs: number): Promise<void>;
   /** Load every persisted per-conversation timer, keyed by peer uid, for relaunch rehydration. */
   loadConversationTimers(): Promise<Record<string, number>>;
+  /**
+   * Permanently remove the given message rows as a best-effort secure erase for disappearing
+   * messages (Req 4.2/4.4): overwrite the plaintext before dropping the row so the cleartext is
+   * not trivially recoverable from the re-serialized store. OS-level backups/snapshots remain out
+   * of scope (documented). Unknown ids are ignored.
+   */
+  purgeMessages(ids: string[]): Promise<void>;
 
   /** Web only: wipe all in-memory material within the current event cycle (7.4). */
   destroy(): void;

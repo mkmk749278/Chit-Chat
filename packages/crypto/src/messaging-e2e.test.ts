@@ -181,6 +181,12 @@ function makeStore(): MessagingStore & { rows: Map<string, MessageRow> } {
       }
     },
     async setConversationTimer(): Promise<void> {},
+    async loadMessages(): Promise<MessageRow[]> {
+      return [...rows.values()].map((r) => ({ ...r }));
+    },
+    async purgeMessages(ids): Promise<void> {
+      for (const id of ids) rows.delete(id);
+    },
   };
 }
 

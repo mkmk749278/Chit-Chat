@@ -158,7 +158,8 @@ export type ConversationEvent =
       targetSeq: number;
       remoteUid?: string;
     }
-  | { type: 'timer-changed'; ttlMs: number; remoteUid?: string };
+  | { type: 'timer-changed'; ttlMs: number; remoteUid?: string }
+  | { type: 'messages-expired'; ids: string[]; remoteUid?: string };
 
 /**
  * The reducer contract consumed by the platform UIs (design Component 7).
@@ -382,6 +383,18 @@ export function reduce(
       // Both peers converge on the same disappearing-message TTL (Req 4.1); negative values
       // are clamped to 0 (disabled).
       return { ...state, disappearingTtlMs: Math.max(0, event.ttlMs) };
+
+    case 'messages-expired': {
+      // A disappearing message reached its expiry and was purged from the store; remove it from
+      // the list entirely (not a tombstone — it should leave no trace) (Req 4.2). Unknown ids are
+      // ignored. The gap markers are recomputed so a removed inbound seq doesn't read as a gap.
+      const remove = new Set(event.ids);
+      const messages = state.messages.filter((m) => !remove.has(m.id));
+      if (messages.length === state.messages.length) {
+        return state;
+      }
+      return { ...state, messages, missingBefore: computeMissingBefore(messages) };
+    }
 
     default: {
       // Exhaustiveness guard: a new event variant must be handled explicitly.

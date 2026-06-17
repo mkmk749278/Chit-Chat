@@ -175,3 +175,23 @@ test('conversationReducer.reduce delegates to the pure function', () => {
   });
   assert.equal(next.connection, 'connected');
 });
+
+// --- messages-expired (disappearing messages, Req 4.2) -----------------------
+
+test('messages-expired removes the named messages and recomputes gaps', () => {
+  let state = initialConversationState('mobile');
+  state = reduce(state, { type: 'message-appended', message: inbound(1, 'a', 'i1') });
+  state = reduce(state, { type: 'message-appended', message: inbound(2, 'b', 'i2') });
+  state = reduce(state, { type: 'message-appended', message: inbound(3, 'c', 'i3') });
+  // Remove the middle message; it should be gone and seq 3 should now read as a gap.
+  const next = reduce(state, { type: 'messages-expired', ids: ['i2'] });
+  assert.deepEqual(next.messages.map((m) => m.id), ['i1', 'i3']);
+  assert.deepEqual(next.missingBefore, [3]);
+});
+
+test('messages-expired with unknown ids returns the same state reference', () => {
+  let state = initialConversationState('mobile');
+  state = reduce(state, { type: 'message-appended', message: out(1, 'hi', 'o1') });
+  const next = reduce(state, { type: 'messages-expired', ids: ['nope'] });
+  assert.equal(next, state);
+});

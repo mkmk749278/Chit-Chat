@@ -151,6 +151,15 @@ class FakeStore implements MessagingStore {
   async setConversationTimer(remoteUid: string, ttlMs: number): Promise<void> {
     this.timers.set(remoteUid, ttlMs);
   }
+  async loadMessages(): Promise<MessageRow[]> {
+    return this.rows.map((r) => ({ ...r }));
+  }
+  async purgeMessages(ids: string[]): Promise<void> {
+    for (const id of ids) {
+      const i = this.rows.findIndex((r) => r.id === id);
+      if (i >= 0) this.rows.splice(i, 1);
+    }
+  }
 }
 
 /** A controllable scheduler: timers fire only when {@link runPending} is called. */

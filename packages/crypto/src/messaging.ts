@@ -47,6 +47,7 @@ import type { ClaimedPreKeyBundle } from '@chat-app/types';
 
 import type { ConversationEvent } from './conversation-reducer';
 import { decodeContentPayload, encodeContentPayload, type ContentPayload } from './content-payload';
+import { msUntilNextExpiry, selectExpired, type ExpiringEntry } from './disappearing-timer';
 import type { EnvelopeCodec } from './envelope-codec';
 import type { MessageRow, Unsubscribe } from './ports';
 import type { Scheduler, TimerHandle } from './realtime-client';
@@ -116,6 +117,10 @@ export interface MessagingStore {
   applyDelete(remoteUid: string, direction: 'in' | 'out', seq: number): Promise<void>;
   /** Persist the per-conversation disappearing-message timer (Req 4.1). */
   setConversationTimer(remoteUid: string, ttlMs: number): Promise<void>;
+  /** Load every persisted row, used to re-arm disappearing-message purges on launch (Req 4.2). */
+  loadMessages(): Promise<MessageRow[]>;
+  /** Permanently remove expired rows (best-effort secure erase) (Req 4.2/4.4). */
+  purgeMessages(ids: string[]): Promise<void>;
 }
 
 /** The injected ports + collaborators {@link DefaultMessaging} depends on. */
@@ -198,6 +203,12 @@ export interface Messaging {
    * on the same timer; applied optimistically locally.
    */
   setDisappearingTimer(recipientUid: string, ttlMs: number): Promise<void>;
+  /**
+   * Seed the in-memory disappearing-timer for a conversation WITHOUT sending or persisting it
+   * (Req 4.1). Used on relaunch to restore a previously-agreed timer so messages sent in the new
+   * session are stamped with the right expiry, without re-notifying the peer.
+   */
+  primeConversationTtl(recipientUid: string, ttlMs: number): void;
   /**
    * Handle an inbound `CiphertextEnvelope` from the Realtime_Client: decrypt and render the
    * plaintext, or surface a `delivery-error` with no plaintext on decryption failure
@@ -285,6 +296,13 @@ export class DefaultMessaging implements Messaging {
   /** Pending sends keyed by `${recipientUid}:${seq}` (queued or awaiting-ack). */
   private readonly pending = new Map<string, PendingSend>();
 
+  /** In-memory per-conversation disappearing TTL (ms), so new rows can be stamped (Req 4.1/4.2). */
+  private readonly conversationTtls = new Map<string, number>();
+  /** Live set of messages awaiting expiry, keyed by row id (Req 4.2). */
+  private readonly expiring = new Map<string, { expiresAt: number; remoteUid: string }>();
+  /** The single armed purge timer for the soonest expiry, or `null`. */
+  private purgeTimer: TimerHandle | null = null;
+
   private readonly updateListeners = new Set<(event: ConversationEvent) => void>();
   private readonly transportUnsubscribers: Unsubscribe[];
 
@@ -317,6 +335,11 @@ export class DefaultMessaging implements Messaging {
         }
       }),
     ];
+
+    // Re-arm disappearing-message purges from persisted rows so a relaunch keeps deleting
+    // already-expired and soon-to-expire messages (Req 4.2). Fire-and-forget: a load failure
+    // must not break construction.
+    void this.initPurgeSchedule();
   }
 
   // -------------------------------------------------------------------------
@@ -341,6 +364,9 @@ export class DefaultMessaging implements Messaging {
       status: 'sending',
       createdAt: this.now(),
     };
+    // Stamp the disappearing-message expiry from the conversation's active timer (Req 4.2):
+    // the sender's clock starts at send time.
+    this.stampExpiry(row);
     await this.store.appendMessage(row);
     this.emitUpdate({
       type: 'message-appended',
@@ -436,6 +462,8 @@ export class DefaultMessaging implements Messaging {
           status: 'received',
           createdAt: this.now(),
         };
+        // The recipient's disappearing-message clock starts when the message arrives (Req 4.2).
+        this.stampExpiry(row);
         await this.store.appendMessage(row);
         this.emitUpdate({
           type: 'message-appended',
@@ -484,8 +512,9 @@ export class DefaultMessaging implements Messaging {
         return;
       }
       case 'timer':
-        // Per-conversation disappearing timer: converge both peers on the same TTL (Req 4.1).
-        // Scheduled deletion of expired messages is a store concern (task 4.2).
+        // Per-conversation disappearing timer: converge both peers on the same TTL (Req 4.1) and
+        // keep the in-memory copy so subsequently-received messages are stamped for purge (4.2).
+        this.conversationTtls.set(remoteUid, Math.max(0, payload.ttlMs));
         await this.store.setConversationTimer(remoteUid, Math.max(0, payload.ttlMs));
         this.emitUpdate({ type: 'timer-changed', ttlMs: payload.ttlMs, remoteUid });
         return;
@@ -550,12 +579,18 @@ export class DefaultMessaging implements Messaging {
 
   /** @inheritdoc */
   async setDisappearingTimer(recipientUid: string, ttlMs: number): Promise<void> {
+    this.conversationTtls.set(recipientUid, Math.max(0, ttlMs));
     await this.store.setConversationTimer(recipientUid, Math.max(0, ttlMs));
     await this.sendControl(
       recipientUid,
       { type: 'timer', ttlMs },
       { type: 'timer-changed', ttlMs, remoteUid: recipientUid },
     );
+  }
+
+  /** @inheritdoc */
+  primeConversationTtl(recipientUid: string, ttlMs: number): void {
+    this.conversationTtls.set(recipientUid, Math.max(0, ttlMs));
   }
 
   /** @inheritdoc */
@@ -579,6 +614,103 @@ export class DefaultMessaging implements Messaging {
       this.clearAckTimer(entry);
     }
     this.pending.clear();
+    if (this.purgeTimer !== null) {
+      this.scheduler.clearTimeout(this.purgeTimer);
+      this.purgeTimer = null;
+    }
+    this.expiring.clear();
+  }
+
+  // -------------------------------------------------------------------------
+  // Disappearing-message purge engine (Req 4.2 / 4.4).
+  // -------------------------------------------------------------------------
+
+  /**
+   * Stamp `row.expiresAt` from the conversation's active timer (if any) and register it for
+   * purging. The clock starts at the row's own `createdAt`, which is send time for an outbound
+   * row and receive time for an inbound one (Req 4.2).
+   */
+  private stampExpiry(row: MessageRow): void {
+    const ttl = this.conversationTtls.get(row.remoteUid) ?? 0;
+    if (ttl <= 0) {
+      return;
+    }
+    row.expiresAt = row.createdAt + ttl;
+    this.expiring.set(row.id, { expiresAt: row.expiresAt, remoteUid: row.remoteUid });
+    this.reschedulePurge();
+  }
+
+  /** Load persisted rows on construction and re-arm purges (including already-expired). */
+  private async initPurgeSchedule(): Promise<void> {
+    let rows: MessageRow[];
+    try {
+      rows = await this.store.loadMessages();
+    } catch {
+      return;
+    }
+    for (const row of rows) {
+      if (row.expiresAt !== undefined && Number.isFinite(row.expiresAt)) {
+        this.expiring.set(row.id, { expiresAt: row.expiresAt, remoteUid: row.remoteUid });
+      }
+    }
+    // Purge anything already past due immediately, then arm the next timer.
+    await this.runPurge();
+  }
+
+  /** Snapshot the live expiring set as {@link ExpiringEntry} list for the pure expiry helpers. */
+  private expiringEntries(): ExpiringEntry[] {
+    return [...this.expiring.entries()].map(([id, { expiresAt }]) => ({ id, expiresAt }));
+  }
+
+  /** (Re)arm a single timer for the soonest pending expiry, or none when nothing is pending. */
+  private reschedulePurge(): void {
+    if (this.purgeTimer !== null) {
+      this.scheduler.clearTimeout(this.purgeTimer);
+      this.purgeTimer = null;
+    }
+    const delay = msUntilNextExpiry(this.expiringEntries(), this.now());
+    if (delay === null) {
+      return;
+    }
+    this.purgeTimer = this.scheduler.setTimeout(() => {
+      this.purgeTimer = null;
+      void this.runPurge();
+    }, delay);
+  }
+
+  /**
+   * Purge every message whose expiry has elapsed: erase it from the store (plaintext overwrite),
+   * drop it from the UI via a `messages-expired` event per conversation, and re-arm the next
+   * timer (Req 4.2). Safe to call repeatedly; a no-op when nothing is due.
+   */
+  private async runPurge(): Promise<void> {
+    const expiredIds = selectExpired(this.expiringEntries(), this.now());
+    if (expiredIds.length === 0) {
+      this.reschedulePurge();
+      return;
+    }
+    // Group by conversation so each chat gets one removal event.
+    const byConversation = new Map<string, string[]>();
+    for (const id of expiredIds) {
+      const entry = this.expiring.get(id);
+      this.expiring.delete(id);
+      if (entry === undefined) {
+        continue;
+      }
+      const list = byConversation.get(entry.remoteUid) ?? [];
+      list.push(id);
+      byConversation.set(entry.remoteUid, list);
+    }
+    try {
+      await this.store.purgeMessages(expiredIds);
+    } catch {
+      // A store failure must not crash the loop; the rows stay tracked-removed in memory and
+      // a later relaunch re-attempts via initPurgeSchedule.
+    }
+    for (const [remoteUid, ids] of byConversation) {
+      this.emitUpdate({ type: 'messages-expired', ids, remoteUid });
+    }
+    this.reschedulePurge();
   }
 
   // -------------------------------------------------------------------------

@@ -451,6 +451,19 @@ export function createPersistentKeyStore(vault: PersistentVault): KeyStore {
     async loadConversationTimers(): Promise<Record<string, number>> {
       return vault.read((doc) => ({ ...doc.timers }));
     },
+    async purgeMessages(ids): Promise<void> {
+      await vault.mutate((doc) => {
+        for (const id of ids) {
+          const row = doc.messages[id];
+          if (row !== undefined) {
+            // Best-effort secure erase: overwrite the plaintext before dropping the row, so the
+            // cleartext is gone from the re-encrypted blob (OS backups remain out of scope).
+            row.plaintext = null;
+            delete doc.messages[id];
+          }
+        }
+      });
+    },
 
     destroy(): void {
       // Release the in-memory document; the encrypted blob is retained for the next launch.

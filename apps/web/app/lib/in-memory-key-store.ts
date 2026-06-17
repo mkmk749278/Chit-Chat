@@ -230,6 +230,18 @@ export class InMemoryKeyStore implements KeyStore {
     return Object.fromEntries(this.timers);
   }
 
+  /** @inheritdoc */
+  async purgeMessages(ids: string[]): Promise<void> {
+    this.assertLive();
+    for (const id of ids) {
+      const row = this.messages.get(id);
+      if (row) {
+        row.plaintext = null;
+        this.messages.delete(id);
+      }
+    }
+  }
+
   /**
    * Synchronously wipe ALL in-memory identity, session, sequence, and message
    * material. Private-key and session bytes are overwritten with zeros before their
