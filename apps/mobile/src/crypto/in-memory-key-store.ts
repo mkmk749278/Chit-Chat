@@ -130,6 +130,15 @@ export function createInMemoryKeyStore(): KeyStore {
     async loadConversationTimers(): Promise<Record<string, number>> {
       return Object.fromEntries(timers);
     },
+    async purgeMessages(ids): Promise<void> {
+      for (const id of ids) {
+        const row = messages.get(id);
+        if (row !== undefined) {
+          row.plaintext = null;
+          messages.delete(id);
+        }
+      }
+    },
 
     destroy(): void {
       identity = null;

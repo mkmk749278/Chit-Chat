@@ -27,7 +27,7 @@ Effort: S (<1 day) · M (1–3 days) · L (~1 week) · XL (multi-week).
 - [x] 4.1a (S) `timer` content-payload variant + pure expiry math (`disappearing-timer.ts`: `computeExpiresAt`/`selectExpired`/`msUntilNextExpiry`, view-once supported). **(this PR)**
 - [x] 4.1b (M) Per-conversation TTL state in the reducer (`disappearingTtlMs` + `timer-changed`) and propagation through `Messaging.setDisappearingTimer` / inbound `timer` payloads, so both peers converge on the timer. **(this PR)**
 - [~] 4.1c (S) Mobile UI: disappearing-timer picker (Off/30s/5m/1h/1d/1w) in the conversation header + active-timer banner. **(this PR)**
-- [ ] 4.2 (M) Store-side scheduled deletion with plaintext overwrite (best-effort secure erase).
+- [x] 4.2 (M) Store-side scheduled deletion with plaintext overwrite (best-effort secure erase). **(this PR)** `Messaging` stamps `MessageRow.expiresAt` from the conversation timer (send time for the sender, receive time for the recipient), runs a single-timer purge engine (over the pure `disappearing-timer` helpers) that erases expired rows via `KeyStore.purgeMessages` (plaintext overwrite + row drop) and emits a `messages-expired` reducer event; the schedule is re-armed from persisted rows on construction, and the controller skips already-expired rows on rehydration + primes timers via `Messaging.primeConversationTtl`. OS-level backups remain out of scope.
 - [ ] 4.3 (S) View-once (delete-on-display) + UI; document OS-backup/screenshot limits.
 
 ## Wave 2 — needs infra / native

@@ -134,6 +134,12 @@ function makeStore(): MessagingStore & { rows: Map<string, MessageRow> } {
       }
     },
     async setConversationTimer() {},
+    async loadMessages() {
+      return [...rows.values()].map((r) => ({ ...r }));
+    },
+    async purgeMessages(ids) {
+      for (const id of ids) rows.delete(id);
+    },
   };
 }
 

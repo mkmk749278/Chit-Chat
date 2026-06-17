@@ -117,6 +117,15 @@ function harness() {
       async applyEdit() {},
       async applyDelete() {},
       async setConversationTimer() {},
+      async loadMessages() {
+        return [...store.rows];
+      },
+      async purgeMessages(ids: string[]) {
+        for (const id of ids) {
+          const i = store.rows.findIndex((r) => r.id === id);
+          if (i >= 0) store.rows.splice(i, 1);
+        }
+      },
     },
   };
   const messaging = new DefaultMessaging(deps, {

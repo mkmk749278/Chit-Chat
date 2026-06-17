@@ -553,12 +553,18 @@ export function createMobileController(): ChatController {
         list.push(row);
         byPeer.set(row.remoteUid, list);
       }
+      const now = Date.now();
       const conversations: RehydratedConversation[] = [];
       for (const [peerUid, peerRows] of byPeer) {
         let state = initialConversationState('mobile');
         let lastAt = 0;
         // Apply oldest-first so ordering/gap detection matches live arrival semantics.
         for (const row of [...peerRows].sort((a, b) => a.createdAt - b.createdAt)) {
+          // Skip disappearing messages already past expiry — Messaging.initPurgeSchedule erases
+          // them from the store on launch; don't flash them in the UI first (Req 4.2).
+          if (row.expiresAt !== undefined && Number.isFinite(row.expiresAt) && now >= row.expiresAt) {
+            continue;
+          }
           lastAt = Math.max(lastAt, row.createdAt);
           // A row still `sending` at relaunch never got its server ack (the ack timer died
           // with the previous process), so surface it as `failed` — text retained — rather
@@ -584,10 +590,12 @@ export function createMobileController(): ChatController {
                 };
           state = reduce(state, event);
         }
-        // Rehydrate the per-conversation disappearing-message timer (Req 4.1).
+        // Rehydrate the per-conversation disappearing-message timer (Req 4.1) and seed it into
+        // Messaging (without re-notifying the peer) so messages sent this session expire too.
         const ttlMs = timers[peerUid] ?? 0;
         if (ttlMs > 0) {
           state = reduce(state, { type: 'timer-changed', ttlMs, remoteUid: peerUid });
+          messaging?.primeConversationTtl(peerUid, ttlMs);
         }
         conversations.push({ id: peerUid, lastAt, state });
       }
