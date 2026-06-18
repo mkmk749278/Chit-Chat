@@ -246,3 +246,12 @@ export * from './content-payload';
  * view-once message should be purged; the platform store performs the actual secure deletion.
  */
 export * from './disappearing-timer';
+
+
+/**
+ * Per-attachment symmetric encryption (Phase 2, Requirement 7). `encryptAttachment` /
+ * `decryptAttachment` wrap media bytes in AES-256-GCM under a fresh per-attachment key, so the
+ * blob store only ever holds ciphertext and the key rides in the E2E `attachment` content payload.
+ * Pure WebCrypto; no I/O — the caller owns upload/download.
+ */
+export * from './attachment-crypto';

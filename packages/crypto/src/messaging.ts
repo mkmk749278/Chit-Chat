@@ -553,6 +553,11 @@ export class DefaultMessaging implements Messaging {
         await this.store.setConversationTimer(remoteUid, Math.max(0, payload.ttlMs));
         this.emitUpdate({ type: 'timer-changed', ttlMs: payload.ttlMs, remoteUid });
         return;
+      case 'attachment':
+        // E2E attachment (Req 7). The crypto core (per-attachment AES-GCM) and the payload codec
+        // are in place; download + decrypt + render wiring lands with the media UI (task 7.3), so
+        // for now an inbound attachment payload is ignored rather than mis-rendered.
+        return;
       case 'unsupported':
         // A payload type this client version does not understand; ignore (forward-compat).
         return;

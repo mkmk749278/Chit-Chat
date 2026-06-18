@@ -34,6 +34,26 @@ export type ContentPayload =
   | { type: 'delete'; targetSeq: number; targetOutbound: boolean }
   /** Set the conversation's disappearing-message timer; `ttlMs === 0` disables it (Req 4.1). */
   | { type: 'timer'; ttlMs: number }
+  /**
+   * An end-to-end encrypted attachment (Req 7). Carries the routing/handle metadata plus the
+   * per-attachment AES-GCM key + iv (base64) needed to fetch from the blob store and decrypt
+   * locally — the key travels ONLY here, inside the ciphertext, never to the blob store (7.2).
+   */
+  | {
+      type: 'attachment';
+      /** Opaque blob-store handle for the ciphertext (Req 7.1). */
+      blobId: string;
+      /** base64 AES-256 content key (Req 7.2). */
+      key: string;
+      /** base64 AES-GCM nonce. */
+      iv: string;
+      /** MIME type of the decrypted content (e.g. `image/jpeg`). */
+      mediaType: string;
+      /** Ciphertext byte length, for progress/bounds. */
+      size: number;
+      /** Optional original file name. */
+      name?: string;
+    }
   /** A `{v:1}` payload whose `type` (or shape) this client version does not understand. */
   | { type: 'unsupported' };
 
@@ -103,6 +123,29 @@ export function decodeContentPayload(raw: string): ContentPayload {
     case 'timer':
       return typeof env.ttlMs === 'number' && Number.isFinite(env.ttlMs) && env.ttlMs >= 0
         ? { type: 'timer', ttlMs: env.ttlMs }
+        : { type: 'unsupported' };
+    case 'attachment':
+      return typeof env.blobId === 'string' &&
+        env.blobId.length > 0 &&
+        typeof env.key === 'string' &&
+        env.key.length > 0 &&
+        typeof env.iv === 'string' &&
+        env.iv.length > 0 &&
+        typeof env.mediaType === 'string' &&
+        env.mediaType.length > 0 &&
+        typeof env.size === 'number' &&
+        Number.isFinite(env.size) &&
+        env.size >= 0 &&
+        (env.name === undefined || typeof env.name === 'string')
+        ? {
+            type: 'attachment',
+            blobId: env.blobId,
+            key: env.key,
+            iv: env.iv,
+            mediaType: env.mediaType,
+            size: env.size,
+            ...(typeof env.name === 'string' ? { name: env.name } : {}),
+          }
         : { type: 'unsupported' };
     default:
       // A type a newer client introduced; ignore rather than misrender (forward-compat).
