@@ -55,7 +55,7 @@ import {
   type SafetyNumber,
   type SessionManager,
 } from '@chat-app/crypto';
-import type { WhoAmIResponse } from '@chat-app/types';
+import type { PresenceResponse, WhoAmIResponse } from '@chat-app/types';
 
 import { FirebaseAuthAdapter } from '../auth';
 import { API_BASE_URL, REGISTER_URL, WS_URL } from '../api/api-config';
@@ -155,6 +155,10 @@ export interface ChatController {
   sendTyping(): void;
   /** Subscribe to inbound typing hints; `fromUid` is the peer who is typing (Req 5.3). */
   onTyping(listener: (fromUid: string) => void): () => void;
+  /** Read a peer's presence (online + coarse last-seen), or `null` if unavailable (Req 5.2). */
+  getPresence(uid: string): Promise<PresenceResponse | null>;
+  /** Set the signed-in user's presence opt-in (Req 5.1). */
+  setPresenceEnabled(enabled: boolean): Promise<boolean>;
   /**
    * Compute the deterministic safety number for the open conversation, or `null` until a
    * message has been exchanged with the peer (so their identity key is known) (Req 1.1–1.3).
@@ -575,6 +579,14 @@ export function createMobileController(): ChatController {
       return () => typingListeners.delete(listener);
     },
 
+    async getPresence(uid: string): Promise<PresenceResponse | null> {
+      return directory.getPresence(uid);
+    },
+
+    async setPresenceEnabled(enabled: boolean): Promise<boolean> {
+      return directory.setPresence(enabled);
+    },
+
     async getSafetyNumber(recipientUid: string): Promise<SafetyNumber | null> {
       const localUid = authService.getCurrentUid() ?? currentUid;
       if (sessions === null || localUid === null) {
@@ -783,6 +795,12 @@ export function createDemoController(): ChatController {
     onTyping(): () => void {
       return () => undefined;
     },
+    async getPresence(): Promise<PresenceResponse | null> {
+      return null;
+    },
+    async setPresenceEnabled(): Promise<boolean> {
+      return false;
+    },
     async getSafetyNumber(): Promise<SafetyNumber | null> {
       return null;
     },
@@ -820,6 +838,7 @@ export function createDemoController(): ChatController {
         storedPhone: '+910000000000',
         deviceCount: 1,
         selfLookup: 'ok:demo-uid',
+        presenceEnabled: false,
       };
     },
     async signOut(): Promise<void> {

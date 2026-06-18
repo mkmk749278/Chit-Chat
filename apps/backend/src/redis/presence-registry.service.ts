@@ -11,6 +11,17 @@ import { REDIS_COMMAND_CLIENT } from './redis.constants';
 const PRESENCE_KEY_PREFIX = 'presence:';
 
 /**
+ * Redis key prefix for a user's coarse last-seen timestamp (unix ms), written on disconnect.
+ * The full key is `lastseen:{uid}`. Kept separate from the connection registry so it survives
+ * after the user goes offline (the `presence:{uid}` hash is deleted when the last connection
+ * drops). Expires after {@link LAST_SEEN_TTL_SECONDS} so it is not retained indefinitely.
+ */
+const LAST_SEEN_KEY_PREFIX = 'lastseen:';
+
+/** Retention for a stored last-seen timestamp: 30 days. */
+const LAST_SEEN_TTL_SECONDS = 30 * 24 * 60 * 60;
+
+/**
  * The connections registered for a single user: a mapping of `connId -> nodeId`, i.e.
  * the raw shape of the `presence:{uid}` hash returned by `HGETALL`. An empty object
  * means the user has no live connection (offline).
@@ -69,8 +80,46 @@ export class PresenceRegistryService {
     return this.redis.hgetall(PresenceRegistryService.presenceKey(uid));
   }
 
+  /**
+   * Whether `uid` currently holds at least one live connection (online). Derived from the
+   * `presence:{uid}` registry, so it reflects real connection state without any extra writes.
+   */
+  async isOnline(uid: string): Promise<boolean> {
+    const count = await this.redis.hlen(PresenceRegistryService.presenceKey(uid));
+    return count > 0;
+  }
+
+  /**
+   * Record `uid`'s last-seen instant (now, unix ms) for opted-in presence (Req 5.2/5.4). Called
+   * on disconnect. Best-effort and TTL-bounded; stored separately from the connection registry so
+   * it persists after the user goes offline. The caller gates this on the user's opt-in.
+   */
+  async recordLastSeen(uid: string, atMs: number): Promise<void> {
+    await this.redis.set(
+      PresenceRegistryService.lastSeenKey(uid),
+      String(atMs),
+      'EX',
+      LAST_SEEN_TTL_SECONDS,
+    );
+  }
+
+  /** Read `uid`'s stored last-seen unix-ms timestamp, or `null` when none is recorded. */
+  async getLastSeen(uid: string): Promise<number | null> {
+    const raw = await this.redis.get(PresenceRegistryService.lastSeenKey(uid));
+    if (raw === null) {
+      return null;
+    }
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
   /** Builds the registry key `presence:{uid}`. */
   private static presenceKey(uid: string): string {
     return `${PRESENCE_KEY_PREFIX}${uid}`;
+  }
+
+  /** Builds the last-seen key `lastseen:{uid}`. */
+  private static lastSeenKey(uid: string): string {
+    return `${LAST_SEEN_KEY_PREFIX}${uid}`;
   }
 }

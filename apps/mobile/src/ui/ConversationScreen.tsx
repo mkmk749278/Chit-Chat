@@ -41,6 +41,10 @@ export interface ConversationScreenProps {
   peerName: string;
   /** Whether the peer is currently typing (Req 5.3); shows a "typing…" header hint. */
   peerTyping?: boolean;
+  /** Peer online state for opted-in presence (Req 5.2); `null` = unknown/opted-out. */
+  peerOnline?: boolean | null;
+  /** Peer coarse last-seen (unix ms) when offline + opted-in, else `null` (Req 5.2). */
+  peerLastSeen?: number | null;
   onComposerChange: (text: string) => void;
   onSend: (options?: { viewOnce?: boolean }) => void;
   /** Back to the chats list. */
@@ -88,10 +92,51 @@ function timerLabel(ttlMs: number): string {
   return TIMER_PRESETS.find((p) => p.ms === ttlMs)?.label ?? `${Math.round(ttlMs / 1000)}s`;
 }
 
+/** Coarse "last seen" phrasing from a unix-ms timestamp (already 5-min bucketed by the server). */
+function relativeLastSeen(at: number): string {
+  const mins = Math.max(0, Math.round((Date.now() - at) / 60000));
+  if (mins < 5) {
+    return 'last seen recently';
+  }
+  if (mins < 60) {
+    return `last seen ${mins}m ago`;
+  }
+  const hours = Math.round(mins / 60);
+  if (hours < 24) {
+    return `last seen ${hours}h ago`;
+  }
+  return `last seen ${Math.round(hours / 24)}d ago`;
+}
+
+/**
+ * The conversation-header subtitle, in priority order: typing > peer online/last-seen (opt-in
+ * presence, Req 5.2) > socket connection state. `peerOnline === null` means presence is unknown
+ * or the peer opted out, so we fall back to the encryption/connection line.
+ */
+function headerStatus(args: {
+  peerTyping: boolean;
+  peerOnline: boolean | null;
+  peerLastSeen: number | null;
+  connected: boolean;
+}): string {
+  if (args.peerTyping) {
+    return 'typing…';
+  }
+  if (args.peerOnline === true) {
+    return 'online';
+  }
+  if (args.peerOnline === false && args.peerLastSeen !== null) {
+    return relativeLastSeen(args.peerLastSeen);
+  }
+  return args.connected ? 'Encrypted · end-to-end' : 'Connecting…';
+}
+
 export function ConversationScreen({
   state,
   peerName,
   peerTyping = false,
+  peerOnline = null,
+  peerLastSeen = null,
   onComposerChange,
   onSend,
   onBack,
@@ -163,9 +208,12 @@ export function ConversationScreen({
             {peerName}
           </Text>
           <Text
-            style={[styles.headerStatus, { color: peerTyping ? t.brandSoft : connected ? t.secure : t.faint }]}
+            style={[
+              styles.headerStatus,
+              { color: peerTyping || peerOnline === true ? (peerTyping ? t.brandSoft : t.secure) : t.faint },
+            ]}
           >
-            {peerTyping ? 'typing…' : connected ? 'Encrypted · online' : 'Connecting…'}
+            {headerStatus({ peerTyping, peerOnline, peerLastSeen, connected })}
           </Text>
         </View>
         <Pressable

@@ -16,11 +16,12 @@ import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth';
 import { DirectoryController } from './directory.controller';
 import { DirectoryService } from './directory.service';
+import { PresenceService } from './presence.service';
 
 @Module({
   imports: [AuthModule],
   controllers: [DirectoryController],
-  providers: [DirectoryService],
-  exports: [DirectoryService],
+  providers: [DirectoryService, PresenceService],
+  exports: [DirectoryService, PresenceService],
 })
 export class DirectoryModule {}

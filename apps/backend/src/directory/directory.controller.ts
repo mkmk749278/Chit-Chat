@@ -36,6 +36,7 @@ import {
 import type {
   AuthContext,
   GetProfileResponse,
+  PresenceResponse,
   ResolvePhoneResponse,
   WhoAmIResponse,
 } from '@chat-app/types';
@@ -48,7 +49,8 @@ import {
   DIRECTORY_RATE_WINDOW_SECONDS,
 } from './directory.constants';
 import { DirectoryService } from './directory.service';
-import { ResolvePhoneDto, SetProfileDto } from './dto';
+import { PresenceService } from './presence.service';
+import { ResolvePhoneDto, SetPresenceDto, SetProfileDto } from './dto';
 
 @Controller('api/directory')
 export class DirectoryController {
@@ -56,6 +58,7 @@ export class DirectoryController {
 
   constructor(
     private readonly directory: DirectoryService,
+    private readonly presence: PresenceService,
     private readonly rateLimiter: RateLimiterService,
   ) {}
 
@@ -114,6 +117,7 @@ export class DirectoryController {
       storedPhone: record.storedPhone,
       deviceCount: record.deviceCount,
       selfLookup: record.selfLookup,
+      presenceEnabled: record.presenceEnabled,
     };
   }
 
@@ -139,5 +143,27 @@ export class DirectoryController {
   @UseGuards(FirebaseAuthGuard)
   async getProfile(@Param('uid') uid: string): Promise<GetProfileResponse> {
     return this.directory.getProfile(uid);
+  }
+
+  /**
+   * Set the signed-in user's presence opt-in (Req 5.1). Presence/last-seen stay private until
+   * the user opts in here; opting out immediately hides them again.
+   */
+  @Post('presence')
+  @UseGuards(FirebaseAuthGuard)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async setPresence(@Auth() auth: AuthContext, @Body() dto: SetPresenceDto): Promise<void> {
+    await this.presence.setEnabled(auth.uid, dto.enabled);
+  }
+
+  /**
+   * Read a peer's presence (online + coarse last-seen) by UID, but only for users who have
+   * opted in (Req 5.2). An opted-out or unknown user resolves to `{ online: null, lastSeen: null }`
+   * so opting out is undetectable.
+   */
+  @Get('presence/:uid')
+  @UseGuards(FirebaseAuthGuard)
+  async getPresence(@Param('uid') uid: string): Promise<PresenceResponse> {
+    return this.presence.getPresence(uid);
   }
 }

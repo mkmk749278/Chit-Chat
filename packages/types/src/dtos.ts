@@ -118,6 +118,38 @@ export interface WhoAmIResponse {
    * `no stored phone` means nothing was persisted.
    */
   selfLookup: string;
+  /** Whether the caller has opted in to presence/last-seen (Req 5.1), so the UI can reflect it. */
+  presenceEnabled: boolean;
+}
+
+/**
+ * Request to set the caller's presence opt-in (`POST /api/directory/presence`). Presence and
+ * last-seen are OFF by default and only ever exposed to peers when the user opts in (Req 5.1).
+ */
+export interface SetPresenceRequest {
+  /** `true` to let peers see the caller's online/last-seen; `false` to keep it private. */
+  enabled: boolean;
+}
+
+/**
+ * A peer's presence as seen by an authenticated caller (`GET /api/directory/presence/:uid`).
+ *
+ * Privacy-first (Req 5.1): a user who has NOT opted in is reported with `online: null` and
+ * `lastSeen: null` — indistinguishable from "unknown", so opting out never leaks activity.
+ */
+export interface PresenceResponse {
+  /** The looked-up user's Firebase UID (echoes the request). */
+  uid: string;
+  /**
+   * `true`/`false` when the user has opted in and we know their connection state; `null` when
+   * they have NOT opted in (presence hidden) — never reveals opted-out users' activity.
+   */
+  online: boolean | null;
+  /**
+   * Coarse last-seen as a unix-ms timestamp (rounded down to a 5-minute bucket, Req 5.4), or
+   * `null` when the user is opted out, currently online, or has no recorded last-seen.
+   */
+  lastSeen: number | null;
 }
 
 
