@@ -66,6 +66,9 @@ function makeHub(): { realtimeFor: (uid: string) => MessagingRealtime } {
       deliverers.set(uid, (frame) => frameListeners.forEach((l) => l(frame)));
       return {
         send(frame: ClientToServerFrame): void {
+          if (frame.kind !== 'send') {
+            return;
+          }
           const env = frame.envelope;
           deliverers.get(env.senderUid)?.({ kind: 'ack', recipientUid: env.recipientUid, seq: env.seq, status: 'received' });
           deliverers.get(env.recipientUid)?.({ kind: 'deliver', envelope: env });

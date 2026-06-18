@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import * as Signal from '@signalapp/libsignal-client';
 
 import type {
+  CiphertextEnvelope,
   ClaimedPreKeyBundle,
   ClientToServerFrame,
   ServerToClientFrame,
@@ -89,10 +90,10 @@ function newParty(uid: string, deviceId: string, registrationId: number): Party 
 /** In-process relay mirroring the gateway: ack to sender + deliver to recipient. */
 function makeHub(): {
   realtimeFor: (uid: string) => MessagingRealtime;
-  lastFrame: () => ClientToServerFrame | null;
+  lastFrame: () => Extract<ClientToServerFrame, { kind: 'send' }> | null;
 } {
   const deliverers = new Map<string, (frame: ServerToClientFrame) => void>();
-  let lastFrame: ClientToServerFrame | null = null;
+  let lastFrame: Extract<ClientToServerFrame, { kind: 'send' }> | null = null;
 
   return {
     lastFrame: () => lastFrame,
@@ -105,6 +106,10 @@ function makeHub(): {
       });
       return {
         send(frame: ClientToServerFrame): void {
+          if (frame.kind !== 'send') {
+            // Ephemeral typing hints carry no envelope; ignore in this delivery harness.
+            return;
+          }
           lastFrame = frame;
           const env = frame.envelope;
           // Acknowledge to the sender, then deliver to the recipient (gateway behavior).
@@ -192,7 +197,7 @@ function makeStore(): MessagingStore & { rows: Map<string, MessageRow> } {
 
 interface Client {
   send: (uid: string, text: string) => Promise<void>;
-  onEnvelope: (envelope: ClientToServerFrame['envelope']) => Promise<void>;
+  onEnvelope: (envelope: CiphertextEnvelope) => Promise<void>;
   rows: Map<string, MessageRow>;
   events: ConversationEvent[];
   dispose: () => void;

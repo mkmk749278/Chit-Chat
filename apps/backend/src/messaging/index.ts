@@ -15,4 +15,4 @@ export {
   type LocalSocketRegistry,
   type LocalRecipientSocket,
 } from './local-socket-registry';
-export type { NodeRelayMessage } from './node-relay-message';
+export type { NodeRelayMessage, NodeTypingMessage, NodeChannelMessage } from './node-relay-message';

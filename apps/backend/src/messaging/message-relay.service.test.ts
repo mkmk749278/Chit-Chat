@@ -122,6 +122,60 @@ describe('MessageRelayService.relay', () => {
   });
 });
 
+describe('MessageRelayService.relayTyping', () => {
+  it('publishes a typing hint once per distinct owning node, bound to the sender', async () => {
+    const { service, publish } = buildService({
+      'conn-1': 'node-a',
+      'conn-2': 'node-a',
+      'conn-3': 'node-b',
+    });
+
+    await service.relayTyping(buildSender(), RECIPIENT_UID);
+
+    expect(publish).toHaveBeenCalledTimes(2);
+    const channels = publish.mock.calls.map((call) => call[0] as string).sort();
+    expect(channels).toEqual(['node:node-a', 'node:node-b']);
+    const payload = JSON.parse(publish.mock.calls[0][1] as string) as Record<string, unknown>;
+    expect(payload).toEqual({ kind: 'typing', targetUid: RECIPIENT_UID, fromUid: SENDER_UID });
+  });
+
+  it('is a silent no-op for an offline recipient (never queued)', async () => {
+    const { service, publish, enqueue } = buildService({});
+
+    await service.relayTyping(buildSender(), RECIPIENT_UID);
+
+    expect(publish).not.toHaveBeenCalled();
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it('ignores an empty recipient', async () => {
+    const { service, publish, lookup } = buildService({ 'conn-1': 'node-a' });
+
+    await service.relayTyping(buildSender(), '');
+
+    expect(lookup).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+  });
+});
+
+describe('MessageRelayService.deliverTypingLocal', () => {
+  it('pushes a typing frame to every local socket the recipient holds', () => {
+    const { service, registry } = buildService();
+    const frames: unknown[] = [];
+    const socket: LocalRecipientSocket = { send: (frame) => frames.push(frame) };
+    registry.register(RECIPIENT_UID, socket);
+
+    service.deliverTypingLocal(RECIPIENT_UID, SENDER_UID);
+
+    expect(frames).toEqual([{ kind: 'typing', fromUid: SENDER_UID }]);
+  });
+
+  it('is a no-op when the recipient holds no local socket', () => {
+    const { service } = buildService();
+    expect(() => service.deliverTypingLocal('nobody', SENDER_UID)).not.toThrow();
+  });
+});
+
 describe('MessageRelayService.deliverLocal', () => {
   it('pushes a deliver frame to every local socket the recipient holds', () => {
     const { service, registry } = buildService();

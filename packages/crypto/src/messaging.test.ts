@@ -30,7 +30,7 @@ import type { SessionManager } from './session-manager';
 
 class FakeRealtime implements MessagingRealtime {
   status: ConnectionStatus = 'connected';
-  readonly sent: ClientToServerFrame[] = [];
+  readonly sent: Extract<ClientToServerFrame, { kind: 'send' }>[] = [];
   /** When set, the next `send` throws once (simulating a socket racing to closed). */
   throwOnNextSend = false;
   private readonly frameListeners = new Set<(frame: ServerToClientFrame) => void>();
@@ -41,7 +41,9 @@ class FakeRealtime implements MessagingRealtime {
       this.throwOnNextSend = false;
       throw new Error('socket closed');
     }
-    this.sent.push(frame);
+    if (frame.kind === 'send') {
+      this.sent.push(frame);
+    }
   }
   getStatus(): ConnectionStatus {
     return this.status;

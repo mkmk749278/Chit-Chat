@@ -160,6 +160,22 @@ export default function App(): React.JSX.Element {
   // Surface encryption-setup progress/failure (identity + device registration + connect).
   useEffect(() => controller.onSetupChange(setSetup), [controller]);
 
+  // Inbound typing hints (Req 5.3): remember which peer is typing and auto-expire the indicator
+  // a few seconds after the last hint, since there is no explicit "stopped typing" frame.
+  const [typingPeer, setTypingPeer] = useState<string | null>(null);
+  const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () =>
+      controller.onTyping((fromUid) => {
+        setTypingPeer(fromUid);
+        if (typingTimerRef.current !== null) {
+          clearTimeout(typingTimerRef.current);
+        }
+        typingTimerRef.current = setTimeout(() => setTypingPeer(null), 6000);
+      }),
+    [controller],
+  );
+
   // Rehydrate persisted conversation history once the encrypted store is open, so chats
   // survive an app restart instead of starting empty (Phase 2 CC4). Guarded by a ref so it
   // runs once per signed-in session even though `ready` may be reported more than once.
@@ -283,17 +299,24 @@ export default function App(): React.JSX.Element {
     [conversations, controller, openChat],
   );
 
-  const onComposerChange = useCallback((text: string) => {
-    const target = openChatRef.current;
-    if (target === null) {
-      return;
-    }
-    setConversations((prev) =>
-      prev.map((c) =>
-        c.id === target ? { ...c, state: reduce(c.state, { type: 'composer-changed', text }) } : c,
-      ),
-    );
-  }, []);
+  const onComposerChange = useCallback(
+    (text: string) => {
+      const target = openChatRef.current;
+      if (target === null) {
+        return;
+      }
+      // Notify the peer we're typing (Req 5.3); the controller rate-limits, so per-keystroke is fine.
+      if (text.length > 0) {
+        controller.sendTyping();
+      }
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === target ? { ...c, state: reduce(c.state, { type: 'composer-changed', text }) } : c,
+        ),
+      );
+    },
+    [controller],
+  );
 
   const onSend = useCallback(
     (options?: { viewOnce?: boolean }) => {
@@ -387,6 +410,7 @@ export default function App(): React.JSX.Element {
         <ConversationScreen
           state={openConversation.state}
           peerName={openConversation.name}
+          peerTyping={typingPeer === openConversation.id}
           onComposerChange={onComposerChange}
           onSend={onSend}
           onReact={onReact}

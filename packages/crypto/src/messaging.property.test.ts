@@ -18,11 +18,13 @@ import type { Scheduler, TimerHandle } from './realtime-client';
 
 class FakeRealtime {
   status: ConnectionStatus = 'connected';
-  readonly sent: ClientToServerFrame[] = [];
+  readonly sent: Extract<ClientToServerFrame, { kind: 'send' }>[] = [];
   private frameL = new Set<(f: ServerToClientFrame) => void>();
   private statusL = new Set<(s: ConnectionStatus) => void>();
   send(f: ClientToServerFrame): void {
-    this.sent.push(f);
+    if (f.kind === 'send') {
+      this.sent.push(f);
+    }
   }
   getStatus(): ConnectionStatus {
     return this.status;

@@ -536,7 +536,9 @@ export class RealtimeClient {
       this.respondToPing();
       return;
     }
-    if (kind === 'deliver' || kind === 'ack') {
+    if (kind === 'deliver' || kind === 'ack' || kind === 'typing') {
+      // `typing` is an ephemeral presence hint (Req 5.3): forwarded like any server frame,
+      // never persisted. Consumers (Messaging) decide what to do with it.
       this.emitFrame(parsed as ServerToClientFrame);
     }
     // Unknown frame kinds are ignored.

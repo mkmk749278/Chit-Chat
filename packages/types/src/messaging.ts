@@ -35,9 +35,17 @@ export interface CiphertextBody {
 export interface CiphertextEnvelope extends EnvelopeRouting, CiphertextBody {}
 
 /** Client → server frames. */
-export type ClientToServerFrame = { kind: 'send'; envelope: CiphertextEnvelope };
+export type ClientToServerFrame =
+  | { kind: 'send'; envelope: CiphertextEnvelope }
+  /**
+   * Ephemeral typing notification (Req 5.3): tells the server to relay a "typing" hint to
+   * `recipientUid`. Carries no content and is NEVER persisted or queued for store-and-forward.
+   */
+  | { kind: 'typing'; recipientUid: string };
 
 /** Server → client frames. */
 export type ServerToClientFrame =
   | { kind: 'deliver'; envelope: CiphertextEnvelope }
-  | { kind: 'ack'; recipientUid: string; seq: number; status: 'received'; nodes?: number };
+  | { kind: 'ack'; recipientUid: string; seq: number; status: 'received'; nodes?: number }
+  /** Ephemeral typing hint relayed from a peer (Req 5.3); `fromUid` is the peer who is typing. */
+  | { kind: 'typing'; fromUid: string };

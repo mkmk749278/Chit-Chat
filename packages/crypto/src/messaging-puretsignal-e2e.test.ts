@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import type {
+  CiphertextEnvelope,
   ClaimedPreKeyBundle,
   ClientToServerFrame,
   ServerToClientFrame,
@@ -85,10 +86,10 @@ async function newParty(uid: string, deviceId: string): Promise<Party> {
 /** In-process relay mirroring the gateway: ack to sender + deliver to recipient. */
 function makeHub(): {
   realtimeFor: (uid: string) => MessagingRealtime;
-  lastFrame: () => ClientToServerFrame | null;
+  lastFrame: () => Extract<ClientToServerFrame, { kind: 'send' }> | null;
 } {
   const deliverers = new Map<string, (frame: ServerToClientFrame) => void>();
-  let lastFrame: ClientToServerFrame | null = null;
+  let lastFrame: Extract<ClientToServerFrame, { kind: 'send' }> | null = null;
 
   return {
     lastFrame: () => lastFrame,
@@ -101,6 +102,9 @@ function makeHub(): {
       });
       return {
         send(frame: ClientToServerFrame): void {
+          if (frame.kind !== 'send') {
+            return;
+          }
           lastFrame = frame;
           const env = frame.envelope;
           deliverers.get(env.senderUid)?.({
@@ -186,7 +190,7 @@ function makeStore(): MessagingStore & { rows: Map<string, MessageRow> } {
 
 interface Client {
   send: (uid: string, text: string) => Promise<void>;
-  onEnvelope: (envelope: ClientToServerFrame['envelope']) => Promise<void>;
+  onEnvelope: (envelope: CiphertextEnvelope) => Promise<void>;
   rows: Map<string, MessageRow>;
   events: ConversationEvent[];
   dispose: () => void;

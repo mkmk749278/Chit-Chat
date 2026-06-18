@@ -63,7 +63,7 @@ import {
   type LocalRecipientSocket,
   type LocalSocketRegistry,
   MessageRelayService,
-  type NodeRelayMessage,
+  type NodeChannelMessage,
   OfflineQueueService,
 } from '../messaging';
 import {
@@ -421,7 +421,18 @@ export class RealtimeGateway
       return;
     }
 
-    if (frame === null || typeof frame !== 'object' || frame.kind !== 'send') {
+    if (frame === null || typeof frame !== 'object') {
+      return;
+    }
+
+    // Ephemeral typing hint (Req 5.3): relayed to the recipient's node(s), never persisted and
+    // never ACKed. Bound to the authenticated sender by the relay so it can't be spoofed.
+    if (frame.kind === 'typing') {
+      await this.relay.relayTyping(auth, frame.recipientUid);
+      return;
+    }
+
+    if (frame.kind !== 'send') {
       // Not a recognised client→server frame for this slice; ignore (no ACK).
       return;
     }
@@ -466,21 +477,33 @@ export class RealtimeGateway
       return;
     }
 
-    let relayMessage: NodeRelayMessage;
+    let relayMessage: NodeChannelMessage;
     try {
-      relayMessage = JSON.parse(message) as NodeRelayMessage;
+      relayMessage = JSON.parse(message) as NodeChannelMessage;
     } catch {
       this.logger.warn('Discarded a malformed node relay message');
       return;
     }
 
-    if (
-      relayMessage === null ||
-      typeof relayMessage !== 'object' ||
-      typeof relayMessage.targetUid !== 'string' ||
-      relayMessage.envelope === undefined ||
-      relayMessage.envelope === null
-    ) {
+    if (relayMessage === null || typeof relayMessage !== 'object' || typeof relayMessage.targetUid !== 'string') {
+      this.logger.warn('Discarded a structurally invalid node relay message');
+      return;
+    }
+
+    // Ephemeral typing hint (Req 5.3): deliver a `typing` frame to the recipient's local
+    // socket(s). Tagged with `kind: 'typing'`; envelope payloads stay untagged (back-compat).
+    if ('kind' in relayMessage) {
+      if (
+        relayMessage.kind === 'typing' &&
+        typeof relayMessage.fromUid === 'string' &&
+        relayMessage.fromUid.length > 0
+      ) {
+        this.relay.deliverTypingLocal(relayMessage.targetUid, relayMessage.fromUid);
+      }
+      return;
+    }
+
+    if (relayMessage.envelope === undefined || relayMessage.envelope === null) {
       this.logger.warn('Discarded a structurally invalid node relay message');
       return;
     }

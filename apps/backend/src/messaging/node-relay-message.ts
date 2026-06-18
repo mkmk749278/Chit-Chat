@@ -24,3 +24,20 @@ export interface NodeRelayMessage {
   /** The opaque ciphertext envelope to deliver — never decoded or logged by the server. */
   envelope: CiphertextEnvelope;
 }
+
+/**
+ * Cross-node typing hint (Req 5.3). Published on `node:{nodeId}` so the node holding the
+ * recipient's connection delivers an ephemeral `typing` frame to its local socket(s). Carries
+ * no message content and is never persisted; `kind` discriminates it from the (untagged)
+ * {@link NodeRelayMessage} envelope payload, which stays back-compatible.
+ */
+export interface NodeTypingMessage {
+  kind: 'typing';
+  /** Firebase UID of the recipient to notify. */
+  targetUid: string;
+  /** Firebase UID of the peer who is typing. */
+  fromUid: string;
+}
+
+/** Any message published on a `node:{nodeId}` channel. */
+export type NodeChannelMessage = NodeRelayMessage | NodeTypingMessage;
