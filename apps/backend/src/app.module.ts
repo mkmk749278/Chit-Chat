@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 
 import { AuthModule } from './auth';
+import { BlobsModule } from './blobs';
 import { ConfigModule } from './config';
 import { DatabaseModule } from './database';
 import { DevicesModule } from './devices';
@@ -22,7 +23,8 @@ import { RedisModule } from './redis';
  *
  * Phase 1 adds the KeysModule (`GET /api/keys/:uid` prekey-bundle claim) and the
  * DirectoryModule (`POST /api/directory/resolve` phone→UID contact discovery), imported
- * explicitly alongside the Phase 0 modules.
+ * explicitly alongside the Phase 0 modules. Phase 2 adds the BlobsModule (`POST /api/blobs`
+ * + `GET /api/blobs/:id` ciphertext-only attachment store, Req 7.1).
  *
  * ConfigModule is imported first so its fail-fast environment validation runs
  * during application bootstrap, before any request is accepted (Requirement 1.6).
@@ -48,6 +50,7 @@ import { RedisModule } from './redis';
     ObservabilityModule,
     KeysModule,
     DirectoryModule,
+    BlobsModule,
   ],
   controllers: [],
   providers: [],

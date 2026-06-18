@@ -186,3 +186,27 @@ export interface SetPushTokenRequest {
   /** The platform push token (e.g. FCM registration token); empty string revokes it (Req 6.4). */
   pushToken: string;
 }
+
+/**
+ * Request to upload an attachment's CIPHERTEXT to the blob store (`POST /api/blobs`, Req 7.1).
+ *
+ * The body is opaque, client-encrypted ciphertext (base64) — the server never holds the
+ * per-attachment key (it rides in the E2E `attachment` payload, Req 7.2) and never decodes the
+ * bytes. The blob is held under a TTL so undelivered ciphertext does not persist (Req 7.4).
+ */
+export interface UploadBlobRequest {
+  /** base64 AES-GCM ciphertext of the attachment. Opaque to the server. */
+  ciphertext: string;
+}
+
+/** Response to `POST /api/blobs`: the opaque handle to fetch the ciphertext back. */
+export interface UploadBlobResponse {
+  /** Server-issued blob id; placed in the E2E `attachment` payload as `blobId`. */
+  blobId: string;
+}
+
+/** Response to `GET /api/blobs/:id`: the stored ciphertext (base64), or 404 when expired/unknown. */
+export interface DownloadBlobResponse {
+  /** base64 AES-GCM ciphertext to decrypt locally with the key from the E2E payload. */
+  ciphertext: string;
+}

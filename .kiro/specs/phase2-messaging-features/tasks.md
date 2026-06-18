@@ -43,7 +43,7 @@ Effort: S (<1 day) · M (1–3 days) · L (~1 week) · XL (multi-week).
 - [ ] 6.3 (M) Mobile FCM integration + native config; disable/revoke flow. *(needs FCM creds)* Backend is ready: swap `PUSH_SENDER` to an FCM-backed `PushSender` and call `POST /api/devices/push-token` from the mobile client once it can obtain a token.
 
 ### 7. Media / attachments — Req 7
-- [ ] 7.1 (L) Blob service (ciphertext-only) + TTL cleanup.
+- [x] 7.1 (L) Blob service (ciphertext-only) + TTL cleanup. **(this PR)** `BlobsModule`: `POST /api/blobs` (auth, per-uid rate-limited, size-bounded) stores opaque base64 ciphertext under a 7-day TTL (Req 7.4) and returns `{blobId}`; `GET /api/blobs/:id` returns it back or 404 once expired. Redis-backed with `EX` expiry; server never decodes the bytes or holds the key (Req 7.1, C1). Object-storage swap behind the same interface is the production follow-up.
 - [x] 7.2 (M) Client-side per-attachment AES-GCM encrypt/decrypt; key in E2E payload. **(this PR)** `attachment-crypto.ts` (`encryptAttachment`/`decryptAttachment`, AES-256-GCM, fresh per-attachment key+iv, authenticated) + the versioned `attachment` content-payload variant carrying `{blobId,key,iv,mediaType,size,name?}` so the key rides in the ciphertext, never to the blob store. Pure WebCrypto + tests (round-trip, fresh key/iv, tamper/wrong-key/wrong-iv rejected, codec round-trip/forward-compat). Messaging ignores inbound `attachment` payloads until the download/render wiring (7.3).
 - [ ] 7.3 (M) Upload/download with size bounds + retry; UI. *(needs the blob service from 7.1)*
 
