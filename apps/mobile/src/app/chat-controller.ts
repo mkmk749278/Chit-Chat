@@ -149,6 +149,13 @@ export interface ChatController {
   /** Set the open conversation's disappearing-message timer; `0` disables it (Req 4.1). */
   setDisappearingTimer(ttlMs: number): Promise<void>;
   /**
+   * Notify the open conversation's peer that the user is typing (Req 5.3). Rate-limited
+   * internally, so it is safe to call on every keystroke; ephemeral and never persisted.
+   */
+  sendTyping(): void;
+  /** Subscribe to inbound typing hints; `fromUid` is the peer who is typing (Req 5.3). */
+  onTyping(listener: (fromUid: string) => void): () => void;
+  /**
    * Compute the deterministic safety number for the open conversation, or `null` until a
    * message has been exchanged with the peer (so their identity key is known) (Req 1.1–1.3).
    */
@@ -222,6 +229,18 @@ export function createMobileController(): ChatController {
       listener(event);
     }
   };
+
+  // Inbound typing hints (Req 5.3), surfaced separately from conversation events so the UI can
+  // expire the indicator on its own timer.
+  const typingListeners = new Set<(fromUid: string) => void>();
+  const emitTyping = (fromUid: string): void => {
+    for (const listener of typingListeners) {
+      listener(fromUid);
+    }
+  };
+  /** Throttle outbound typing hints to at most one per window (Req 5.3 rate-limit). */
+  const TYPING_MIN_INTERVAL_MS = 3000;
+  let lastTypingSentAt = 0;
 
   // Live messaging stack, created on sign-in and torn down on sign-out.
   let vault: PersistentVault | null = null;
@@ -359,6 +378,7 @@ export function createMobileController(): ChatController {
     );
 
     messaging.onConversationUpdate(emit);
+    messaging.onTyping(emitTyping);
     realtime.onStatus((status) => emit({ type: 'connection-changed', connection: status }));
     realtime.connect();
     setSetup({ phase: 'ready' });
@@ -536,6 +556,23 @@ export function createMobileController(): ChatController {
         return;
       }
       await messaging.setDisappearingTimer(activeRecipient, ttlMs);
+    },
+
+    sendTyping(): void {
+      if (messaging === null || activeRecipient === null) {
+        return;
+      }
+      const now = Date.now();
+      if (now - lastTypingSentAt < TYPING_MIN_INTERVAL_MS) {
+        return;
+      }
+      lastTypingSentAt = now;
+      messaging.sendTyping(activeRecipient);
+    },
+
+    onTyping(listener: (fromUid: string) => void): () => void {
+      typingListeners.add(listener);
+      return () => typingListeners.delete(listener);
     },
 
     async getSafetyNumber(recipientUid: string): Promise<SafetyNumber | null> {
@@ -739,6 +776,12 @@ export function createDemoController(): ChatController {
     },
     async setDisappearingTimer(): Promise<void> {
       // No transport in the demo controller.
+    },
+    sendTyping(): void {
+      // No transport in the demo controller.
+    },
+    onTyping(): () => void {
+      return () => undefined;
     },
     async getSafetyNumber(): Promise<SafetyNumber | null> {
       return null;

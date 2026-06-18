@@ -39,6 +39,8 @@ export interface ConversationScreenProps {
   state: ConversationState;
   /** Display name of the chat peer (header). */
   peerName: string;
+  /** Whether the peer is currently typing (Req 5.3); shows a "typing…" header hint. */
+  peerTyping?: boolean;
   onComposerChange: (text: string) => void;
   onSend: (options?: { viewOnce?: boolean }) => void;
   /** Back to the chats list. */
@@ -89,6 +91,7 @@ function timerLabel(ttlMs: number): string {
 export function ConversationScreen({
   state,
   peerName,
+  peerTyping = false,
   onComposerChange,
   onSend,
   onBack,
@@ -159,8 +162,10 @@ export function ConversationScreen({
           <Text style={[styles.peerName, { color: t.text }]} numberOfLines={1}>
             {peerName}
           </Text>
-          <Text style={[styles.headerStatus, { color: connected ? t.secure : t.faint }]}>
-            {connected ? 'Encrypted · online' : 'Connecting…'}
+          <Text
+            style={[styles.headerStatus, { color: peerTyping ? t.brandSoft : connected ? t.secure : t.faint }]}
+          >
+            {peerTyping ? 'typing…' : connected ? 'Encrypted · online' : 'Connecting…'}
           </Text>
         </View>
         <Pressable

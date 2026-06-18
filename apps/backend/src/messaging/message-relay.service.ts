@@ -41,7 +41,7 @@ import {
   LOCAL_SOCKET_REGISTRY,
   type LocalSocketRegistry,
 } from './local-socket-registry';
-import type { NodeRelayMessage } from './node-relay-message';
+import type { NodeRelayMessage, NodeTypingMessage } from './node-relay-message';
 import { OfflineQueueService } from './offline-queue.service';
 
 /**
@@ -108,6 +108,41 @@ export class MessageRelayService {
     // `nodes` = the number of distinct recipient nodes the envelope was published to
     // (0 ⇒ the recipient had no live presence entry, so it was queued for store-and-forward).
     return { status: 'received', nodes: nodeIds.size };
+  }
+
+  /**
+   * Relays an ephemeral typing hint from `sender` to the recipient's connected node(s)
+   * (Req 5.3). Unlike {@link relay} this carries no content, is bound to the authenticated
+   * sender, and is NEVER persisted/queued: an offline recipient (no presence entries) is a
+   * silent no-op — a stale "typing…" must never be delivered later. Best-effort by design.
+   *
+   * @param sender       - the verified identity of the connection that sent the hint.
+   * @param recipientUid - the peer to notify that `sender` is typing.
+   */
+  async relayTyping(sender: AuthContext, recipientUid: string): Promise<void> {
+    if (typeof recipientUid !== 'string' || recipientUid.length === 0) {
+      return;
+    }
+    const entries = await this.presence.lookup(recipientUid);
+    const nodeIds = new Set<string>(Object.values(entries));
+    if (nodeIds.size === 0) {
+      return;
+    }
+    const payload: NodeTypingMessage = { kind: 'typing', targetUid: recipientUid, fromUid: sender.uid };
+    const json = JSON.stringify(payload);
+    await Promise.all([...nodeIds].map((nodeId) => this.publisher.publish(nodeChannel(nodeId), json)));
+  }
+
+  /**
+   * Delivers an ephemeral typing hint to the recipient's local socket(s) on this node (Req 5.3),
+   * invoked by the `node:{nodeId}` subscription when a {@link NodeTypingMessage} arrives. A
+   * recipient with no local socket is a silent no-op.
+   */
+  deliverTypingLocal(targetUid: string, fromUid: string): void {
+    const frame: ServerToClientFrame = { kind: 'typing', fromUid };
+    for (const socket of this.localSockets.getLocalSockets(targetUid)) {
+      socket.send(frame);
+    }
   }
 
   /**

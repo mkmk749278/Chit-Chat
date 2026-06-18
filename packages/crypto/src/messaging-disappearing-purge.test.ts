@@ -67,6 +67,9 @@ class FakeRealtime implements MessagingRealtime {
   private frameListeners = new Set<(f: ServerToClientFrame) => void>();
   sent: ClientToServerFrame[] = [];
   send(frame: ClientToServerFrame): void {
+    if (this.status !== 'connected') {
+      throw new Error('socket not open');
+    }
     this.sent.push(frame);
   }
   getStatus(): ConnectionStatus {
@@ -168,11 +171,17 @@ const sender = {
 /** Let queued microtasks (the async purge) settle after the scheduler fires a timer. */
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
-function make(store: FakeStore): { messaging: DefaultMessaging; scheduler: FakeScheduler; events: ConversationEvent[] } {
+function make(store: FakeStore): {
+  messaging: DefaultMessaging;
+  scheduler: FakeScheduler;
+  events: ConversationEvent[];
+  realtime: FakeRealtime;
+} {
   const scheduler = new FakeScheduler();
   const events: ConversationEvent[] = [];
+  const realtime = new FakeRealtime();
   const deps: MessagingDeps = {
-    realtime: new FakeRealtime(),
+    realtime,
     sessions,
     sequence,
     codec,
@@ -187,8 +196,28 @@ function make(store: FakeStore): { messaging: DefaultMessaging; scheduler: FakeS
     scheduler,
   });
   messaging.onConversationUpdate((e) => events.push(e));
-  return { messaging, scheduler, events };
+  return { messaging, scheduler, events, realtime };
 }
+
+test('sendTyping transmits a typing frame; onTyping surfaces inbound typing (Req 5.3)', () => {
+  const store = new FakeStore();
+  const { messaging, realtime } = make(store);
+  messaging.sendTyping('bob');
+  assert.deepEqual(realtime.sent.at(-1), { kind: 'typing', recipientUid: 'bob' });
+
+  const seen: string[] = [];
+  messaging.onTyping((from) => seen.push(from));
+  realtime.deliver({ kind: 'typing', fromUid: 'bob' });
+  assert.deepEqual(seen, ['bob']);
+});
+
+test('sendTyping is a no-op while disconnected (Req 5.3)', () => {
+  const store = new FakeStore();
+  const { messaging, realtime } = make(store);
+  realtime.status = 'disconnected';
+  messaging.sendTyping('bob');
+  assert.equal(realtime.sent.some((f) => f.kind === 'typing'), false);
+});
 
 test('an outbound timed message is purged from the store and UI after its timer', async () => {
   const store = new FakeStore();

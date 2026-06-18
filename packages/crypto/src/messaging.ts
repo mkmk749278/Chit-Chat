@@ -216,6 +216,16 @@ export interface Messaging {
    */
   primeConversationTtl(recipientUid: string, ttlMs: number): void;
   /**
+   * Send an ephemeral "typing" hint to `recipientUid` (Req 5.3). Best-effort: dropped silently
+   * while disconnected. Carries no content and is never persisted. Callers should rate-limit.
+   */
+  sendTyping(recipientUid: string): void;
+  /**
+   * Subscribe to inbound typing hints from peers (Req 5.3); `fromUid` is the peer who is typing.
+   * Ephemeral — there is no "stopped typing" frame; consumers expire the indicator on a timer.
+   */
+  onTyping(listener: (fromUid: string) => void): Unsubscribe;
+  /**
    * Handle an inbound `CiphertextEnvelope` from the Realtime_Client: decrypt and render the
    * plaintext, or surface a `delivery-error` with no plaintext on decryption failure
    * (Requirements 5.4, 5.5, 6.9).
@@ -310,6 +320,7 @@ export class DefaultMessaging implements Messaging {
   private purgeTimer: TimerHandle | null = null;
 
   private readonly updateListeners = new Set<(event: ConversationEvent) => void>();
+  private readonly typingListeners = new Set<(fromUid: string) => void>();
   private readonly transportUnsubscribers: Unsubscribe[];
 
   constructor(deps: MessagingDeps, options: MessagingOptions) {
@@ -618,6 +629,26 @@ export class DefaultMessaging implements Messaging {
   }
 
   /** @inheritdoc */
+  sendTyping(recipientUid: string): void {
+    if (this.realtime.getStatus() !== 'connected') {
+      return;
+    }
+    try {
+      this.realtime.send({ kind: 'typing', recipientUid });
+    } catch {
+      // Best-effort: a typing hint is disposable, so a transient send failure is ignored.
+    }
+  }
+
+  /** @inheritdoc */
+  onTyping(listener: (fromUid: string) => void): Unsubscribe {
+    this.typingListeners.add(listener);
+    return () => {
+      this.typingListeners.delete(listener);
+    };
+  }
+
+  /** @inheritdoc */
   onConversationUpdate(listener: (event: ConversationEvent) => void): Unsubscribe {
     this.updateListeners.add(listener);
     return () => {
@@ -638,6 +669,7 @@ export class DefaultMessaging implements Messaging {
       this.clearAckTimer(entry);
     }
     this.pending.clear();
+    this.typingListeners.clear();
     if (this.purgeTimer !== null) {
       this.scheduler.clearTimeout(this.purgeTimer);
       this.purgeTimer = null;
@@ -776,7 +808,7 @@ export class DefaultMessaging implements Messaging {
     }
   }
 
-  /** Route an inbound frame: `deliver` → decrypt+render; `ack` → resolve the matching send. */
+  /** Route an inbound frame: `deliver` → decrypt+render; `ack` → resolve send; `typing` → hint. */
   private handleFrame(frame: ServerToClientFrame): void {
     if (frame.kind === 'deliver') {
       // Fire-and-forget: onEnvelope persists + emits; a rejection cannot break the socket.
@@ -785,6 +817,16 @@ export class DefaultMessaging implements Messaging {
     }
     if (frame.kind === 'ack') {
       void this.handleAck(frame.recipientUid, frame.seq, frame.nodes);
+      return;
+    }
+    if (frame.kind === 'typing') {
+      for (const listener of this.typingListeners) {
+        try {
+          listener(frame.fromUid);
+        } catch {
+          // A listener throwing must not break the orchestrator.
+        }
+      }
     }
   }
 
