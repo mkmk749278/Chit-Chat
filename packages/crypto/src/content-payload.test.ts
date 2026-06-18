@@ -56,6 +56,34 @@ test('timer payload round-trips', () => {
   assert.deepEqual(roundTrip(p), p);
 });
 
+test('attachment payload round-trips (with and without a name) (Req 7)', () => {
+  const withName: ContentPayload = {
+    type: 'attachment',
+    blobId: 'blob-123',
+    key: Buffer.from('k').toString('base64'),
+    iv: Buffer.from('iv').toString('base64'),
+    mediaType: 'image/jpeg',
+    size: 4096,
+    name: 'photo.jpg',
+  };
+  assert.deepEqual(roundTrip(withName), withName);
+
+  const noName: ContentPayload = {
+    type: 'attachment',
+    blobId: 'b',
+    key: 'aaa',
+    iv: 'bbb',
+    mediaType: 'application/octet-stream',
+    size: 0,
+  };
+  assert.deepEqual(roundTrip(noName), noName);
+});
+
+test('an attachment payload missing required fields decodes as unsupported', () => {
+  const bad = JSON.stringify({ v: 1, type: 'attachment', blobId: 'b', key: 'k' }); // no iv/mediaType/size
+  assert.deepEqual(decodeContentPayload(bad), { type: 'unsupported' });
+});
+
 test('timer with ttlMs 0 (disable) round-trips', () => {
   const p: ContentPayload = { type: 'timer', ttlMs: 0 };
   assert.deepEqual(roundTrip(p), p);
