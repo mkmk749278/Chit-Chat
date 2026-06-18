@@ -38,9 +38,9 @@ Effort: S (<1 day) · M (1–3 days) · L (~1 week) · XL (multi-week).
 - [x] 5.3 (M) Ephemeral `typing` control frame (relayed, never persisted) + client rate-limit + UI. **(this PR)** Wire frames `{kind:'typing',recipientUid}` / `{kind:'typing',fromUid}`; backend relays via `MessageRelayService.relayTyping` over the existing presence/node pub-sub (offline recipient = silent no-op, never queued); `RealtimeClient` forwards typing, `Messaging.sendTyping`/`onTyping`, `ChatController` rate-limits (1/3s) and exposes `onTyping`; mobile shows "typing…" in the conversation header, auto-expiring ~6s after the last hint.
 
 ### 6. Push notifications (FCM) — Req 6
-- [ ] 6.1 (M) `POST /api/devices/push-token`; store token per device.
-- [ ] 6.2 (M) Content-free data push from `OfflineQueueService.enqueue` (routing metadata only).
-- [ ] 6.3 (M) Mobile FCM integration + native config; disable/revoke flow. *(needs FCM creds)*
+- [x] 6.1 (M) `POST /api/devices/push-token`; store token per device. **(this PR)** `devices.push_token` column + migration; endpoint identifies the device by `registrationId`, rate-limited; an empty token revokes it (Req 6.4).
+- [x] 6.2 (M) Content-free data push from `OfflineQueueService.enqueue` (routing metadata only). **(this PR)** `PushNotificationService.notify` loads the recipient's tokens and sends a content-free `{type:'wake'}` via the injectable `PushSender` port; fired fire-and-forget from `enqueue`. Default `NoopPushSender` keeps it green without FCM creds (the real FCM binding is the `useClass` swap in 6.3).
+- [ ] 6.3 (M) Mobile FCM integration + native config; disable/revoke flow. *(needs FCM creds)* Backend is ready: swap `PUSH_SENDER` to an FCM-backed `PushSender` and call `POST /api/devices/push-token` from the mobile client once it can obtain a token.
 
 ### 7. Media / attachments — Req 7
 - [ ] 7.1 (L) Blob service (ciphertext-only) + TTL cleanup.

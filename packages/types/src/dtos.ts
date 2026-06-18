@@ -172,3 +172,17 @@ export interface AddOneTimePreKeysResponse {
   /** Count of newly-stored one-time prekeys. */
   added: number;
 }
+
+/**
+ * Request to set (or revoke) a device's push token (`POST /api/devices/push-token`, Req 6.1).
+ *
+ * The token wakes the device for a content-free data push when a message is queued while it is
+ * offline (Req 6.2). The caller's device is identified by `registrationId`. An empty `pushToken`
+ * REVOKES the token so the device stops receiving pushes (Req 6.4).
+ */
+export interface SetPushTokenRequest {
+  /** The caller device's libsignal registration id (selects which device the token belongs to). */
+  registrationId: number;
+  /** The platform push token (e.g. FCM registration token); empty string revokes it (Req 6.4). */
+  pushToken: string;
+}

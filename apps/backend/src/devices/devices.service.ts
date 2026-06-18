@@ -37,7 +37,7 @@ import {
   TransactionService,
   UserEntity,
 } from '../database';
-import { AddOneTimePreKeysDto, RegisterDeviceDto } from './dto';
+import { AddOneTimePreKeysDto, RegisterDeviceDto, SetPushTokenDto } from './dto';
 import { normalizeE164 } from '../directory/phone.util';
 @Injectable()
 export class DevicesService {
@@ -114,6 +114,49 @@ export class DevicesService {
       await manager.insert(OneTimePreKeyEntity, rows);
 
       return { added: rows.length };
+    });
+  }
+
+  /**
+   * Set (or revoke) the caller device's push token (Req 6.1/6.4). Identifies the device by
+   * `registrationId`; an empty token revokes it (stored as `null`) so the device stops being
+   * woken (Req 6.4). The token is PUBLIC routing material — never message content.
+   *
+   * @throws NotFoundException (HTTP 404) when the caller has no device with that registrationId.
+   */
+  async setPushToken(uid: string, dto: SetPushTokenDto): Promise<void> {
+    await this.transactions.runInTransaction(async (manager) => {
+      const user = await manager.findOneBy(UserEntity, { firebaseUid: uid });
+      if (!user) {
+        throw new NotFoundException('No registered device for this user');
+      }
+      const device = await manager.findOneBy(DeviceEntity, {
+        userId: user.id,
+        registrationId: dto.registrationId,
+      });
+      if (!device) {
+        throw new NotFoundException('No registered device for this user');
+      }
+      const token = dto.pushToken.length > 0 ? dto.pushToken : null;
+      await manager.update(DeviceEntity, { id: device.id }, { pushToken: token });
+    });
+  }
+
+  /**
+   * Load every non-revoked push token across all of `uid`'s devices (Req 6.2). Used to wake the
+   * recipient's devices with a content-free push when a message is queued for them while offline.
+   * Returns an empty array when the user has no registered push tokens.
+   */
+  async getPushTokens(uid: string): Promise<string[]> {
+    return this.transactions.runInTransaction(async (manager) => {
+      const user = await manager.findOneBy(UserEntity, { firebaseUid: uid });
+      if (!user) {
+        return [];
+      }
+      const devices = await manager.find(DeviceEntity, { where: { userId: user.id } });
+      return devices
+        .map((d) => d.pushToken)
+        .filter((t): t is string => typeof t === 'string' && t.length > 0);
     });
   }
 
