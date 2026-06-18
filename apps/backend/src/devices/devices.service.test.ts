@@ -12,9 +12,15 @@ import type { AddOneTimePreKeysDto } from './dto';
 
 function harness(): {
   service: DevicesService;
-  mgr: { findOneBy: jest.Mock; insert: jest.Mock; delete: jest.Mock };
+  mgr: { findOneBy: jest.Mock; insert: jest.Mock; delete: jest.Mock; update: jest.Mock; find: jest.Mock };
 } {
-  const mgr = { findOneBy: jest.fn(), insert: jest.fn(), delete: jest.fn() };
+  const mgr = {
+    findOneBy: jest.fn(),
+    insert: jest.fn(),
+    delete: jest.fn(),
+    update: jest.fn(),
+    find: jest.fn(),
+  };
   const transactions = {
     runInTransaction: <T>(cb: (m: typeof mgr) => Promise<T>): Promise<T> => cb(mgr),
   } as unknown as TransactionService;
@@ -60,5 +66,51 @@ describe('DevicesService.addOneTimePreKeys', () => {
     mgr.findOneBy.mockResolvedValueOnce({ id: 'u1' }).mockResolvedValueOnce(null);
     await expect(service.addOneTimePreKeys('uid', dto)).rejects.toBeInstanceOf(NotFoundException);
     expect(mgr.insert).not.toHaveBeenCalled();
+  });
+});
+
+describe('DevicesService.setPushToken (Req 6.1/6.4)', () => {
+  it('stores the token on the matching device', async () => {
+    const { service, mgr } = harness();
+    mgr.findOneBy.mockResolvedValueOnce({ id: 'u1' }).mockResolvedValueOnce({ id: 'd1' });
+    await service.setPushToken('uid', { registrationId: 7, pushToken: 'fcm-abc' });
+    expect(mgr.update).toHaveBeenCalledWith(expect.anything(), { id: 'd1' }, { pushToken: 'fcm-abc' });
+  });
+
+  it('revokes the token (stores null) for an empty string (Req 6.4)', async () => {
+    const { service, mgr } = harness();
+    mgr.findOneBy.mockResolvedValueOnce({ id: 'u1' }).mockResolvedValueOnce({ id: 'd1' });
+    await service.setPushToken('uid', { registrationId: 7, pushToken: '' });
+    expect(mgr.update).toHaveBeenCalledWith(expect.anything(), { id: 'd1' }, { pushToken: null });
+  });
+
+  it('throws 404 when no device matches the registrationId', async () => {
+    const { service, mgr } = harness();
+    mgr.findOneBy.mockResolvedValueOnce({ id: 'u1' }).mockResolvedValueOnce(null);
+    await expect(
+      service.setPushToken('uid', { registrationId: 7, pushToken: 'x' }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(mgr.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('DevicesService.getPushTokens (Req 6.2)', () => {
+  it('returns only non-empty tokens across the user devices', async () => {
+    const { service, mgr } = harness();
+    mgr.findOneBy.mockResolvedValueOnce({ id: 'u1' });
+    mgr.find.mockResolvedValueOnce([
+      { pushToken: 'a' },
+      { pushToken: null },
+      { pushToken: '' },
+      { pushToken: 'b' },
+    ]);
+    expect(await service.getPushTokens('uid')).toEqual(['a', 'b']);
+  });
+
+  it('returns an empty array for an unknown user', async () => {
+    const { service, mgr } = harness();
+    mgr.findOneBy.mockResolvedValueOnce(null);
+    expect(await service.getPushTokens('uid')).toEqual([]);
+    expect(mgr.find).not.toHaveBeenCalled();
   });
 });

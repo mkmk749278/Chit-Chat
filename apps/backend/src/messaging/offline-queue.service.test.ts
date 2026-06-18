@@ -44,8 +44,13 @@ function fakeRedis(execResult: unknown) {
 
 function buildService(execResult: unknown = []) {
   const { redis, calls, chain } = fakeRedis(execResult);
-  const service = new OfflineQueueService(redis as unknown as ConstructorParameters<typeof OfflineQueueService>[0]);
-  return { service, calls, chain };
+  const notify = jest.fn().mockResolvedValue(undefined);
+  const pushNotifications = { notify } as unknown as ConstructorParameters<typeof OfflineQueueService>[1];
+  const service = new OfflineQueueService(
+    redis as unknown as ConstructorParameters<typeof OfflineQueueService>[0],
+    pushNotifications,
+  );
+  return { service, calls, chain, notify };
 }
 
 describe('OfflineQueueService.enqueue', () => {
@@ -60,6 +65,12 @@ describe('OfflineQueueService.enqueue', () => {
       ['ltrim', [KEY, -MAX_QUEUED_MESSAGES, -1]],
       ['expire', [KEY, QUEUE_TTL_SECONDS]],
     ]);
+  });
+
+  it('fires a content-free wake push to the recipient after queuing (Req 6.2)', async () => {
+    const { service, notify } = buildService([]);
+    await service.enqueue(RECIPIENT, buildEnvelope(1));
+    expect(notify).toHaveBeenCalledWith(RECIPIENT);
   });
 });
 

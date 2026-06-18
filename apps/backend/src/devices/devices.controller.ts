@@ -46,7 +46,7 @@ import {
   REGISTER_RATE_WINDOW_SECONDS,
 } from './devices.constants';
 import { DevicesService } from './devices.service';
-import { AddOneTimePreKeysDto, RegisterDeviceDto } from './dto';
+import { AddOneTimePreKeysDto, RegisterDeviceDto, SetPushTokenDto } from './dto';
 import { SignedPreKeyVerificationPipe } from './signed-prekey-verification.pipe';
 
 @Controller('api/devices')
@@ -134,5 +134,35 @@ export class DevicesController {
     }
 
     return this.devices.addOneTimePreKeys(auth.uid, dto);
+  }
+
+  /**
+   * Set (or revoke) the caller device's push token (Req 6.1/6.4). Identifies the device by the
+   * `registrationId` in the body; an empty token revokes it. Rate-limited per uid on a dedicated
+   * sub-scope, failing open on limiter error.
+   *
+   * @throws HttpException 429 when the per-uid limit is exceeded.
+   * @throws NotFoundException (404) when the caller has no device with that registrationId.
+   */
+  @Post('push-token')
+  @UseGuards(FirebaseAuthGuard)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async setPushToken(@Auth() auth: AuthContext, @Body() dto: SetPushTokenDto): Promise<void> {
+    let allowed = true;
+    try {
+      const result = await this.rateLimiter.hit(
+        `${REGISTER_RATE_LIMIT_SCOPE}:push-token:${auth.uid}`,
+        REGISTER_RATE_LIMIT,
+        REGISTER_RATE_WINDOW_SECONDS,
+      );
+      allowed = result.allowed;
+    } catch {
+      this.logger.warn('Push-token rate-limit check failed; allowing request');
+    }
+    if (!allowed) {
+      throw new HttpException('Rate limit exceeded', HttpStatus.TOO_MANY_REQUESTS);
+    }
+
+    await this.devices.setPushToken(auth.uid, dto);
   }
 }

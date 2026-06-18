@@ -6,3 +6,4 @@ export { SignedPreKeyDto } from './signed-prekey.dto';
 export { OneTimePreKeyDto } from './one-time-prekey.dto';
 export { RegisterDeviceDto } from './register-device.dto';
 export { AddOneTimePreKeysDto } from './add-one-time-prekeys.dto';
+export { SetPushTokenDto } from './set-push-token.dto';

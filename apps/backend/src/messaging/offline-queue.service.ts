@@ -27,6 +27,7 @@ import type { CiphertextEnvelope } from '@chat-app/types';
 import type Redis from 'ioredis';
 
 import { REDIS_COMMAND_CLIENT } from '../redis';
+import { PushNotificationService } from './push-notification.service';
 
 /** Redis key prefix for a recipient's offline envelope queue: `offline:{uid}`. */
 const OFFLINE_QUEUE_PREFIX = 'offline:';
@@ -44,13 +45,20 @@ type MultiExecResult = Array<[Error | null, unknown]> | null;
 export class OfflineQueueService {
   private readonly logger = new Logger(OfflineQueueService.name);
 
-  constructor(@Inject(REDIS_COMMAND_CLIENT) private readonly redis: Redis) {}
+  constructor(
+    @Inject(REDIS_COMMAND_CLIENT) private readonly redis: Redis,
+    private readonly pushNotifications: PushNotificationService,
+  ) {}
 
   /**
    * Queue an opaque envelope for a currently-offline recipient. Appends to the tail (FIFO),
    * trims to the most recent {@link MAX_QUEUED_MESSAGES}, and refreshes the TTL — all in one
    * Redis transaction so the bound and expiry are applied atomically with the write. The
    * ciphertext body is stored verbatim and never decoded (Requirement 8.2).
+   *
+   * After queuing, fires a CONTENT-FREE wake push to the recipient's devices (Req 6.2) so they
+   * connect and drain the queue while backgrounded. The push is fire-and-forget — it must never
+   * delay or fail the enqueue, and it carries no message content.
    */
   async enqueue(recipientUid: string, envelope: CiphertextEnvelope): Promise<void> {
     const key = OfflineQueueService.queueKey(recipientUid);
@@ -60,6 +68,7 @@ export class OfflineQueueService {
       .ltrim(key, -MAX_QUEUED_MESSAGES, -1)
       .expire(key, QUEUE_TTL_SECONDS)
       .exec();
+    void this.pushNotifications.notify(recipientUid);
   }
 
   /**
