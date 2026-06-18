@@ -48,6 +48,14 @@ export class UserEntity implements User {
   @Column({ type: 'text', nullable: true })
   email?: string;
 
+  /**
+   * Opt-in flag for presence/last-seen (Req 5.1). `false` by default, so a user's online state
+   * and last-seen are NEVER exposed to peers until they explicitly opt in via
+   * `POST /api/directory/presence`.
+   */
+  @Column({ type: 'boolean', name: 'presence_enabled', default: false })
+  presenceEnabled: boolean;
+
   @CreateDateColumn({ type: 'timestamptz', name: 'created_at' })
   createdAt: Date;
 

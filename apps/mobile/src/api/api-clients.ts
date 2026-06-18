@@ -10,6 +10,7 @@ import type { HttpClient, PreKeyClaimClient } from '@chat-app/crypto';
 import type {
   ClaimedPreKeyBundle,
   GetProfileResponse,
+  PresenceResponse,
   ResolvePhoneResponse,
   WhoAmIResponse,
 } from '@chat-app/types';
@@ -61,6 +62,10 @@ export interface DirectoryClient {
   whoAmI(): Promise<WhoAmIResponse | null>;
   /** Set the signed-in user's display name (shown to peers). Resolves true on success. */
   setProfile(displayName: string): Promise<boolean>;
+  /** Read a peer's presence (online + coarse last-seen), or `null` on failure (Req 5.2). */
+  getPresence(uid: string): Promise<PresenceResponse | null>;
+  /** Set the signed-in user's presence opt-in (Req 5.1). Resolves true on success. */
+  setPresence(enabled: boolean): Promise<boolean>;
 }
 
 /**
@@ -147,6 +152,46 @@ export function createDirectoryClient(
         return JSON.parse(response.body) as WhoAmIResponse;
       }
       return null;
+    },
+
+    async getPresence(uid: string): Promise<PresenceResponse | null> {
+      const token = getToken();
+      if (token === null) {
+        return null;
+      }
+      try {
+        const response = await http.send({
+          method: 'GET',
+          url: `${apiBaseUrl}/api/directory/presence/${encodeURIComponent(uid)}`,
+          headers: { Authorization: `Bearer ${token}` },
+          timeoutMs: REQUEST_TIMEOUT_MS,
+        });
+        if (response.status === 200) {
+          return JSON.parse(response.body) as PresenceResponse;
+        }
+      } catch {
+        // Offline or backend down: presence is non-critical, so report unknown.
+      }
+      return null;
+    },
+
+    async setPresence(enabled: boolean): Promise<boolean> {
+      const token = getToken();
+      if (token === null) {
+        return false;
+      }
+      try {
+        const response = await http.send({
+          method: 'POST',
+          url: `${apiBaseUrl}/api/directory/presence`,
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled }),
+          timeoutMs: REQUEST_TIMEOUT_MS,
+        });
+        return response.status === 204 || response.status === 200;
+      } catch {
+        return false;
+      }
     },
   };
 }

@@ -100,18 +100,25 @@ export class DirectoryService {
     storedPhone: string | null;
     displayName: string | null;
     deviceCount: number;
+    presenceEnabled: boolean;
     selfLookup: string;
   }> {
     const base = await this.transactions.runInTransaction(async (manager) => {
       const user = await manager.findOne(UserEntity, { where: { firebaseUid: uid } });
       if (user === null) {
-        return { storedPhone: null as string | null, displayName: null as string | null, deviceCount: 0 };
+        return {
+          storedPhone: null as string | null,
+          displayName: null as string | null,
+          deviceCount: 0,
+          presenceEnabled: false,
+        };
       }
       const deviceCount = await manager.count(DeviceEntity, { where: { userId: user.id } });
       return {
         storedPhone: user.phoneNumber ?? null,
         displayName: user.displayName ?? null,
         deviceCount,
+        presenceEnabled: user.presenceEnabled === true,
       };
     });
 

@@ -33,8 +33,8 @@ Effort: S (<1 day) · M (1–3 days) · L (~1 week) · XL (multi-week).
 ## Wave 2 — needs infra / native
 
 ### 5. Typing / presence / last-seen — Req 5
-- [ ] 5.1 (S) Opt-in presence flag on the user row + migration.
-- [ ] 5.2 (M) Read endpoint exposing online/coarse last-seen for opted-in users (from `presence:{uid}`).
+- [x] 5.1 (S) Opt-in presence flag on the user row + migration. **(this PR)** `users.presence_enabled` (default false) + migration; `POST /api/directory/presence` toggle; mobile Settings "Show when I'm online" switch (state reflected via `whoAmI`).
+- [x] 5.2 (M) Read endpoint exposing online/coarse last-seen for opted-in users (from `presence:{uid}`). **(this PR)** `GET /api/directory/presence/:uid` via `PresenceService` (online from the connection registry; coarse 5-min-bucketed last-seen from a TTL'd `lastseen:{uid}` written on disconnect). Opted-out/unknown users return `{online:null,lastSeen:null}` so opting out is undetectable (Req 5.1). Mobile polls the open chat and shows "online" / "last seen …" in the header.
 - [x] 5.3 (M) Ephemeral `typing` control frame (relayed, never persisted) + client rate-limit + UI. **(this PR)** Wire frames `{kind:'typing',recipientUid}` / `{kind:'typing',fromUid}`; backend relays via `MessageRelayService.relayTyping` over the existing presence/node pub-sub (offline recipient = silent no-op, never queued); `RealtimeClient` forwards typing, `Messaging.sendTyping`/`onTyping`, `ChatController` rate-limits (1/3s) and exposes `onTyping`; mobile shows "typing…" in the conversation header, auto-expiring ~6s after the last hint.
 
 ### 6. Push notifications (FCM) — Req 6

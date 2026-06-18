@@ -160,6 +160,13 @@ export default function App(): React.JSX.Element {
   // Surface encryption-setup progress/failure (identity + device registration + connect).
   useEffect(() => controller.onSetupChange(setSetup), [controller]);
 
+  // Presence opt-in (Req 5.1): the signed-in user's own setting, restored from the backend.
+  const [presenceEnabled, setPresenceEnabled] = useState(false);
+  // The open peer's presence (Req 5.2), polled while a conversation is open.
+  const [peerPresence, setPeerPresence] = useState<{ online: boolean | null; lastSeen: number | null }>(
+    { online: null, lastSeen: null },
+  );
+
   // Inbound typing hints (Req 5.3): remember which peer is typing and auto-expire the indicator
   // a few seconds after the last hint, since there is no explicit "stopped typing" frame.
   const [typingPeer, setTypingPeer] = useState<string | null>(null);
@@ -175,6 +182,29 @@ export default function App(): React.JSX.Element {
       }),
     [controller],
   );
+
+  // Poll the open peer's presence (Req 5.2) while a conversation is open: immediately on open
+  // and every 20s thereafter. Cleared when no chat is open so we don't poll in the background.
+  useEffect(() => {
+    if (openChatId === null) {
+      setPeerPresence({ online: null, lastSeen: null });
+      return undefined;
+    }
+    let cancelled = false;
+    const poll = (): void => {
+      void controller.getPresence(openChatId).then((p) => {
+        if (!cancelled) {
+          setPeerPresence(p === null ? { online: null, lastSeen: null } : { online: p.online, lastSeen: p.lastSeen });
+        }
+      });
+    };
+    poll();
+    const id = setInterval(poll, 20_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [openChatId, controller]);
 
   // Rehydrate persisted conversation history once the encrypted store is open, so chats
   // survive an app restart instead of starting empty (Phase 2 CC4). Guarded by a ref so it
@@ -238,6 +268,7 @@ export default function App(): React.JSX.Element {
           if (me.storedPhone !== null && me.storedPhone.length > 0) {
             setPhone(me.storedPhone);
           }
+          setPresenceEnabled(me.presenceEnabled);
         });
       }),
     [controller],
@@ -411,6 +442,8 @@ export default function App(): React.JSX.Element {
           state={openConversation.state}
           peerName={openConversation.name}
           peerTyping={typingPeer === openConversation.id}
+          peerOnline={peerPresence.online}
+          peerLastSeen={peerPresence.lastSeen}
           onComposerChange={onComposerChange}
           onSend={onSend}
           onReact={onReact}
@@ -469,6 +502,11 @@ export default function App(): React.JSX.Element {
             <SettingsScreen
               displayName={displayName}
               phone={phone}
+              presenceEnabled={presenceEnabled}
+              onTogglePresence={(enabled) => {
+                setPresenceEnabled(enabled);
+                void controller.setPresenceEnabled(enabled);
+              }}
               diagnostics={{
                 phase: setup.phase,
                 error: setup.error,

@@ -21,12 +21,18 @@ export function SettingsScreen({
   displayName,
   phone,
   diagnostics,
+  presenceEnabled = false,
+  onTogglePresence,
   onSelfTest,
   onSignOut,
 }: {
   displayName: string;
   phone: string;
   diagnostics: SettingsDiagnostics;
+  /** Whether the user has opted in to presence/last-seen (Req 5.1). */
+  presenceEnabled?: boolean;
+  /** Toggle the presence opt-in. */
+  onTogglePresence?: (enabled: boolean) => void;
   /** Resolve this device's OWN phone number through the directory (self-test). */
   onSelfTest: () => Promise<{ ok: boolean; detail: string }>;
   onSignOut: () => void;
@@ -69,6 +75,15 @@ export function SettingsScreen({
         <Row icon="🔑" label="Encryption keys" theme={t} />
         <Divider color={t.divider} />
         <Row icon="🛡️" label="Safety number" theme={t} />
+        <Divider color={t.divider} />
+        <Row
+          icon="🟢"
+          label="Show when I'm online"
+          theme={t}
+          toggle
+          toggleValue={presenceEnabled}
+          {...(onTogglePresence !== undefined ? { onToggle: onTogglePresence } : {})}
+        />
         <Divider color={t.divider} />
         <Row icon="🧹" label="Wipe data on sign-out" theme={t} toggle toggleValue />
       </View>
@@ -149,6 +164,7 @@ function Row({
   value,
   toggle = false,
   toggleValue = false,
+  onToggle,
 }: {
   icon: string;
   label: string;
@@ -156,6 +172,8 @@ function Row({
   value?: string;
   toggle?: boolean;
   toggleValue?: boolean;
+  /** When provided, the toggle is interactive and reports changes here. */
+  onToggle?: (value: boolean) => void;
 }): React.JSX.Element {
   return (
     <View style={styles.row}>
@@ -166,8 +184,9 @@ function Row({
           value={toggleValue}
           trackColor={{ true: t.brand, false: t.field }}
           thumbColor="#FFFFFF"
-          // Display-only until the corresponding preference store lands.
-          disabled
+          // Interactive when an onToggle handler is supplied; display-only otherwise.
+          disabled={onToggle === undefined}
+          {...(onToggle !== undefined ? { onValueChange: onToggle } : {})}
         />
       ) : (
         <Text style={[styles.rowValue, { color: t.faint }]}>{value ? `${value} ›` : '›'}</Text>

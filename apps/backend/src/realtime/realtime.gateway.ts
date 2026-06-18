@@ -381,6 +381,10 @@ export class RealtimeGateway
 
     try {
       await this.presenceRegistry.remove(uid, connId);
+      // Record a coarse last-seen for opted-in presence (Req 5.2). Stored TTL-bounded in Redis
+      // and only ever exposed to peers when the user has opted in (gated in PresenceService), so
+      // recording it unconditionally here leaks nothing.
+      await this.presenceRegistry.recordLastSeen(uid, Date.now());
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.warn(`Failed to remove presence entry on disconnect: ${message}`);

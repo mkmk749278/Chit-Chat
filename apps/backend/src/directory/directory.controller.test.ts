@@ -6,6 +6,7 @@ import type { RateLimiterService } from '../redis';
 import { DirectoryController } from './directory.controller';
 import { ResolvePhoneDto } from './dto';
 import type { DirectoryService } from './directory.service';
+import type { PresenceService } from './presence.service';
 
 /**
  * Unit tests for {@link DirectoryController} (phone→UID contact discovery). The controller
@@ -45,6 +46,7 @@ function makeController(overrides: {
   const hit = overrides.hit ?? jest.fn().mockResolvedValue({ allowed: true });
   const controller = new DirectoryController(
     { resolvePhone, whoAmI } as unknown as DirectoryService,
+    {} as unknown as PresenceService,
     { hit } as unknown as RateLimiterService,
   );
   return { controller, resolvePhone, whoAmI, hit };
@@ -105,6 +107,7 @@ describe('DirectoryController.me (diagnostics)', () => {
       displayName: 'Kishore',
       deviceCount: 2,
       selfLookup: 'ok:caller-uid',
+      presenceEnabled: true,
     });
     const { controller } = makeController({ whoAmI });
 
@@ -117,6 +120,7 @@ describe('DirectoryController.me (diagnostics)', () => {
       storedPhone: '+919618579123',
       deviceCount: 2,
       selfLookup: 'ok:caller-uid',
+      presenceEnabled: true,
     });
     expect(whoAmI).toHaveBeenCalledWith('caller-uid');
   });
