@@ -54,6 +54,21 @@ export type ContentPayload =
       /** Optional original file name. */
       name?: string;
     }
+  /**
+   * In-chat identity-verification control payloads (Signature Feature 2, §4). They ride inside
+   * the existing E2E ciphertext so the server never learns a verification is happening.
+   */
+  /** Requester → responder: begin a verification, carrying the fresh base64 session seed (§4.2). */
+  | { type: 'verify-request'; seed: string }
+  /** Responder → requester: the rotating code the responder submitted (the requester classifies it). */
+  | { type: 'verify-response'; code: string }
+  /** Requester → responder: the verification outcome, so both sides converge on the badge (§4.3). */
+  | { type: 'verify-result'; ok: boolean }
+  /**
+   * Responder → a pre-configured trusted contact: a silent duress alert fired when the duress code
+   * was used (§4.2, §4.3). Carries only the uid of the peer who ran the verification; no content.
+   */
+  | { type: 'duress-alert'; peerUid: string }
   /** A `{v:1}` payload whose `type` (or shape) this client version does not understand. */
   | { type: 'unsupported' };
 
@@ -146,6 +161,22 @@ export function decodeContentPayload(raw: string): ContentPayload {
             size: env.size,
             ...(typeof env.name === 'string' ? { name: env.name } : {}),
           }
+        : { type: 'unsupported' };
+    case 'verify-request':
+      return typeof env.seed === 'string' && env.seed.length > 0
+        ? { type: 'verify-request', seed: env.seed }
+        : { type: 'unsupported' };
+    case 'verify-response':
+      return typeof env.code === 'string' && env.code.length > 0
+        ? { type: 'verify-response', code: env.code }
+        : { type: 'unsupported' };
+    case 'verify-result':
+      return typeof env.ok === 'boolean'
+        ? { type: 'verify-result', ok: env.ok }
+        : { type: 'unsupported' };
+    case 'duress-alert':
+      return typeof env.peerUid === 'string' && env.peerUid.length > 0
+        ? { type: 'duress-alert', peerUid: env.peerUid }
         : { type: 'unsupported' };
     default:
       // A type a newer client introduced; ignore rather than misrender (forward-compat).

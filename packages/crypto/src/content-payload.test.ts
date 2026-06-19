@@ -127,3 +127,37 @@ test('a different version is treated as text (cannot misparse another schema)', 
   const v2 = JSON.stringify({ v: 2, type: 'delete', targetSeq: 1 });
   assert.deepEqual(decodeContentPayload(v2), { type: 'text', body: v2 });
 });
+
+test('verify-request round-trips and rejects an empty seed', () => {
+  const enc = encodeContentPayload({ type: 'verify-request', seed: 'c2VlZA==' });
+  assert.deepEqual(decodeContentPayload(enc), { type: 'verify-request', seed: 'c2VlZA==' });
+  const bad = JSON.stringify({ v: 1, type: 'verify-request', seed: '' });
+  assert.deepEqual(decodeContentPayload(bad), { type: 'unsupported' });
+});
+
+test('verify-response round-trips and rejects a missing code', () => {
+  const enc = encodeContentPayload({ type: 'verify-response', code: '123456' });
+  assert.deepEqual(decodeContentPayload(enc), { type: 'verify-response', code: '123456' });
+  const bad = JSON.stringify({ v: 1, type: 'verify-response' });
+  assert.deepEqual(decodeContentPayload(bad), { type: 'unsupported' });
+});
+
+test('verify-result round-trips both outcomes; non-boolean ok is unsupported', () => {
+  assert.deepEqual(decodeContentPayload(encodeContentPayload({ type: 'verify-result', ok: true })), {
+    type: 'verify-result',
+    ok: true,
+  });
+  assert.deepEqual(decodeContentPayload(encodeContentPayload({ type: 'verify-result', ok: false })), {
+    type: 'verify-result',
+    ok: false,
+  });
+  const bad = JSON.stringify({ v: 1, type: 'verify-result', ok: 'yes' });
+  assert.deepEqual(decodeContentPayload(bad), { type: 'unsupported' });
+});
+
+test('duress-alert round-trips and rejects an empty peerUid', () => {
+  const enc = encodeContentPayload({ type: 'duress-alert', peerUid: 'bob' });
+  assert.deepEqual(decodeContentPayload(enc), { type: 'duress-alert', peerUid: 'bob' });
+  const bad = JSON.stringify({ v: 1, type: 'duress-alert', peerUid: '' });
+  assert.deepEqual(decodeContentPayload(bad), { type: 'unsupported' });
+});

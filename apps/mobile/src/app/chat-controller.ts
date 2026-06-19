@@ -54,6 +54,8 @@ import {
   type RegistrationResult,
   type SafetyNumber,
   type SessionManager,
+  type VerificationEvent,
+  type VerificationResponseKind,
 } from '@chat-app/crypto';
 import type { PresenceResponse, WhoAmIResponse } from '@chat-app/types';
 
@@ -165,6 +167,25 @@ export interface ChatController {
    */
   getSafetyNumber(recipientUid: string): Promise<SafetyNumber | null>;
   /**
+   * Start an in-chat identity verification with the open conversation's peer (Signature Feature 2,
+   * §4). Both apps derive the same rotating code from a freshly-shared session seed; the peer
+   * answers via {@link respondVerification}. Session-scoped (resets on app lock/exit, §4.4).
+   */
+  requestVerification(): Promise<void>;
+  /**
+   * Answer a verification request from the open conversation's peer by submitting the current code
+   * (§4.2). `kind: 'duress'` submits the duress code, which verifies identically to the requester
+   * but also fires a silent alert to the configured trusted contact, if any (§4.3).
+   */
+  respondVerification(kind: VerificationResponseKind): Promise<void>;
+  /**
+   * Configure the trusted contact (recipient UID) that silent duress alerts are sent to (§4.2).
+   * Held in memory for the session; `null` clears it.
+   */
+  setTrustedContact(uid: string | null): void;
+  /** Subscribe to in-chat verification events driving the per-session badge + duress alerts (§4.3). */
+  onVerification(listener: (event: VerificationEvent) => void): () => void;
+  /**
    * Rehydrate every conversation from persisted on-device history (Phase 2 CC4), so chats
    * survive an app restart instead of starting empty. Returns an empty list before the
    * encrypted store is open.
@@ -245,6 +266,16 @@ export function createMobileController(): ChatController {
   /** Throttle outbound typing hints to at most one per window (Req 5.3 rate-limit). */
   const TYPING_MIN_INTERVAL_MS = 3000;
   let lastTypingSentAt = 0;
+
+  // In-chat identity verification (Signature Feature 2, §4), surfaced separately so the UI drives a
+  // per-session badge. The trusted contact for duress alerts is held in RAM only (§4.2).
+  const verificationListeners = new Set<(event: VerificationEvent) => void>();
+  const emitVerification = (event: VerificationEvent): void => {
+    for (const listener of verificationListeners) {
+      listener(event);
+    }
+  };
+  let trustedContactUid: string | null = null;
 
   // Live messaging stack, created on sign-in and torn down on sign-out.
   let vault: PersistentVault | null = null;
@@ -383,6 +414,7 @@ export function createMobileController(): ChatController {
 
     messaging.onConversationUpdate(emit);
     messaging.onTyping(emitTyping);
+    messaging.onVerification(emitVerification);
     realtime.onStatus((status) => emit({ type: 'connection-changed', connection: status }));
     realtime.connect();
     setSetup({ phase: 'ready' });
@@ -599,6 +631,29 @@ export function createMobileController(): ChatController {
       }
     },
 
+    async requestVerification(): Promise<void> {
+      if (messaging === null || activeRecipient === null) {
+        return;
+      }
+      await messaging.requestVerification(activeRecipient);
+    },
+
+    async respondVerification(kind: VerificationResponseKind): Promise<void> {
+      if (messaging === null || activeRecipient === null) {
+        return;
+      }
+      await messaging.respondVerification(activeRecipient, kind, trustedContactUid ?? undefined);
+    },
+
+    setTrustedContact(uid: string | null): void {
+      trustedContactUid = uid;
+    },
+
+    onVerification(listener: (event: VerificationEvent) => void): () => void {
+      verificationListeners.add(listener);
+      return () => verificationListeners.delete(listener);
+    },
+
     async loadConversations(): Promise<RehydratedConversation[]> {
       if (keyStore === null) {
         return [];
@@ -803,6 +858,18 @@ export function createDemoController(): ChatController {
     },
     async getSafetyNumber(): Promise<SafetyNumber | null> {
       return null;
+    },
+    async requestVerification(): Promise<void> {
+      // No transport in the demo controller.
+    },
+    async respondVerification(): Promise<void> {
+      // No transport in the demo controller.
+    },
+    setTrustedContact(): void {
+      // No transport in the demo controller.
+    },
+    onVerification(): () => void {
+      return () => undefined;
     },
     async loadConversations(): Promise<RehydratedConversation[]> {
       return [];
