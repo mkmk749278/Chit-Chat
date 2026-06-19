@@ -5,7 +5,7 @@
  */
 
 import React, { useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
+import { Modal, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 
 import { initials, useTheme } from './theme';
 
@@ -25,6 +25,11 @@ export function SettingsScreen({
   onTogglePresence,
   onSelfTest,
   onSignOut,
+  appLockEnabled = false,
+  decoyEnabled = false,
+  onSetAppPin,
+  onClearAppPin,
+  onLockNow,
 }: {
   displayName: string;
   phone: string;
@@ -36,10 +41,35 @@ export function SettingsScreen({
   /** Resolve this device's OWN phone number through the directory (self-test). */
   onSelfTest: () => Promise<{ ok: boolean; detail: string }>;
   onSignOut: () => void;
+  /** Whether a real app-lock PIN is set (Signature Feature 4, §6). */
+  appLockEnabled?: boolean;
+  /** Whether a decoy PIN is set (§6). */
+  decoyEnabled?: boolean;
+  /** Set the real or decoy PIN. */
+  onSetAppPin?: (pin: string, kind: 'real' | 'decoy') => void;
+  /** Remove the real or decoy PIN. */
+  onClearAppPin?: (kind: 'real' | 'decoy') => void;
+  /** Lock the app immediately (to test the lock screen); requires a real PIN. */
+  onLockNow?: () => void;
 }): React.JSX.Element {
   const t = useTheme();
   const [testResult, setTestResult] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
+  // PIN-entry modal: which kind we're setting, plus the entered digits.
+  const [pinModal, setPinModal] = useState<'real' | 'decoy' | null>(null);
+  const [pinDraft, setPinDraft] = useState('');
+  const pinValid = /^\d{4,6}$/.test(pinDraft);
+
+  const closePinModal = (): void => {
+    setPinModal(null);
+    setPinDraft('');
+  };
+  const submitPin = (): void => {
+    if (pinModal !== null && pinValid) {
+      onSetAppPin?.(pinDraft, pinModal);
+    }
+    closePinModal();
+  };
 
   const runSelfTest = async (): Promise<void> => {
     setTesting(true);
@@ -70,11 +100,53 @@ export function SettingsScreen({
         </View>
       </View>
 
+      <Text style={[styles.section, { color: t.faint }]}>APP LOCK</Text>
+      <View style={[styles.card, { backgroundColor: t.surface, borderColor: t.divider }]}>
+        {/* App-lock PIN (Signature Feature 4, §6): set it, then the app locks on launch/background. */}
+        <Pressable
+          style={styles.row}
+          accessibilityRole="button"
+          onPress={() => (appLockEnabled ? onClearAppPin?.('real') : setPinModal('real'))}
+        >
+          <Text style={styles.rowIcon}>🔒</Text>
+          <Text style={[styles.rowLabel, { color: t.text }]}>App lock PIN</Text>
+          <Text style={[styles.rowValue, { color: appLockEnabled ? t.secure : t.brandSoft }]}>
+            {appLockEnabled ? 'On · tap to remove' : 'Set PIN ›'}
+          </Text>
+        </Pressable>
+        <Divider color={t.divider} />
+        {/* Decoy PIN (§6): opens a sanitised app state — hidden chats stay hidden. */}
+        <Pressable
+          style={styles.row}
+          accessibilityRole="button"
+          onPress={() => (decoyEnabled ? onClearAppPin?.('decoy') : setPinModal('decoy'))}
+        >
+          <Text style={styles.rowIcon}>🕶️</Text>
+          <Text style={[styles.rowLabel, { color: t.text }]}>Decoy PIN</Text>
+          <Text style={[styles.rowValue, { color: decoyEnabled ? t.secure : t.brandSoft }]}>
+            {decoyEnabled ? 'On · tap to remove' : 'Set decoy ›'}
+          </Text>
+        </Pressable>
+        {appLockEnabled && onLockNow !== undefined && (
+          <>
+            <Divider color={t.divider} />
+            <Pressable style={styles.row} accessibilityRole="button" onPress={onLockNow}>
+              <Text style={styles.rowIcon}>🔐</Text>
+              <Text style={[styles.rowLabel, { color: t.brandSoft }]}>Lock now</Text>
+            </Pressable>
+          </>
+        )}
+      </View>
+      <Text style={[styles.hintText, { color: t.faint }]}>
+        Set a PIN, then tap “Lock now” (or reopen the app) to see the lock screen. A decoy PIN opens a
+        sanitised view that hides your hidden chats. There’s no recovery if you forget a PIN.
+      </Text>
+
       <Text style={[styles.section, { color: t.faint }]}>SECURITY &amp; PRIVACY</Text>
       <View style={[styles.card, { backgroundColor: t.surface, borderColor: t.divider }]}>
-        <Row icon="🔑" label="Encryption keys" theme={t} />
+        <Row icon="🤫" label="Hidden chats" theme={t} value="In a chat: 🫥" />
         <Divider color={t.divider} />
-        <Row icon="🛡️" label="Safety number" theme={t} />
+        <Row icon="👤" label="Verify identity" theme={t} value="In a chat: 👤" />
         <Divider color={t.divider} />
         <Row
           icon="🟢"
@@ -153,6 +225,44 @@ export function SettingsScreen({
         <Text style={[styles.signOutText, { color: t.danger }]}>Sign out</Text>
       </Pressable>
       <View style={styles.footer} />
+
+      {/* PIN-entry modal for setting the real or decoy app-lock PIN (§6). */}
+      <Modal visible={pinModal !== null} transparent animationType="fade" onRequestClose={closePinModal}>
+        <Pressable style={styles.backdrop} onPress={closePinModal} accessibilityLabel="Dismiss">
+          <Pressable style={[styles.sheet, { backgroundColor: t.surface }]} onPress={() => undefined}>
+            <Text style={[styles.sheetTitle, { color: t.text }]}>
+              {pinModal === 'decoy' ? 'Set decoy PIN' : 'Set app lock PIN'}
+            </Text>
+            <Text style={[styles.sheetHint, { color: t.faint }]}>
+              {pinModal === 'decoy'
+                ? 'Entering this PIN opens a sanitised view with your hidden chats kept hidden.'
+                : 'A 4–6 digit PIN. The app locks on launch and when backgrounded.'}
+            </Text>
+            <TextInput
+              style={[styles.pinInput, { color: t.text, backgroundColor: t.field }]}
+              value={pinDraft}
+              onChangeText={setPinDraft}
+              keyboardType="number-pad"
+              secureTextEntry
+              maxLength={6}
+              autoFocus
+              accessibilityLabel="PIN"
+              onSubmitEditing={submitPin}
+            />
+            <Pressable
+              style={[styles.sheetButton, { backgroundColor: t.brand }, !pinValid && styles.sheetButtonDisabled]}
+              disabled={!pinValid}
+              onPress={submitPin}
+              accessibilityRole="button"
+            >
+              <Text style={[styles.sheetButtonText, { color: t.onBrand }]}>Save PIN</Text>
+            </Pressable>
+            <Pressable style={styles.sheetCancel} onPress={closePinModal} accessibilityRole="button">
+              <Text style={[styles.sheetCancelText, { color: t.brandSoft }]}>Cancel</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </ScrollView>
   );
 }
@@ -222,6 +332,24 @@ const styles = StyleSheet.create({
   profileName: { fontSize: 18, fontWeight: '700' },
   profilePhone: { fontSize: 13, marginTop: 2 },
   section: { fontSize: 12, fontWeight: '700', paddingHorizontal: 26, marginTop: 22 },
+  hintText: { fontSize: 12, lineHeight: 17, paddingHorizontal: 26, marginTop: 8 },
+  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', paddingHorizontal: 28 },
+  sheet: { borderRadius: 18, padding: 20 },
+  sheetTitle: { fontSize: 18, fontWeight: '700' },
+  sheetHint: { fontSize: 13, marginTop: 8, marginBottom: 16, lineHeight: 18 },
+  pinInput: {
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    fontSize: 22,
+    letterSpacing: 8,
+    textAlign: 'center',
+  },
+  sheetButton: { marginTop: 16, borderRadius: 12, paddingVertical: 13, alignItems: 'center' },
+  sheetButtonDisabled: { opacity: 0.4 },
+  sheetButtonText: { fontSize: 15, fontWeight: '700' },
+  sheetCancel: { marginTop: 6, paddingVertical: 10, alignItems: 'center' },
+  sheetCancelText: { fontSize: 14, fontWeight: '600' },
   row: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 14 },
   rowIcon: { fontSize: 16, width: 30 },
   rowLabel: { flex: 1, fontSize: 15 },

@@ -191,8 +191,12 @@ export interface ChatController {
    * (Signature Feature 4, §6). `false` when no PIN is set or the encrypted vault is unavailable.
    */
   hasAppPin(): Promise<boolean>;
+  /** Whether a decoy PIN is configured (§6). */
+  hasDecoyPin(): Promise<boolean>;
   /** Set/replace the real or decoy app PIN, stored as a salted verifier (§6.2). */
   setAppPin(pin: string, kind: 'real' | 'decoy'): Promise<void>;
+  /** Remove the real or decoy app PIN (§6). */
+  clearAppPin(kind: 'real' | 'decoy'): Promise<void>;
   /** Attempt to unlock the app; resolves the real/decoy mode, a lockout, or an invalid result (§6). */
   unlockApp(pin: string): Promise<UnlockResult>;
   /** Mark a chat hidden behind its own unlock secret (Signature Feature 1, §3.1). */
@@ -678,8 +682,14 @@ export function createMobileController(): ChatController {
     async hasAppPin(): Promise<boolean> {
       return gate !== null ? gate.hasRealPin() : false;
     },
+    async hasDecoyPin(): Promise<boolean> {
+      return gate !== null ? gate.hasDecoyPin() : false;
+    },
     async setAppPin(pin: string, kind: 'real' | 'decoy'): Promise<void> {
       await gate?.setPin(pin, kind);
+    },
+    async clearAppPin(kind: 'real' | 'decoy'): Promise<void> {
+      await gate?.clearPin(kind);
     },
     async unlockApp(pin: string): Promise<UnlockResult> {
       return gate !== null ? gate.unlock(pin) : { invalid: true };
@@ -917,7 +927,13 @@ export function createDemoController(): ChatController {
     async hasAppPin(): Promise<boolean> {
       return false;
     },
+    async hasDecoyPin(): Promise<boolean> {
+      return false;
+    },
     async setAppPin(): Promise<void> {
+      // No vault in the demo controller.
+    },
+    async clearAppPin(): Promise<void> {
       // No vault in the demo controller.
     },
     async unlockApp(): Promise<UnlockResult> {

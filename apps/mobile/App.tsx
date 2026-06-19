@@ -93,6 +93,9 @@ export default function App(): React.JSX.Element {
   const [lockKnown, setLockKnown] = useState(false); // whether we've checked if a PIN is set
   const [lockError, setLockError] = useState<string | null>(null);
   const [lockLocked, setLockLocked] = useState(false);
+  // Whether a real / decoy PIN is configured (reflected in Settings, Signature Feature 4).
+  const [appLockEnabled, setAppLockEnabled] = useState(false);
+  const [decoyEnabled, setDecoyEnabled] = useState(false);
   // Peer uids of hidden chats (Signature Feature 1, §3); excluded from the list + search.
   const [hiddenPeers, setHiddenPeers] = useState<string[]>([]);
   const [tab, setTab] = useState<Tab>('chats');
@@ -234,11 +237,13 @@ export default function App(): React.JSX.Element {
       return;
     }
     let cancelled = false;
-    void controller.hasAppPin().then((hasPin) => {
+    void Promise.all([controller.hasAppPin(), controller.hasDecoyPin()]).then(([hasPin, hasDecoy]) => {
       if (cancelled) {
         return;
       }
       setLockKnown(true);
+      setAppLockEnabled(hasPin);
+      setDecoyEnabled(hasDecoy);
       setAppMode(hasPin ? null : 'real');
     });
     return () => {
@@ -542,6 +547,8 @@ export default function App(): React.JSX.Element {
     setLockKnown(false);
     setLockError(null);
     setLockLocked(false);
+    setAppLockEnabled(false);
+    setDecoyEnabled(false);
     setHiddenPeers([]);
     setVerificationByPeer({});
   }, [controller]);
@@ -710,6 +717,33 @@ export default function App(): React.JSX.Element {
                   ? 'Discovery works — others can find you at your number.'
                   : `Lookup result: ${me.selfLookup}`;
                 return { ok: works, detail: `${lines.join(' · ')}\nself-lookup: ${me.selfLookup}\n${verdict}` };
+              }}
+              appLockEnabled={appLockEnabled}
+              decoyEnabled={decoyEnabled}
+              onSetAppPin={(pin, kind) => {
+                void controller.setAppPin(pin, kind).then(() => {
+                  if (kind === 'real') {
+                    setAppLockEnabled(true);
+                    setLockKnown(true);
+                  } else {
+                    setDecoyEnabled(true);
+                  }
+                });
+              }}
+              onClearAppPin={(kind) => {
+                void controller.clearAppPin(kind).then(() => {
+                  if (kind === 'real') {
+                    setAppLockEnabled(false);
+                  } else {
+                    setDecoyEnabled(false);
+                  }
+                });
+              }}
+              onLockNow={() => {
+                if (appLockEnabled) {
+                  setOpenChatId(null);
+                  setAppMode(null);
+                }
               }}
               onSignOut={signOut}
             />
