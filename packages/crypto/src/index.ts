@@ -252,6 +252,16 @@ export * from './app-lock';
 
 
 /**
+ * Dual-layer shadow chat — server-opaque thread-id derivation + the `/alias` command system
+ * (Signature Feature 7, §9). `deriveShadowThreadId` lets both peers compute the same hidden thread
+ * id client-side (the server never learns a thread is shadow); `normalizeAlias` / `hashAlias` /
+ * `matchAlias` implement the `/`-prefixed alias grammar with local HMAC-only storage, so a wrong
+ * alias is indistinguishable from a non-existent one. Pure WebCrypto; secrets stay on-device.
+ */
+export * from './shadow-chat';
+
+
+/**
  * Versioned E2E content payload (Phase 2, Requirement 3). `encodeContentPayload` /
  * `decodeContentPayload` wrap the libsignal plaintext so reactions, edits, deletes (and later
  * timers/attachments) ride inside the existing ciphertext — the server still sees only an
