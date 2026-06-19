@@ -183,6 +183,40 @@ export default function App(): React.JSX.Element {
     [controller],
   );
 
+  // In-chat identity verification (Signature Feature 2, §4): per-peer session badge state, driven
+  // by E2E verification control frames. Session-scoped — reset on sign-out with the rest of state.
+  const [verificationByPeer, setVerificationByPeer] = useState<
+    Record<string, 'none' | 'requested' | 'incoming' | 'verified' | 'unverified'>
+  >({});
+  useEffect(
+    () =>
+      controller.onVerification((event) => {
+        if (event.type === 'duress-alert-received') {
+          // A contact we are the trusted contact for signalled duress. Surface it discreetly (§4.3).
+          Alert.alert('Safety alert', 'A contact may need help. Reach out to them privately.');
+          return;
+        }
+        setVerificationByPeer((prev) => {
+          switch (event.type) {
+            case 'verify-requested':
+              return { ...prev, [event.peerUid]: 'requested' };
+            case 'verify-incoming':
+              return { ...prev, [event.peerUid]: 'incoming' };
+            case 'verify-result':
+              return { ...prev, [event.peerUid]: event.ok ? 'verified' : 'unverified' };
+            default:
+              return prev;
+          }
+        });
+      }),
+    [controller],
+  );
+  const onRequestVerification = useCallback(() => void controller.requestVerification(), [controller]);
+  const onRespondVerification = useCallback(
+    (kind: 'normal' | 'duress') => void controller.respondVerification(kind),
+    [controller],
+  );
+
   // Poll the open peer's presence (Req 5.2) while a conversation is open: immediately on open
   // and every 20s thereafter. Cleared when no chat is open so we don't poll in the background.
   useEffect(() => {
@@ -406,6 +440,7 @@ export default function App(): React.JSX.Element {
     setPhone('');
     setDisplayName(null);
     setAppPin(null);
+    setVerificationByPeer({});
   }, [controller]);
 
   const openConversation = openChatId !== null
@@ -452,6 +487,9 @@ export default function App(): React.JSX.Element {
           onView={onView}
           onSetTimer={onSetTimer}
           getSafetyNumber={getSafetyNumber}
+          verification={verificationByPeer[openConversation.id] ?? 'none'}
+          onRequestVerification={onRequestVerification}
+          onRespondVerification={onRespondVerification}
           onBack={() => {
             animateNext();
             setOpenChatId(null);

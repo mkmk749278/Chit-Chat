@@ -48,6 +48,13 @@ import type { ClaimedPreKeyBundle } from '@chat-app/types';
 import type { ConversationEvent } from './conversation-reducer';
 import { decodeContentPayload, encodeContentPayload, type ContentPayload } from './content-payload';
 import { msUntilNextExpiry, selectExpired, type ExpiringEntry } from './disappearing-timer';
+import {
+  classifyVerificationCode,
+  currentVerificationCodes,
+  generateVerificationSeed,
+  verificationSeedFromBase64,
+  verificationSeedToBase64,
+} from './identity-verification';
 import type { EnvelopeCodec } from './envelope-codec';
 import type { MessageRow, Unsubscribe } from './ports';
 import type { Scheduler, TimerHandle } from './realtime-client';
@@ -178,6 +185,27 @@ export interface SendOptions {
   viewOnce?: boolean;
 }
 
+/**
+ * In-chat identity-verification lifecycle events (Signature Feature 2, §4). Emitted as the
+ * verification challenge flows over the E2E channel so the platform UI can show the per-session
+ * badge (§4.3). Verification state is session-scoped (RAM only) and resets on app lock/exit (§4.4).
+ */
+export type VerificationEvent =
+  /** We sent a verification request to `peerUid`; awaiting their coded response. */
+  | { type: 'verify-requested'; peerUid: string }
+  /** `peerUid` asked us to verify; the UI should prompt us to submit the rotating code. */
+  | { type: 'verify-incoming'; peerUid: string }
+  /** A verification finished with `ok` (passed/failed). Drives the green "Verified ✓" badge (§4.3). */
+  | { type: 'verify-result'; peerUid: string; ok: boolean }
+  /**
+   * We are a pre-configured trusted contact and received a SILENT duress alert: `peerUid` is the
+   * person who was coerced into running a verification (§4.2, §4.3). The UI surfaces this discreetly.
+   */
+  | { type: 'duress-alert-received'; peerUid: string };
+
+/** Which rotating code the responder submits when answering a verification (§4.2). */
+export type VerificationResponseKind = 'normal' | 'duress';
+
 export interface Messaging {
   /**
    * Send `plaintext` to `recipientUid`. Establishes a libsignal session first if needed,
@@ -225,6 +253,25 @@ export interface Messaging {
    * Ephemeral — there is no "stopped typing" frame; consumers expire the indicator on a timer.
    */
   onTyping(listener: (fromUid: string) => void): Unsubscribe;
+  /**
+   * Begin an in-chat identity verification with `recipientUid` (§4). Generates a fresh session
+   * seed, shares it over the E2E channel, and emits `verify-requested`. Both peers then derive the
+   * same rotating code; the recipient answers via {@link respondVerification} (§4.2, §4.3).
+   */
+  requestVerification(recipientUid: string): Promise<void>;
+  /**
+   * Answer a verification request from `recipientUid` by submitting the current rotating code (§4.2).
+   * `kind: 'duress'` submits the duress code instead — it verifies identically to the requester but
+   * also fires a SILENT alert to `trustedContactUid` if one is configured (§4.3). Indistinguishable
+   * to an observer from a normal response.
+   */
+  respondVerification(
+    recipientUid: string,
+    kind: VerificationResponseKind,
+    trustedContactUid?: string,
+  ): Promise<void>;
+  /** Subscribe to {@link VerificationEvent}s driving the per-session verification badge (§4.3). */
+  onVerification(listener: (event: VerificationEvent) => void): Unsubscribe;
   /**
    * Handle an inbound `CiphertextEnvelope` from the Realtime_Client: decrypt and render the
    * plaintext, or surface a `delivery-error` with no plaintext on decryption failure
@@ -321,6 +368,13 @@ export class DefaultMessaging implements Messaging {
 
   private readonly updateListeners = new Set<(event: ConversationEvent) => void>();
   private readonly typingListeners = new Set<(fromUid: string) => void>();
+  private readonly verificationListeners = new Set<(event: VerificationEvent) => void>();
+  /**
+   * Per-peer in-chat-verification seeds, RAM-only and session-scoped: cleared on `dispose`
+   * (app lock/exit), so verification state never outlives the session (§4.4) and the seed is
+   * never persisted (ephemeral-by-construction).
+   */
+  private readonly verificationSeeds = new Map<string, Uint8Array>();
   private readonly transportUnsubscribers: Unsubscribe[];
 
   constructor(deps: MessagingDeps, options: MessagingOptions) {
@@ -558,6 +612,35 @@ export class DefaultMessaging implements Messaging {
         // are in place; download + decrypt + render wiring lands with the media UI (task 7.3), so
         // for now an inbound attachment payload is ignored rather than mis-rendered.
         return;
+      case 'verify-request':
+        // The peer is starting a verification and shared the session seed (§4.2). Hold it in RAM
+        // and prompt the local user to answer with the rotating code (§4.3).
+        this.verificationSeeds.set(remoteUid, verificationSeedFromBase64(payload.seed));
+        this.emitVerification({ type: 'verify-incoming', peerUid: remoteUid });
+        return;
+      case 'verify-response': {
+        // We requested verification; classify the responder's code. Both a normal and a duress
+        // code count as a pass to us — the duress path is indistinguishable here by design (§4.3);
+        // any side effect of duress fires on the responder's device, not ours.
+        const seed = this.verificationSeeds.get(remoteUid);
+        let ok = false;
+        if (seed !== undefined) {
+          const kind = await classifyVerificationCode(seed, payload.code, this.now());
+          ok = kind !== 'invalid';
+        }
+        // Tell the responder the outcome so their badge converges with ours (§4.3), then show ours.
+        await this.sendControl(remoteUid, { type: 'verify-result', ok });
+        this.emitVerification({ type: 'verify-result', peerUid: remoteUid, ok });
+        return;
+      }
+      case 'verify-result':
+        // The requester reported the outcome of the code we submitted; mirror their badge (§4.3).
+        this.emitVerification({ type: 'verify-result', peerUid: remoteUid, ok: payload.ok });
+        return;
+      case 'duress-alert':
+        // We are a configured trusted contact: surface the silent duress alert discreetly (§4.3).
+        this.emitVerification({ type: 'duress-alert-received', peerUid: payload.peerUid });
+        return;
       case 'unsupported':
         // A payload type this client version does not understand; ignore (forward-compat).
         return;
@@ -654,6 +737,47 @@ export class DefaultMessaging implements Messaging {
   }
 
   /** @inheritdoc */
+  async requestVerification(recipientUid: string): Promise<void> {
+    // Fresh per-session seed (RAM only); share it over E2E so both peers derive the same codes (§4.2).
+    const seed = generateVerificationSeed();
+    this.verificationSeeds.set(recipientUid, seed);
+    this.emitVerification({ type: 'verify-requested', peerUid: recipientUid });
+    await this.sendControl(recipientUid, {
+      type: 'verify-request',
+      seed: verificationSeedToBase64(seed),
+    });
+  }
+
+  /** @inheritdoc */
+  async respondVerification(
+    recipientUid: string,
+    kind: VerificationResponseKind,
+    trustedContactUid?: string,
+  ): Promise<void> {
+    const seed = this.verificationSeeds.get(recipientUid);
+    if (seed === undefined) {
+      // No active request from this peer (or the session reset); nothing to answer.
+      return;
+    }
+    const codes = await currentVerificationCodes(seed, this.now());
+    const code = kind === 'duress' ? codes.duress : codes.normal;
+    await this.sendControl(recipientUid, { type: 'verify-response', code });
+    if (kind === 'duress' && trustedContactUid !== undefined && trustedContactUid.length > 0) {
+      // Fire the silent alert to the trusted contact over the same encrypted channel — never via
+      // SMS/Call Log (Restricted Permissions this app does not request) (§4.2).
+      await this.sendControl(trustedContactUid, { type: 'duress-alert', peerUid: recipientUid });
+    }
+  }
+
+  /** @inheritdoc */
+  onVerification(listener: (event: VerificationEvent) => void): Unsubscribe {
+    this.verificationListeners.add(listener);
+    return () => {
+      this.verificationListeners.delete(listener);
+    };
+  }
+
+  /** @inheritdoc */
   onConversationUpdate(listener: (event: ConversationEvent) => void): Unsubscribe {
     this.updateListeners.add(listener);
     return () => {
@@ -675,6 +799,9 @@ export class DefaultMessaging implements Messaging {
     }
     this.pending.clear();
     this.typingListeners.clear();
+    this.verificationListeners.clear();
+    // Session-scoped verification seeds never survive the session (§4.4).
+    this.verificationSeeds.clear();
     if (this.purgeTimer !== null) {
       this.scheduler.clearTimeout(this.purgeTimer);
       this.purgeTimer = null;
@@ -893,10 +1020,13 @@ export class DefaultMessaging implements Messaging {
   private async sendControl(
     recipientUid: string,
     payload: ContentPayload,
-    optimistic: ConversationEvent,
+    optimistic?: ConversationEvent,
   ): Promise<void> {
     // Optimistically apply locally so the sender sees their own reaction/edit/delete at once.
-    this.emitUpdate(optimistic);
+    // Verification/duress control frames carry no visible row, so they pass no optimistic event.
+    if (optimistic !== undefined) {
+      this.emitUpdate(optimistic);
+    }
     const sender = await this.sender.resolveSender();
     if (sender === null) {
       return;
@@ -955,6 +1085,16 @@ export class DefaultMessaging implements Messaging {
 
   private emitUpdate(event: ConversationEvent): void {
     for (const listener of this.updateListeners) {
+      try {
+        listener(event);
+      } catch {
+        // A listener throwing must not break the orchestrator.
+      }
+    }
+  }
+
+  private emitVerification(event: VerificationEvent): void {
+    for (const listener of this.verificationListeners) {
       try {
         listener(event);
       } catch {

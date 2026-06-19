@@ -231,6 +231,16 @@ export * from './safety-number';
 
 
 /**
+ * In-chat identity verification — rotating TOTP + duress code (Signature Feature 2, §4; D6).
+ * Confirms the human at the keyboard holds the conversation's shared verification seed: both peers
+ * derive the same RFC 6238 codes (60 s rotation) from one exchanged seed, with a second "duress"
+ * code that passes identically to an observer but lets the responder's app fire a silent alert.
+ * Pure WebCrypto; the seed is its own secret and never reaches the server.
+ */
+export * from './identity-verification';
+
+
+/**
  * Versioned E2E content payload (Phase 2, Requirement 3). `encodeContentPayload` /
  * `decodeContentPayload` wrap the libsignal plaintext so reactions, edits, deletes (and later
  * timers/attachments) ride inside the existing ciphertext — the server still sees only an

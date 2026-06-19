@@ -61,6 +61,15 @@ export interface ConversationScreenProps {
   onSetTimer: (ttlMs: number) => void;
   /** Compute the conversation safety number, or `null` if not yet available (Req 1.1–1.3). */
   getSafetyNumber: () => Promise<SafetyNumber | null>;
+  /**
+   * Per-session in-chat verification status for this peer (Signature Feature 2, §4.3):
+   * `requested` (we asked, awaiting), `incoming` (they asked us to answer), `verified` / `unverified`.
+   */
+  verification?: 'none' | 'requested' | 'incoming' | 'verified' | 'unverified';
+  /** Start an identity verification with the peer (§4.2). */
+  onRequestVerification?: () => void;
+  /** Answer the peer's verification with the normal or duress code (§4.2, §4.3). */
+  onRespondVerification?: (kind: 'normal' | 'duress') => void;
 }
 
 const STATUS_LABEL: Record<RenderableMessage['status'], string> = {
@@ -146,6 +155,9 @@ export function ConversationScreen({
   onView,
   onSetTimer,
   getSafetyNumber,
+  verification = 'none',
+  onRequestVerification,
+  onRespondVerification,
 }: ConversationScreenProps): React.JSX.Element {
   const t = useTheme();
   const connected = state.connection === 'connected';
@@ -175,6 +187,7 @@ export function ConversationScreen({
   const [safety, setSafety] = useState<{ open: boolean; value: SafetyNumber | null; loading: boolean }>(
     { open: false, value: null, loading: false },
   );
+  const [verifyOpen, setVerifyOpen] = useState(false);
 
   const targetOf = (m: RenderableMessage): MessageTarget => ({ direction: m.direction, seq: m.seq });
 
@@ -235,6 +248,31 @@ export function ConversationScreen({
           style={styles.headerAction}
         >
           <Text style={[styles.headerActionIcon, { color: t.brandSoft }]}>🛡</Text>
+        </Pressable>
+        <Pressable
+          onPress={() => setVerifyOpen(true)}
+          accessibilityRole="button"
+          accessibilityLabel="Verify identity"
+          hitSlop={10}
+          style={styles.headerAction}
+        >
+          <Text
+            style={[
+              styles.headerActionIcon,
+              {
+                color:
+                  verification === 'verified'
+                    ? t.secure
+                    : verification === 'incoming'
+                      ? t.brandSoft
+                      : verification === 'unverified'
+                        ? t.danger
+                        : t.faint,
+              },
+            ]}
+          >
+            {verification === 'verified' ? '✓👤' : '👤'}
+          </Text>
         </Pressable>
       </View>
 
@@ -413,6 +451,60 @@ export function ConversationScreen({
           </Text>
         )}
         <SheetItem label="Done" theme={t} onPress={() => setSafety({ ...safety, open: false })} />
+      </SheetModal>
+
+      {/* In-chat identity verification — rotating TOTP + duress code (Signature Feature 2, §4). */}
+      <SheetModal visible={verifyOpen} onClose={() => setVerifyOpen(false)} theme={t}>
+        <Text style={[styles.sheetTitle, { color: t.text }]}>Verify identity</Text>
+        {verification === 'incoming' ? (
+          <>
+            <Text style={[styles.sheetHint, { color: t.faint }]}>
+              {peerName} asked to confirm it’s really you. Send your rotating code to verify.
+            </Text>
+            <SheetItem
+              label="Send my code"
+              theme={t}
+              onPress={() => {
+                onRespondVerification?.('normal');
+                setVerifyOpen(false);
+              }}
+            />
+            {/* Duress: looks identical to a normal send, but silently alerts a trusted contact (§4.3). */}
+            <SheetItem
+              label="Send under duress"
+              theme={t}
+              destructive
+              onPress={() => {
+                onRespondVerification?.('duress');
+                setVerifyOpen(false);
+              }}
+            />
+          </>
+        ) : verification === 'verified' ? (
+          <Text style={[styles.sheetHint, { color: t.secure }]}>
+            Verified ✓ — {peerName}’s identity is confirmed for this session.
+          </Text>
+        ) : verification === 'requested' ? (
+          <Text style={[styles.sheetHint, { color: t.faint }]}>
+            Waiting for {peerName} to respond with their rotating code…
+          </Text>
+        ) : (
+          <>
+            <Text style={[styles.sheetHint, { color: t.faint }]}>
+              Confirm the human at {peerName}’s device with a code that changes every 60 seconds and
+              can’t be replayed. {verification === 'unverified' ? 'Last attempt did not match.' : ''}
+            </Text>
+            <SheetItem
+              label="Request verification"
+              theme={t}
+              onPress={() => {
+                onRequestVerification?.();
+                setVerifyOpen(false);
+              }}
+            />
+          </>
+        )}
+        <SheetItem label="Close" theme={t} onPress={() => setVerifyOpen(false)} />
       </SheetModal>
 
       {/* View-once reveal (Req 4.3): the message is already purged; this shows its captured text once. */}
