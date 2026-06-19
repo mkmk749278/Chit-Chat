@@ -63,6 +63,7 @@ import { FirebaseAuthAdapter } from '../auth';
 import { API_BASE_URL, REGISTER_URL, WS_URL } from '../api/api-config';
 import { createDirectoryClient, createPreKeyClaimClient, type DirectoryClient } from '../api/api-clients';
 import { createNativeVault, probeNativeCrypto } from '../crypto/native-vault';
+import { createSecureGate, type RevealResult, type SecureGate, type UnlockResult } from './secure-gate';
 import {
   createPersistentKeyStore,
   createPersistentSignalProtocolStore,
@@ -186,6 +187,23 @@ export interface ChatController {
   /** Subscribe to in-chat verification events driving the per-session badge + duress alerts (§4.3). */
   onVerification(listener: (event: VerificationEvent) => void): () => void;
   /**
+   * Whether a real app PIN is configured, so the shell should present the lock screen on launch
+   * (Signature Feature 4, §6). `false` when no PIN is set or the encrypted vault is unavailable.
+   */
+  hasAppPin(): Promise<boolean>;
+  /** Set/replace the real or decoy app PIN, stored as a salted verifier (§6.2). */
+  setAppPin(pin: string, kind: 'real' | 'decoy'): Promise<void>;
+  /** Attempt to unlock the app; resolves the real/decoy mode, a lockout, or an invalid result (§6). */
+  unlockApp(pin: string): Promise<UnlockResult>;
+  /** Mark a chat hidden behind its own unlock secret (Signature Feature 1, §3.1). */
+  hideChat(peerUid: string, secret: string): Promise<void>;
+  /** Remove a chat's hidden status (from within the revealed chat, §3.3). */
+  unhideChat(peerUid: string): Promise<void>;
+  /** The peer uids of currently-hidden chats, so the chat list can exclude them (§3.1). */
+  listHiddenPeers(): Promise<string[]>;
+  /** Reveal the single hidden chat whose secret matches `secret`, honouring the lockout (§3.1). */
+  revealHiddenChat(secret: string): Promise<RevealResult>;
+  /**
    * Rehydrate every conversation from persisted on-device history (Phase 2 CC4), so chats
    * survive an app restart instead of starting empty. Returns an empty list before the
    * encrypted store is open.
@@ -279,6 +297,7 @@ export function createMobileController(): ChatController {
 
   // Live messaging stack, created on sign-in and torn down on sign-out.
   let vault: PersistentVault | null = null;
+  let gate: SecureGate | null = null;
   let keyStore: KeyStore | null = null;
   let messaging: Messaging | null = null;
   let sessions: SessionManager | null = null;
@@ -352,6 +371,8 @@ export function createMobileController(): ChatController {
       return;
     }
     keyStore = store;
+    // Bind the secure-gate (app PIN lock + hidden chats, §3/§6) to the encrypted vault.
+    gate = createSecureGate(vault);
 
     const identityManager = new DefaultIdentityManager(store, createPureTsLibsignalKeyGen());
     await identityManager.ensureIdentity(uid);
@@ -654,6 +675,28 @@ export function createMobileController(): ChatController {
       return () => verificationListeners.delete(listener);
     },
 
+    async hasAppPin(): Promise<boolean> {
+      return gate !== null ? gate.hasRealPin() : false;
+    },
+    async setAppPin(pin: string, kind: 'real' | 'decoy'): Promise<void> {
+      await gate?.setPin(pin, kind);
+    },
+    async unlockApp(pin: string): Promise<UnlockResult> {
+      return gate !== null ? gate.unlock(pin) : { invalid: true };
+    },
+    async hideChat(peerUid: string, secret: string): Promise<void> {
+      await gate?.hideChat(peerUid, secret);
+    },
+    async unhideChat(peerUid: string): Promise<void> {
+      await gate?.unhideChat(peerUid);
+    },
+    async listHiddenPeers(): Promise<string[]> {
+      return gate !== null ? gate.listHiddenPeers() : [];
+    },
+    async revealHiddenChat(secret: string): Promise<RevealResult> {
+      return gate !== null ? gate.revealHiddenChat(secret) : { invalid: true };
+    },
+
     async loadConversations(): Promise<RehydratedConversation[]> {
       if (keyStore === null) {
         return [];
@@ -870,6 +913,27 @@ export function createDemoController(): ChatController {
     },
     onVerification(): () => void {
       return () => undefined;
+    },
+    async hasAppPin(): Promise<boolean> {
+      return false;
+    },
+    async setAppPin(): Promise<void> {
+      // No vault in the demo controller.
+    },
+    async unlockApp(): Promise<UnlockResult> {
+      return { invalid: true };
+    },
+    async hideChat(): Promise<void> {
+      // No vault in the demo controller.
+    },
+    async unhideChat(): Promise<void> {
+      // No vault in the demo controller.
+    },
+    async listHiddenPeers(): Promise<string[]> {
+      return [];
+    },
+    async revealHiddenChat(): Promise<RevealResult> {
+      return { invalid: true };
     },
     async loadConversations(): Promise<RehydratedConversation[]> {
       return [];

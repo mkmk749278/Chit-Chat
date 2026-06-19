@@ -29,10 +29,17 @@ export function ChatsListScreen({
   chats,
   onOpenChat,
   onNewChat,
+  onSearchSubmit,
 }: {
   chats: ChatSummary[];
   onOpenChat: (id: string) => void;
   onNewChat: () => void;
+  /**
+   * Called when the user submits the search field (return key). Used for the hidden-chat secret
+   * entry (Signature Feature 1, §3.3): a matching secret reveals that one chat; a non-match is
+   * indistinguishable from an ordinary failed search. Optional so the screen stays presentational.
+   */
+  onSearchSubmit?: (text: string) => void;
 }): React.JSX.Element {
   const t = useTheme();
   const [query, setQuery] = useState('');
@@ -61,6 +68,13 @@ export function ChatsListScreen({
           placeholderTextColor={t.faint}
           value={query}
           onChangeText={setQuery}
+          onSubmitEditing={() => {
+            if (onSearchSubmit !== undefined) {
+              onSearchSubmit(query);
+              setQuery('');
+            }
+          }}
+          returnKeyType="search"
           accessibilityLabel="Search chats"
         />
       </View>
