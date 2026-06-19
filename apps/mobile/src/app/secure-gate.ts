@@ -43,8 +43,12 @@ export type RevealResult =
 export interface SecureGate {
   /** Whether a real app PIN has been configured (so the app should lock on launch). */
   hasRealPin(): Promise<boolean>;
+  /** Whether a decoy PIN has been configured (§6). */
+  hasDecoyPin(): Promise<boolean>;
   /** Set or replace the real or decoy app PIN (stored as a salted verifier). */
   setPin(pin: string, kind: AppMode): Promise<void>;
+  /** Remove the real or decoy app PIN. */
+  clearPin(kind: AppMode): Promise<void>;
   /** Attempt to unlock the app with `pin`, honouring the lockout policy. */
   unlock(pin: string): Promise<UnlockResult>;
   /** Mark a chat hidden with its own unlock secret (§3.1). */
@@ -95,12 +99,24 @@ export function createSecureGate(vault: PersistentVault, now: () => number = () 
       return vault.read((doc) => typeof doc.appPins?.real === 'string' && doc.appPins.real.length > 0);
     },
 
+    async hasDecoyPin(): Promise<boolean> {
+      return vault.read((doc) => typeof doc.appPins?.decoy === 'string' && doc.appPins.decoy.length > 0);
+    },
+
     async setPin(pin: string, kind: AppMode): Promise<void> {
       const verifier = await hashSecret(pin);
       await vault.mutate((doc) => {
         const pins = doc.appPins ?? {};
         pins[kind] = verifier;
         doc.appPins = pins;
+      });
+    },
+
+    async clearPin(kind: AppMode): Promise<void> {
+      await vault.mutate((doc) => {
+        if (doc.appPins !== undefined) {
+          delete doc.appPins[kind];
+        }
       });
     },
 
