@@ -21,6 +21,9 @@ import { Alert, AppState, Pressable, SafeAreaView, StyleSheet, Text, useColorSch
 import {
   initialConversationState,
   reduce,
+  ShadowSecretStore,
+  createConversationRegistry,
+  type ConversationRegistry,
   type ConversationState,
   type MessageTarget,
 } from '@chat-app/crypto';
@@ -30,6 +33,10 @@ import {
   type ChatController,
   type SetupState,
 } from './src/app/chat-controller';
+import {
+  createInMemoryShadowSecretPersistence,
+  createMobileShadowSearchHandler,
+} from './src/app/shadow-search';
 import { CallsScreen } from './src/ui/CallsScreen';
 import { ChatsListScreen, type ChatSummary } from './src/ui/ChatsListScreen';
 import { AppLockScreen } from './src/ui/AppLockScreen';
@@ -80,6 +87,27 @@ export default function App(): React.JSX.Element {
   }
   const controller = controllerRef.current;
   const dark = useColorScheme() === 'dark';
+
+  // Shadow Chat (task 8.2/8.3). The per-thread conversation registry + the device-local secret store
+  // are created once per mount (stable refs). The registry is the canonical isolator (shadow threads
+  // never enter `listSurfaceConversations` / `isNotifiable`); the store is the real-PIN-gated alias
+  // resolver. The store is backed by in-memory persistence for now — the durable encrypted-KeyStore
+  // binding + the alias-PROVISIONING flow are the documented follow-ups (and the KeyStore port may
+  // not change in this task), so until aliases are provisioned every `/alias` falls through to an
+  // ordinary search, indistinguishably (Req 1.5, 8.6).
+  const shadowRegistryRef = useRef<ConversationRegistry | null>(null);
+  if (shadowRegistryRef.current === null) {
+    shadowRegistryRef.current = createConversationRegistry({ platform: 'mobile' });
+  }
+  const shadowStoreRef = useRef<ShadowSecretStore | null>(null);
+  if (shadowStoreRef.current === null) {
+    shadowStoreRef.current = new ShadowSecretStore(createInMemoryShadowSecretPersistence());
+  }
+  // Open shadow threads: threadId -> peer uid. A shadow message targets the peer with this threadId
+  // so it rides the shadow thread (never the surface chat). These ids are EXCLUDED from the chat
+  // list / contacts (task 8.3, Req 7.5/7.6).
+  const shadowPeerRef = useRef<Map<string, string>>(new Map());
+  const [shadowThreadIds, setShadowThreadIds] = useState<ReadonlySet<string>>(new Set());
 
   const [uid, setUid] = useState<string | null>(null);
   const [phone, setPhone] = useState<string>('');
@@ -142,6 +170,43 @@ export default function App(): React.JSX.Element {
       controller.subscribe((event) => {
         if (event.type === 'connection-changed') {
           setConversations((prev) => prev.map((c) => ({ ...c, state: reduce(c.state, event) })));
+          return;
+        }
+        // Shadow Chat (task 8.3): a `threadId`-tagged event belongs to a shadow thread. Track it in
+        // the registry (which enforces Req 7.8 — an inbound event for an unopened thread is rejected)
+        // and route it to its OWN conversation keyed by `threadId`, so it renders ONLY inside the
+        // opened shadow thread and never leaks into the surface chat list, previews, or
+        // notifications (Req 7.5/7.6). Shadow events are non-notifiable via the registry's
+        // `isNotifiable`, so no OS/in-app notification is ever raised for them.
+        const tid = (event as { threadId?: unknown }).threadId;
+        if (typeof tid === 'string' && tid.length > 0) {
+          try {
+            shadowRegistryRef.current?.apply(event);
+          } catch {
+            return; // unopened shadow thread: drop with no surface effect (Req 7.8).
+          }
+          const peerUid =
+            'remoteUid' in event && typeof event.remoteUid === 'string' ? event.remoteUid : undefined;
+          if (peerUid !== undefined) {
+            shadowPeerRef.current.set(tid, peerUid);
+          }
+          animateNext();
+          setConversations((prev) => {
+            const base = prev.some((c) => c.id === tid)
+              ? prev
+              : [
+                  {
+                    id: tid,
+                    name: peerUid ?? 'Shadow',
+                    state: initialConversationState('mobile'),
+                    lastAt: Date.now(),
+                  },
+                  ...prev,
+                ];
+            return base.map((c) =>
+              c.id === tid ? { ...c, state: reduce(c.state, event), lastAt: Date.now() } : c,
+            );
+          });
           return;
         }
         const target =
@@ -319,6 +384,58 @@ export default function App(): React.JSX.Element {
       });
     },
     [controller, appMode],
+  );
+
+  // Search-bar submit (task 8.2): FIRST intercept a `/alias` through the ONE shared decision path
+  // (`createMobileShadowSearchHandler` → `@chat-app/crypto`), identical to the web adapter (C2). A
+  // real-mode alias hit opens that contact's shadow thread; every other outcome (not an alias, wrong
+  // alias, decoy/null mode, unprovisioned) falls through to the existing hidden-chat reveal / ordinary
+  // search with identical observable behaviour (Req 1.1–1.6, 8.4, 8.6). The handler never reveals
+  // that a shadow thread exists.
+  const onSearch = useCallback(
+    (text: string) => {
+      const registry = shadowRegistryRef.current;
+      const store = shadowStoreRef.current;
+      if (registry === null || store === null) {
+        onRevealSearch(text);
+        return;
+      }
+      const handle = createMobileShadowSearchHandler({
+        store,
+        registry,
+        getMode: () => appMode,
+        onOpenShadowThread: (ref) => {
+          // Track the thread + remember its peer so sends ride the shadow thread; exclude it from
+          // the surface chat list (task 8.3); then open it. Sends target the PEER with this
+          // `threadId`, so a shadow message never goes out on the surface chat.
+          shadowPeerRef.current.set(ref.threadId, ref.peerUid);
+          setShadowThreadIds((prev) => {
+            const next = new Set(prev);
+            next.add(ref.threadId);
+            return next;
+          });
+          setConversations((prev) =>
+            prev.some((c) => c.id === ref.threadId)
+              ? prev
+              : [
+                  {
+                    id: ref.threadId,
+                    name: ref.peerUid,
+                    state: initialConversationState('mobile'),
+                    lastAt: Date.now(),
+                  },
+                  ...prev,
+                ],
+          );
+          controller.openConversation(ref.peerUid);
+          animateNext();
+          setOpenChatId(ref.threadId);
+        },
+        onOrdinarySearch: (query) => onRevealSearch(query),
+      });
+      void handle(text);
+    },
+    [appMode, controller, onRevealSearch],
   );
 
   // Poll the open peer's presence (Req 5.2) while a conversation is open: immediately on open
@@ -501,7 +618,14 @@ export default function App(): React.JSX.Element {
       // The controller owns the message lifecycle (message-appended + status updates flow
       // back through the subscription); the container only clears the composer.
       onComposerChange('');
-      void controller.send(text, options);
+      // Shadow Chat (task 8.2): when the open chat is a shadow thread, send WITH its `threadId` so
+      // the message rides the shadow thread (the controller targets the peer recipient set when the
+      // thread was opened). A surface chat passes no `threadId` — byte-for-byte the prior behaviour.
+      const threadId = shadowPeerRef.current.has(target) ? target : undefined;
+      void controller.send(text, {
+        ...(options ?? {}),
+        ...(threadId !== undefined ? { threadId } : {}),
+      });
     },
     [conversations, controller, onComposerChange],
   );
@@ -551,6 +675,8 @@ export default function App(): React.JSX.Element {
     setDecoyEnabled(false);
     setHiddenPeers([]);
     setVerificationByPeer({});
+    setShadowThreadIds(new Set());
+    shadowPeerRef.current.clear();
   }, [controller]);
 
   const openConversation = openChatId !== null
@@ -558,10 +684,13 @@ export default function App(): React.JSX.Element {
     : null;
 
   // Hidden chats never appear in the list or contacts (§3.1); the only way in is the search-bar
-  // secret (onRevealSearch), which opens the chat by id even though it is filtered out here.
+  // secret (onRevealSearch), which opens the chat by id even though it is filtered out here. Shadow
+  // threads (task 8.3) are likewise excluded from the list, contacts, and previews — the only way in
+  // is an /alias via onSearch, which opens the thread by its threadId even though it is filtered out.
   const hidden = new Set(hiddenPeers);
+  const isSurfaceListable = (id: string): boolean => !hidden.has(id) && !shadowThreadIds.has(id);
   const summaries: ChatSummary[] = [...conversations]
-    .filter((c) => !hidden.has(c.id))
+    .filter((c) => isSurfaceListable(c.id))
     .sort((a, b) => b.lastAt - a.lastAt)
     .map((c) => ({
       id: c.id,
@@ -571,7 +700,7 @@ export default function App(): React.JSX.Element {
       unread: 0,
     }));
   const contacts: ContactRow[] = conversations
-    .filter((c) => !hidden.has(c.id))
+    .filter((c) => isSurfaceListable(c.id))
     .map((c) => ({ id: c.id, name: c.name }));
 
   return (
@@ -617,7 +746,7 @@ export default function App(): React.JSX.Element {
           onRespondVerification={onRespondVerification}
           isHidden={hidden.has(openConversation.id)}
           onHideChat={
-            appMode === 'real'
+            appMode === 'real' && !shadowThreadIds.has(openConversation.id)
               ? (secret) => {
                   const id = openConversation.id;
                   void controller.hideChat(id, secret).then(() => {
@@ -628,7 +757,7 @@ export default function App(): React.JSX.Element {
               : undefined
           }
           onUnhideChat={
-            appMode === 'real'
+            appMode === 'real' && !shadowThreadIds.has(openConversation.id)
               ? () => {
                   const id = openConversation.id;
                   void controller.unhideChat(id).then(() => {
@@ -676,7 +805,7 @@ export default function App(): React.JSX.Element {
             <ChatsListScreen
               chats={summaries}
               onOpenChat={openChat}
-              onSearchSubmit={onRevealSearch}
+              onSearchSubmit={onSearch}
               onNewChat={() => {
                 animateNext();
                 setNewChatOpen(true);

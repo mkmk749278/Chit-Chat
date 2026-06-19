@@ -46,6 +46,7 @@ import {
   KeyStoreSequenceAllocator,
   reduce,
   RealtimeClient,
+  ShadowSequenceAllocator,
   type ConversationEvent,
   type ConversationState,
   type KeyStore,
@@ -137,7 +138,7 @@ export interface ChatController {
   /** Set the conversation that subsequent {@link ChatController.send} calls target. */
   openConversation(recipientUid: string): void;
   /** Send `plaintext` to the currently-open conversation (see {@link openConversation}). */
-  send(plaintext: string, options?: { viewOnce?: boolean }): Promise<void>;
+  send(plaintext: string, options?: { viewOnce?: boolean; threadId?: string }): Promise<void>;
   /**
    * Mark a view-once message as displayed: purge it from the store and remove it from the UI so
    * it cannot be re-opened (Req 4.3). `id` is the message's stable row id.
@@ -421,6 +422,10 @@ export function createMobileController(): ChatController {
         realtime,
         sessions,
         sequence: new KeyStoreSequenceAllocator(store),
+        // Shadow Chat (Req 4): a shadow send/control message uses a dedicated per-thread allocator
+        // keyed `shadow:${threadId}`, so its seq is offset by +1e9 and stays disjoint from surface
+        // seqs in the shared ack/reducer key space. Reuses the existing KeyStore — no port change.
+        shadowSequence: (threadId: string) => new ShadowSequenceAllocator(store, threadId),
         codec: createEnvelopeCodec(),
         keyClaimer: createPreKeyClaimClient(httpClient, () => authService.getCurrentToken(), API_BASE_URL),
         sender: {
@@ -572,10 +577,14 @@ export function createMobileController(): ChatController {
       activeRecipient = recipientUid;
     },
 
-    async send(plaintext: string, options?: { viewOnce?: boolean }): Promise<void> {
+    async send(plaintext: string, options?: { viewOnce?: boolean; threadId?: string }): Promise<void> {
       if (messaging === null || activeRecipient === null) {
         return;
       }
+      // `options.threadId`, when present, routes the message into the contact's SHADOW thread (Req
+      // 8 / task 8.2): it rides inside the encrypted body and the wire envelope is unchanged. Absent
+      // ⇒ ordinary surface send, byte-for-byte as before. The shared Messaging already supports this
+      // option, so this is a pure passthrough (no wire/port change).
       await messaging.send(activeRecipient, plaintext, options);
     },
 

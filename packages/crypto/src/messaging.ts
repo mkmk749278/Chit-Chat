@@ -59,6 +59,7 @@ import type { EnvelopeCodec } from './envelope-codec';
 import type { MessageRow, Unsubscribe } from './ports';
 import type { Scheduler, TimerHandle } from './realtime-client';
 import type { SequenceAllocator } from './sequence-allocator';
+import { SHADOW_SEQ_OFFSET } from './shadow-sequence-allocator';
 import type { SessionManager } from './session-manager';
 
 /** Default deadline for a Backend_API acknowledgment after transmission: 30 s (5.6, 5.11). */
@@ -146,6 +147,20 @@ export interface MessagingDeps {
   sender: LocalSenderResolver;
   /** On-device store for display rows + status (5.6, 5.10, 5.11, 6.2). */
   store: MessagingStore;
+  /**
+   * OPTIONAL factory for a per-thread shadow {@link SequenceAllocator} (Shadow Chat, design
+   * Component 3/4). When a {@link SendOptions.threadId} (or a `threadId` on react/edit/delete/timer)
+   * is present, the orchestrator allocates the message's sequence number from
+   * `shadowSequence(threadId)` instead of the surface {@link sequence}, so shadow seqs are offset by
+   * `+1e9` and contiguous per thread (disjoint from surface seqs in the shared ack/reducer key
+   * spaces). The platform adapter binds this to a `ShadowSequenceAllocator` constructed against its
+   * own `KeyStore` (the `KeyStore` is not otherwise visible to this orchestrator). It is OPTIONAL so
+   * every existing surface-only call site keeps compiling and behaving identically: when it is
+   * absent the surface path is completely unchanged, and a shadow send attempted without it is
+   * treated as a misconfiguration and fails locally (text retained) rather than leaking onto the
+   * surface conversation.
+   */
+  shadowSequence?: (threadId: string) => SequenceAllocator;
 }
 
 /** Tuning knobs + injected determinism seams for {@link DefaultMessaging}. */
@@ -183,6 +198,26 @@ export interface MessageTarget {
 export interface SendOptions {
   /** Send as a view-once message: the recipient may open it once, then it is purged (Req 4.3). */
   viewOnce?: boolean;
+  /**
+   * Route this message into the contact's SHADOW thread (Shadow Chat, Req 3.1/5.2). When present
+   * (a non-empty, ≤255-char string — the bounds the content-payload codec treats as routable, so
+   * the encoded body and the allocated seq space never disagree) the message is allocated a shadow
+   * sequence (`≥1e9`) via {@link MessagingDeps.shadowSequence}, the `threadId` rides INSIDE the
+   * encrypted body, and every emitted `ConversationEvent` is tagged with it so the
+   * `ConversationRegistry` routes it to the shadow conversation. ABSENT ⇒ ordinary surface chat,
+   * byte-for-byte unchanged.
+   */
+  threadId?: string;
+}
+
+/** Options for the targeted control operations (react/edit/delete) — Shadow Chat thread scoping. */
+export interface ControlOptions {
+  /**
+   * Route this reaction/edit/delete/timer into the contact's SHADOW thread (Shadow Chat, Req
+   * 7.2/7.3). Same semantics as {@link SendOptions.threadId}: present ⇒ shadow (seq `≥1e9`,
+   * `threadId` inside the body, events tagged); absent ⇒ surface, byte-for-byte unchanged.
+   */
+  threadId?: string;
 }
 
 /**
@@ -213,30 +248,37 @@ export interface Messaging {
    * holds the frame for flush-on-reconnect while disconnected (Requirements 5.2, 5.10).
    * Never throws for an expected delivery problem (offline, no recipient device, encrypt
    * failure); those surface as a `failed` message with its text retained (5.9).
+   *
+   * Pass `options.threadId` to route the message into the contact's shadow thread (Shadow Chat,
+   * Req 3.1); absent ⇒ surface chat, byte-for-byte unchanged.
    */
   send(recipientUid: string, plaintext: string, options?: SendOptions): Promise<void>;
   /**
    * React to a prior message with an emoji (Requirement 3.1). `target` identifies the message
    * by its LOCAL direction + seq; the reaction rides as an E2E content payload and the peer
-   * renders it against the same message.
+   * renders it against the same message. Pass `options.threadId` to scope the reaction to a shadow
+   * thread (Shadow Chat, Req 7.2); absent ⇒ surface, byte-for-byte unchanged.
    */
-  react(recipientUid: string, target: MessageTarget, emoji: string): Promise<void>;
+  react(recipientUid: string, target: MessageTarget, emoji: string, options?: ControlOptions): Promise<void>;
   /**
    * Edit a prior message's text (Requirement 3.2); the latest text supersedes the original.
-   * Typically `target.direction === 'out'` (you edit your own messages).
+   * Typically `target.direction === 'out'` (you edit your own messages). Pass `options.threadId` to
+   * scope the edit to a shadow thread (Shadow Chat, Req 7.2); absent ⇒ surface, unchanged.
    */
-  editMessage(recipientUid: string, target: MessageTarget, body: string): Promise<void>;
+  editMessage(recipientUid: string, target: MessageTarget, body: string, options?: ControlOptions): Promise<void>;
   /**
    * Delete (tombstone) a prior message (Requirement 3.3); both sides replace its content with a
-   * deleted placeholder. Typically `target.direction === 'out'`.
+   * deleted placeholder. Typically `target.direction === 'out'`. Pass `options.threadId` to scope
+   * the delete to a shadow thread (Shadow Chat, Req 7.2); absent ⇒ surface, unchanged.
    */
-  deleteMessage(recipientUid: string, target: MessageTarget): Promise<void>;
+  deleteMessage(recipientUid: string, target: MessageTarget, options?: ControlOptions): Promise<void>;
   /**
    * Set the conversation's disappearing-message timer (Req 4.1). `ttlMs` is the message
    * lifetime in milliseconds; `0` disables it. Sent as an E2E payload so both peers converge
-   * on the same timer; applied optimistically locally.
+   * on the same timer; applied optimistically locally. Pass `options.threadId` to scope the timer
+   * to a shadow thread (Shadow Chat, Req 7.3); absent ⇒ surface, byte-for-byte unchanged.
    */
-  setDisappearingTimer(recipientUid: string, ttlMs: number): Promise<void>;
+  setDisappearingTimer(recipientUid: string, ttlMs: number, options?: ControlOptions): Promise<void>;
   /**
    * Seed the in-memory disappearing-timer for a conversation WITHOUT sending or persisting it
    * (Req 4.1). Used on relaunch to restore a previously-agreed timer so messages sent in the new
@@ -313,6 +355,12 @@ interface PendingSend {
   state: 'queued' | 'awaiting-ack';
   /** The armed ack-deadline timer while `awaiting-ack`, else `null`. */
   ackTimer: TimerHandle | null;
+  /**
+   * Shadow thread this send belongs to, or absent for a surface send (Shadow Chat). Carried so the
+   * ack→`sent` and timeout→`failed` status events are tagged with the same `threadId` and route to
+   * the shadow conversation rather than the surface one.
+   */
+  threadId?: string;
 }
 
 /** Default {@link Scheduler} bound to the host timer functions. */
@@ -328,6 +376,37 @@ const defaultScheduler: Scheduler = {
 /** Key a pending send by its conversation + sequence number (the ack echoes both). */
 function pendingKey(recipientUid: string, seq: number): string {
   return `${recipientUid}:${seq}`;
+}
+
+/** Upper bound on a routable shadow threadId — matches the content-payload codec's `isThreadId`. */
+const THREAD_ID_MAX_LENGTH = 255;
+
+/**
+ * Normalise an optional `threadId` to the value the orchestrator routes on (Shadow Chat). Returns
+ * the string only when it is routable — a non-empty string of 1..255 characters, the exact bounds
+ * `content-payload`'s codec treats as a real threadId — so the allocated seq space (shadow vs
+ * surface) and the threadId actually encoded into the body can never disagree. Anything else
+ * (undefined, empty, over-length) collapses to `undefined` ⇒ surface chat.
+ */
+function routableThreadId(threadId: string | undefined): string | undefined {
+  return typeof threadId === 'string' && threadId.length > 0 && threadId.length <= THREAD_ID_MAX_LENGTH
+    ? threadId
+    : undefined;
+}
+
+/**
+ * Defensive C1 / Property 5 invariant guard: the shadow `threadId` rides ONLY inside the encrypted
+ * body, so the serialized {@link CiphertextEnvelope} must expose neither a `threadId` nor any
+ * plaintext field. The current codec has no such field by construction; this guard fails fast if a
+ * future codec change ever regressed that, before any frame is transmitted.
+ */
+function assertWireSafe(envelope: CiphertextEnvelope): void {
+  if (
+    Object.prototype.hasOwnProperty.call(envelope, 'threadId') ||
+    Object.prototype.hasOwnProperty.call(envelope, 'plaintext')
+  ) {
+    throw new Error('CiphertextEnvelope must not carry a threadId or plaintext field on the wire');
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -350,6 +429,12 @@ export class DefaultMessaging implements Messaging {
   private readonly keyClaimer: PreKeyClaimClient;
   private readonly sender: LocalSenderResolver;
   private readonly store: MessagingStore;
+  /**
+   * Optional factory binding a per-thread shadow {@link SequenceAllocator} (Shadow Chat). Present
+   * only when the platform adapter injected one; surface-only deployments leave it undefined and the
+   * shadow code paths are never reached.
+   */
+  private readonly shadowSequence?: (threadId: string) => SequenceAllocator;
 
   private readonly generateId: () => string;
   private readonly now: () => number;
@@ -365,6 +450,14 @@ export class DefaultMessaging implements Messaging {
   private readonly expiring = new Map<string, { expiresAt: number; remoteUid: string }>();
   /** The single armed purge timer for the soonest expiry, or `null`. */
   private purgeTimer: TimerHandle | null = null;
+
+  /**
+   * Monotonic sentinel seq, in the shadow space (`≥1e9`), for the local-only `failed` row produced
+   * when a shadow send is attempted with no {@link shadowSequence} factory configured. It consumes
+   * no persisted counter and never reaches the wire; living in the shadow space keeps its key
+   * disjoint from every surface seq.
+   */
+  private shadowMisconfigSeq = SHADOW_SEQ_OFFSET;
 
   private readonly updateListeners = new Set<(event: ConversationEvent) => void>();
   private readonly typingListeners = new Set<(fromUid: string) => void>();
@@ -389,6 +482,7 @@ export class DefaultMessaging implements Messaging {
     this.keyClaimer = deps.keyClaimer;
     this.sender = deps.sender;
     this.store = deps.store;
+    this.shadowSequence = deps.shadowSequence;
 
     this.generateId = options.generateId;
     this.now = options.now ?? Date.now;
@@ -419,11 +513,25 @@ export class DefaultMessaging implements Messaging {
 
   /** @inheritdoc */
   async send(recipientUid: string, plaintext: string, options?: SendOptions): Promise<void> {
-    // Allocate the per-conversation sequence number up front so the row and the envelope
-    // share one strictly-increasing seq (Requirements 5.3, 6.2).
-    const seq = await this.sequence.next(recipientUid);
     const id = this.generateId();
     const viewOnce = options?.viewOnce === true;
+    // Resolve the routable shadow threadId (absent ⇒ surface). The bounds match the content-payload
+    // codec's `isThreadId`, so the seq space (shadow vs surface) and the encoded body never disagree.
+    const threadId = routableThreadId(options?.threadId);
+
+    // Select the sequence allocator: the per-thread shadow allocator for a shadow send (seq ≥1e9),
+    // else the surface allocator (seq <1e9). A shadow send with no configured shadow factory is a
+    // misconfiguration: fail locally with the text retained WITHOUT consuming a surface seq or
+    // leaking the message into the surface conversation (Shadow Chat, Req 3.6, 5.2).
+    const allocator = this.allocatorFor(threadId);
+    if (allocator === null) {
+      await this.failShadowMisconfig(id, recipientUid, plaintext, threadId as string, viewOnce);
+      return;
+    }
+
+    // Allocate the per-conversation sequence number up front so the row and the envelope
+    // share one strictly-increasing seq (Requirements 5.3, 6.2).
+    const seq = await allocator.next(recipientUid);
 
     // Optimistically render the outbound message as `sending` before any network work
     // (design §12 optimistic UI; Requirements 5.10, 6.2).
@@ -438,8 +546,12 @@ export class DefaultMessaging implements Messaging {
       ...(viewOnce ? { viewOnce: true } : {}),
     };
     // Stamp the disappearing-message expiry from the conversation's active timer (Req 4.2):
-    // the sender's clock starts at send time.
-    this.stampExpiry(row);
+    // the sender's clock starts at send time. The messaging purge engine is keyed by `remoteUid`
+    // (surface), so a shadow row is NOT stamped here — that would apply the SURFACE timer to a
+    // shadow message; thread-scoped shadow purge is handled per-thread by the registry/reducer.
+    if (threadId === undefined) {
+      this.stampExpiry(row);
+    }
     await this.store.appendMessage(row);
     this.emitUpdate({
       type: 'message-appended',
@@ -452,12 +564,13 @@ export class DefaultMessaging implements Messaging {
         ...(viewOnce ? { viewOnce: true } : {}),
       },
       remoteUid: recipientUid,
+      ...(threadId !== undefined ? { threadId } : {}),
     });
 
     // Resolve the local routing identity; without it the message cannot be addressed (5.9).
     const sender = await this.sender.resolveSender();
     if (sender === null) {
-      await this.markFailed(id, recipientUid, 'not registered (no device id)');
+      await this.markFailed(id, recipientUid, 'not registered (no device id)', threadId);
       return;
     }
 
@@ -469,34 +582,55 @@ export class DefaultMessaging implements Messaging {
       if (!(await this.sessions.hasSession(recipientUid))) {
         const bundle = await this.keyClaimer.claim(recipientUid);
         if (bundle === null) {
-          await this.markFailed(id, recipientUid, 'recipient has no published keys');
+          await this.markFailed(id, recipientUid, 'recipient has no published keys', threadId);
           return;
         }
         await this.sessions.establishSession(recipientUid, bundle);
       }
       body = await this.sessions.encrypt(
         recipientUid,
-        // Wrap plain text in the versioned content payload (Phase 2). The recipient decodes it
-        // back to text; a legacy peer that decodes the JSON as a bare string still shows it.
-        encodeContentPayload({ type: 'text', body: plaintext, ...(viewOnce ? { viewOnce: true } : {}) }),
+        // Wrap plain text in the versioned content payload (Phase 2). For a shadow send the
+        // `threadId` rides INSIDE this encrypted body (Shadow Chat, Req 3.1) — never on the wire
+        // envelope. The recipient decodes it back to text; a legacy peer that decodes the JSON as a
+        // bare string still shows it.
+        encodeContentPayload(
+          { type: 'text', body: plaintext, ...(viewOnce ? { viewOnce: true } : {}) },
+          threadId,
+        ),
       );
     } catch (err) {
       // A short reason is surfaced for diagnosis; the raw error (which may carry sensitive
       // material, 8.5) is never logged or transmitted.
       const reason = err instanceof Error ? err.message.slice(0, 80) : 'unknown';
-      await this.markFailed(id, recipientUid, `encrypt failed: ${reason}`);
+      await this.markFailed(id, recipientUid, `encrypt failed: ${reason}`, threadId);
       return;
     }
 
     // Build the wire frame once. The codec has no plaintext field, so plaintext cannot be
-    // serialized to the socket (Requirements 5.3, 5.7, 8.2).
+    // serialized to the socket (Requirements 5.3, 5.7, 8.2). For a shadow message the only on-wire
+    // difference is `seq` (≥1e9); the threadId stays inside the encrypted body.
     const envelope = this.codec.encode(
       { senderUid: sender.uid, recipientUid, senderDeviceId: sender.deviceId, seq },
       body,
     );
+    // Defensive C1 / Property 5 invariant: the serialized envelope must expose neither a `threadId`
+    // nor any plaintext field (the threadId rides only inside the ciphertext). Holds by construction
+    // for the current codec; this guard fails fast if a future codec change ever regressed it.
+    assertWireSafe(envelope);
     const frame: ClientToServerFrame = { kind: 'send', envelope };
 
-    const entry: PendingSend = { id, recipientUid, seq, frame, state: 'queued', ackTimer: null };
+    // Pending/ack key stays `${recipientUid}:${seq}` — disjoint across surface/shadow because the
+    // seq spaces are disjoint by construction (surface <1e9 ≤ shadow), so ack matching is correct
+    // for both (Shadow Chat, Req 4.4).
+    const entry: PendingSend = {
+      id,
+      recipientUid,
+      seq,
+      frame,
+      state: 'queued',
+      ackTimer: null,
+      ...(threadId !== undefined ? { threadId } : {}),
+    };
     this.pending.set(pendingKey(recipientUid, seq), entry);
 
     // Transmit now if connected, else hold for flush-on-reconnect (5.10).
@@ -513,6 +647,10 @@ export class DefaultMessaging implements Messaging {
       plaintext = await this.sessions.decrypt(envelope);
     } catch {
       // Decryption failed: render no plaintext and mark delivery-error (Requirements 5.5, 6.9).
+      // This path runs BEFORE decode, so the shadow `threadId` (which lives INSIDE the
+      // undecryptable body) is unknowable here — the error necessarily stays on the surface
+      // conversation (design Error Scenario 2). A shadow thread cannot be revealed by a frame we
+      // could not decrypt in the first place.
       const errorRow: MessageRow = {
         id,
         remoteUid: envelope.senderUid,
@@ -529,7 +667,13 @@ export class DefaultMessaging implements Messaging {
 
     // The decrypted plaintext is a versioned content payload (Phase 2). Decoding is total and
     // backward-compatible: a legacy Phase 1 bare-string plaintext decodes as text (Req 3.1).
-    const payload = decodeContentPayload(plaintext);
+    // The decoder also surfaces an optional shadow `threadId` (Shadow Chat, Req 5.2): when present
+    // EVERY event emitted below is tagged with it so the `ConversationRegistry` routes them to the
+    // shadow conversation; when absent the path is byte-for-byte the surface behaviour. The seq is
+    // `envelope.seq` (already ≥1e9 for a shadow message), and the reaction/edit/delete
+    // `targetOutbound`→local-direction flip is unchanged.
+    const { payload, threadId } = decodeContentPayload(plaintext);
+    const threadTag = threadId !== undefined ? { threadId } : {};
     const remoteUid = envelope.senderUid;
     switch (payload.type) {
       case 'text': {
@@ -545,7 +689,11 @@ export class DefaultMessaging implements Messaging {
           ...(viewOnce ? { viewOnce: true } : {}),
         };
         // The recipient's disappearing-message clock starts when the message arrives (Req 4.2).
-        this.stampExpiry(row);
+        // As on the send path, the messaging purge engine is surface-scoped (keyed by `remoteUid`),
+        // so a shadow row is not stamped here; thread-scoped purge is a per-thread concern.
+        if (threadId === undefined) {
+          this.stampExpiry(row);
+        }
         await this.store.appendMessage(row);
         this.emitUpdate({
           type: 'message-appended',
@@ -558,13 +706,15 @@ export class DefaultMessaging implements Messaging {
             ...(viewOnce ? { viewOnce: true } : {}),
           },
           remoteUid,
+          ...threadTag,
         });
         return;
       }
       // Reaction/edit/delete reference a message in the SENDER's frame; flip `targetOutbound`
       // to THIS device's local direction (a message the peer sent is inbound here). An unknown
       // target is ignored by the reducer and the store (Req 3.5). The store write keeps the
-      // mutation durable so it survives a relaunch alongside the base message rows.
+      // mutation durable so it survives a relaunch alongside the base message rows. For a shadow
+      // message `targetSeq` is ≥1e9, so the store keys stay disjoint from surface mutations.
       case 'reaction': {
         const targetDirection = payload.targetOutbound ? 'in' : 'out';
         await this.store.applyReaction(remoteUid, targetDirection, payload.targetSeq, payload.emoji);
@@ -574,6 +724,7 @@ export class DefaultMessaging implements Messaging {
           targetSeq: payload.targetSeq,
           emoji: payload.emoji,
           remoteUid,
+          ...threadTag,
         });
         return;
       }
@@ -586,6 +737,7 @@ export class DefaultMessaging implements Messaging {
           targetSeq: payload.targetSeq,
           body: payload.body,
           remoteUid,
+          ...threadTag,
         });
         return;
       }
@@ -597,15 +749,22 @@ export class DefaultMessaging implements Messaging {
           targetDirection,
           targetSeq: payload.targetSeq,
           remoteUid,
+          ...threadTag,
         });
         return;
       }
       case 'timer':
-        // Per-conversation disappearing timer: converge both peers on the same TTL (Req 4.1) and
-        // keep the in-memory copy so subsequently-received messages are stamped for purge (4.2).
-        this.conversationTtls.set(remoteUid, Math.max(0, payload.ttlMs));
-        await this.store.setConversationTimer(remoteUid, Math.max(0, payload.ttlMs));
-        this.emitUpdate({ type: 'timer-changed', ttlMs: payload.ttlMs, remoteUid });
+        // Per-conversation disappearing timer. For a SURFACE timer (no threadId) keep the existing
+        // behaviour: converge both peers on the same TTL (Req 4.1) and keep the in-memory copy so
+        // subsequently-received messages are stamped for purge (4.2). For a SHADOW timer we only
+        // emit the (threadId-tagged) event so the thread's `ConversationState` converges, WITHOUT
+        // writing the surface-scoped `conversationTtls`/store (keyed by `remoteUid`), which would
+        // cross-contaminate the surface conversation's stamping (Shadow Chat, Req 7.3).
+        if (threadId === undefined) {
+          this.conversationTtls.set(remoteUid, Math.max(0, payload.ttlMs));
+          await this.store.setConversationTimer(remoteUid, Math.max(0, payload.ttlMs));
+        }
+        this.emitUpdate({ type: 'timer-changed', ttlMs: payload.ttlMs, remoteUid, ...threadTag });
         return;
       case 'attachment':
         // E2E attachment (Req 7). The crypto core (per-attachment AES-GCM) and the payload codec
@@ -653,8 +812,15 @@ export class DefaultMessaging implements Messaging {
   }
 
   /** @inheritdoc */
-  async react(recipientUid: string, target: MessageTarget, emoji: string): Promise<void> {
-    // Persist first so the reaction survives a relaunch even if the network send fails.
+  async react(
+    recipientUid: string,
+    target: MessageTarget,
+    emoji: string,
+    options?: ControlOptions,
+  ): Promise<void> {
+    const threadId = routableThreadId(options?.threadId);
+    // Persist first so the reaction survives a relaunch even if the network send fails. For a shadow
+    // reaction `target.seq` is ≥1e9, so the store keys stay disjoint from any surface mutation.
     await this.store.applyReaction(recipientUid, target.direction, target.seq, emoji);
     await this.sendControl(
       recipientUid,
@@ -665,12 +831,20 @@ export class DefaultMessaging implements Messaging {
         targetSeq: target.seq,
         emoji,
         remoteUid: recipientUid,
+        ...(threadId !== undefined ? { threadId } : {}),
       },
+      threadId,
     );
   }
 
   /** @inheritdoc */
-  async editMessage(recipientUid: string, target: MessageTarget, body: string): Promise<void> {
+  async editMessage(
+    recipientUid: string,
+    target: MessageTarget,
+    body: string,
+    options?: ControlOptions,
+  ): Promise<void> {
+    const threadId = routableThreadId(options?.threadId);
     await this.store.applyEdit(recipientUid, target.direction, target.seq, body);
     await this.sendControl(
       recipientUid,
@@ -681,12 +855,19 @@ export class DefaultMessaging implements Messaging {
         targetSeq: target.seq,
         body,
         remoteUid: recipientUid,
+        ...(threadId !== undefined ? { threadId } : {}),
       },
+      threadId,
     );
   }
 
   /** @inheritdoc */
-  async deleteMessage(recipientUid: string, target: MessageTarget): Promise<void> {
+  async deleteMessage(
+    recipientUid: string,
+    target: MessageTarget,
+    options?: ControlOptions,
+  ): Promise<void> {
+    const threadId = routableThreadId(options?.threadId);
     await this.store.applyDelete(recipientUid, target.direction, target.seq);
     await this.sendControl(
       recipientUid,
@@ -696,18 +877,37 @@ export class DefaultMessaging implements Messaging {
         targetDirection: target.direction,
         targetSeq: target.seq,
         remoteUid: recipientUid,
+        ...(threadId !== undefined ? { threadId } : {}),
       },
+      threadId,
     );
   }
 
   /** @inheritdoc */
-  async setDisappearingTimer(recipientUid: string, ttlMs: number): Promise<void> {
-    this.conversationTtls.set(recipientUid, Math.max(0, ttlMs));
-    await this.store.setConversationTimer(recipientUid, Math.max(0, ttlMs));
+  async setDisappearingTimer(
+    recipientUid: string,
+    ttlMs: number,
+    options?: ControlOptions,
+  ): Promise<void> {
+    const threadId = routableThreadId(options?.threadId);
+    // A SURFACE timer keeps the existing behaviour (in-memory TTL + persisted, so new surface rows
+    // are stamped). A SHADOW timer is only sent + emitted (threadId-tagged) so the thread's state
+    // converges, WITHOUT writing the surface-scoped `conversationTtls`/store keyed by `remoteUid`,
+    // which would cross-contaminate the surface conversation's stamping (Shadow Chat, Req 7.3).
+    if (threadId === undefined) {
+      this.conversationTtls.set(recipientUid, Math.max(0, ttlMs));
+      await this.store.setConversationTimer(recipientUid, Math.max(0, ttlMs));
+    }
     await this.sendControl(
       recipientUid,
       { type: 'timer', ttlMs },
-      { type: 'timer-changed', ttlMs, remoteUid: recipientUid },
+      {
+        type: 'timer-changed',
+        ttlMs,
+        remoteUid: recipientUid,
+        ...(threadId !== undefined ? { threadId } : {}),
+      },
+      threadId,
     );
   }
 
@@ -990,6 +1190,9 @@ export class DefaultMessaging implements Messaging {
       status: 'sent',
       remoteUid: recipientUid,
       ...(info !== undefined ? { error: info } : {}),
+      // Route the status transition to the same conversation (shadow or surface) the send belonged
+      // to, so a shadow ack never surfaces on the surface chat (Shadow Chat, Req 5.2).
+      ...(entry.threadId !== undefined ? { threadId: entry.threadId } : {}),
     });
   }
 
@@ -1004,7 +1207,7 @@ export class DefaultMessaging implements Messaging {
       return;
     }
     this.pending.delete(key);
-    void this.markFailed(entry.id, entry.recipientUid, 'no server ack (timeout)');
+    void this.markFailed(entry.id, entry.recipientUid, 'no server ack (timeout)', entry.threadId);
   }
 
   // -------------------------------------------------------------------------
@@ -1021,6 +1224,7 @@ export class DefaultMessaging implements Messaging {
     recipientUid: string,
     payload: ContentPayload,
     optimistic?: ConversationEvent,
+    threadId?: string,
   ): Promise<void> {
     // Optimistically apply locally so the sender sees their own reaction/edit/delete at once.
     // Verification/duress control frames carry no visible row, so they pass no optimistic event.
@@ -1031,7 +1235,15 @@ export class DefaultMessaging implements Messaging {
     if (sender === null) {
       return;
     }
-    const seq = await this.sequence.next(recipientUid);
+    // Choose the per-thread shadow allocator for a shadow control message (seq ≥1e9), else the
+    // surface allocator. A shadow control message with no configured factory is a misconfiguration:
+    // drop the network send silently (the optimistic local change stands), consistent with how a
+    // control-message transmit failure is otherwise handled — never falling back to a surface seq.
+    const allocator = this.allocatorFor(threadId);
+    if (allocator === null) {
+      return;
+    }
+    const seq = await allocator.next(recipientUid);
     let body;
     try {
       if (!(await this.sessions.hasSession(recipientUid))) {
@@ -1041,7 +1253,8 @@ export class DefaultMessaging implements Messaging {
         }
         await this.sessions.establishSession(recipientUid, bundle);
       }
-      body = await this.sessions.encrypt(recipientUid, encodeContentPayload(payload));
+      // The `threadId` (when present) rides INSIDE the encrypted body, exactly as for a text send.
+      body = await this.sessions.encrypt(recipientUid, encodeContentPayload(payload, threadId));
     } catch {
       return;
     }
@@ -1050,6 +1263,7 @@ export class DefaultMessaging implements Messaging {
       { senderUid: sender.uid, recipientUid, senderDeviceId: sender.deviceId, seq },
       body,
     );
+    assertWireSafe(envelope);
     const entry: PendingSend = {
       id,
       recipientUid,
@@ -1057,6 +1271,7 @@ export class DefaultMessaging implements Messaging {
       frame: { kind: 'send', envelope },
       state: 'queued',
       ackTimer: null,
+      ...(threadId !== undefined ? { threadId } : {}),
     };
     this.pending.set(pendingKey(recipientUid, seq), entry);
     if (this.realtime.getStatus() === 'connected') {
@@ -1065,7 +1280,12 @@ export class DefaultMessaging implements Messaging {
   }
 
   /** Mark an outbound message `failed` (text retained) in the store and to listeners (5.9, 5.11, 6.8). */
-  private async markFailed(id: string, remoteUid: string, reason?: string): Promise<void> {
+  private async markFailed(
+    id: string,
+    remoteUid: string,
+    reason?: string,
+    threadId?: string,
+  ): Promise<void> {
     await this.store.updateMessageStatus(id, 'failed');
     this.emitUpdate({
       type: 'status-updated',
@@ -1073,6 +1293,65 @@ export class DefaultMessaging implements Messaging {
       status: 'failed',
       remoteUid,
       ...(reason !== undefined ? { error: reason } : {}),
+      // Keep the failure on the same conversation the send belonged to (Shadow Chat, Req 5.2).
+      ...(threadId !== undefined ? { threadId } : {}),
+    });
+  }
+
+  /**
+   * Select the {@link SequenceAllocator} for a send/control message: the surface allocator when
+   * `threadId` is absent, or a fresh per-thread shadow allocator from {@link shadowSequence} when a
+   * `threadId` is present. Returns `null` for the misconfiguration where a shadow message is
+   * requested but no shadow factory was injected — the caller then fails/drops locally rather than
+   * leaking the message onto the surface conversation (Shadow Chat, Req 3.6).
+   */
+  private allocatorFor(threadId: string | undefined): SequenceAllocator | null {
+    if (threadId === undefined) {
+      return this.sequence;
+    }
+    if (this.shadowSequence === undefined) {
+      return null;
+    }
+    return this.shadowSequence(threadId);
+  }
+
+  /**
+   * Handle a shadow send requested with no {@link shadowSequence} factory configured: append a
+   * `failed` row (text retained, Req 5.9) tagged to the shadow thread and emit it, WITHOUT consuming
+   * a surface sequence number or transmitting anything. The sentinel seq lives in the shadow space
+   * so its key never collides with a surface message.
+   */
+  private async failShadowMisconfig(
+    id: string,
+    recipientUid: string,
+    plaintext: string,
+    threadId: string,
+    viewOnce: boolean,
+  ): Promise<void> {
+    const seq = (this.shadowMisconfigSeq += 1);
+    const row: MessageRow = {
+      id,
+      remoteUid: recipientUid,
+      direction: 'out',
+      seq,
+      plaintext,
+      status: 'failed',
+      createdAt: this.now(),
+      ...(viewOnce ? { viewOnce: true } : {}),
+    };
+    await this.store.appendMessage(row);
+    this.emitUpdate({
+      type: 'message-appended',
+      message: {
+        id,
+        seq,
+        direction: 'out',
+        text: plaintext,
+        status: 'failed',
+        ...(viewOnce ? { viewOnce: true } : {}),
+      },
+      remoteUid: recipientUid,
+      threadId,
     });
   }
 
