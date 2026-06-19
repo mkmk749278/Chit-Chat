@@ -262,6 +262,42 @@ export * from './shadow-chat';
 
 
 /**
+ * `ShadowSequenceAllocator` — shadow-thread sequence allocation (Shadow Chat, design Component 3).
+ * Issues `SHADOW_SEQ_OFFSET + n` (`1e9 + n`) from a dedicated per-thread `KeyStore` counter
+ * (`shadow:${threadId}`), so shadow seqs stay contiguous within a thread for gap detection yet
+ * disjoint from surface seqs (`< 1e9`) in the shared ack/reducer key spaces. Implements the
+ * existing `SequenceAllocator` contract and reuses the `KeyStore` port unchanged.
+ */
+export * from './shadow-sequence-allocator';
+
+
+/**
+ * `ShadowSecretStore` — device-local custodian of the shadow secrets for Shadow Chat (design
+ * Component 6). Releases the master secret, the alias-HMAC key, and the alias→thread mappings ONLY
+ * in real-PIN `AppMode`; returns `null` / `[]` in decoy/null mode and on any persistence error, so
+ * the decoy state cannot prove the feature exists (Correctness Property 10). Persists strictly
+ * through the narrow injected `ShadowSecretPersistence` port (bound by the platform adapter to the
+ * encrypted `KeyStore`); secrets never reach the server. Reuses `app-lock.ts` and `shadow-chat.ts`
+ * unchanged (Requirements 1.7, 1.8, 8.2, 8.3, 8.5, 8.7, 9.1, 9.2, 9.4, 9.5, 9.6, 9.7).
+ */
+export * from './shadow-secret-store';
+
+
+/**
+ * `ConversationRegistry` — per-thread conversation state for Shadow Chat (design Component 5).
+ * Holds one `ConversationState` per conversation, keyed `surface:${remoteUid}` / `shadow:${threadId}`,
+ * and routes each `ConversationEvent` to the right thread through the EXISTING unchanged pure
+ * `reduce`, so surface and shadow histories, gap detection, reactions, edits, deletes, and timers
+ * stay fully isolated (Correctness Property 8). Shadow threads are created explicitly
+ * (`openShadowThread`) or by the first locally-initiated outbound send and are excluded from
+ * `listSurfaceConversations` / `isNotifiable`, so they never surface in the chat list, notifications,
+ * or previews; an inbound event for an unopened shadow thread is rejected with an
+ * `UnknownShadowThreadError` (Requirements 7.1–7.8).
+ */
+export * from './conversation-registry';
+
+
+/**
  * Versioned E2E content payload (Phase 2, Requirement 3). `encodeContentPayload` /
  * `decodeContentPayload` wrap the libsignal plaintext so reactions, edits, deletes (and later
  * timers/attachments) ride inside the existing ciphertext — the server still sees only an

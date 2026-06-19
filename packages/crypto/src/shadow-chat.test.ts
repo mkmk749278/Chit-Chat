@@ -36,6 +36,18 @@ test('an empty master secret is rejected', async () => {
   await assert.rejects(() => deriveShadowThreadId(new Uint8Array(0), 'a', 'b'), /non-empty/);
 });
 
+test('an empty or missing uid is rejected (refined §9.4 / Req 2.5)', async () => {
+  // An empty uid never addressed a usable two-party thread, so derivation fails closed on it,
+  // in either argument position.
+  await assert.rejects(() => deriveShadowThreadId(master, '', 'bob'), /non-empty/);
+  await assert.rejects(() => deriveShadowThreadId(master, 'alice', ''), /non-empty/);
+  await assert.rejects(() => deriveShadowThreadId(master, '', ''), /non-empty/);
+});
+
+test('two identical uids are rejected — a shadow chat is with a different contact (Req 2.5)', async () => {
+  await assert.rejects(() => deriveShadowThreadId(master, 'alice', 'alice'), /distinct/);
+});
+
 test('isAliasInput detects the `/` prefix (interception trigger, §9.3)', () => {
   assert.equal(isAliasInput('/private'), true);
   assert.equal(isAliasInput('  /work'), true);
