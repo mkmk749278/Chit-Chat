@@ -32,7 +32,7 @@ Legend: ✅ done · 🟡 partial · ⬜ not started
 | 4 | Decoy PIN / duress app state | §6 | ✅ PIN lock gate + decoy/real resolution + lockout (`docs/signature-features-1-4-hidden-chats-decoy-pin.md`); 🟡 separate decoy key bundle + curated decoy data follow-up |
 | 5 | Self-destructing messages (timer-based) | §7 | ✅ client TTL + store purge (Req 4); ⬜ server-side BullMQ TTL index follow-up |
 | 6 | View-once media | §8 | 🟡 view-once text shipped; media variant rides on Req 7.3 |
-| 7 | Dual-layer shadow chat with `/alias` command | §9 | ⬜ planned (PR: shadow chat) |
+| 7 | Dual-layer shadow chat with `/alias` command | §9 | 🟡 crypto core (thread-id derivation + `/alias` HMAC matching) + design shipped (`docs/signature-feature-7-shadow-chat.md`); ⬜ dual-thread messaging (needs envelope thread-id routing + security review) |
 
 ## Additional security infrastructure (§10)
 
@@ -62,7 +62,8 @@ Legend: ✅ done · 🟡 partial · ⬜ not started
 
 ## Delivery order (current plan)
 
-1. ✅ **Signature Feature 2 — identity verification** (this PR).
-2. **Hidden chats + decoy PIN** (Features 1 & 4) — app-lock / state-partition layer.
-3. **Shadow chat `/alias`** (Feature 7) — dual-layer per-contact secret threads.
-4. Media UI (Req 7.3), web feature parity (after Android), then Wave-3 XL features.
+1. ✅ **Signature Feature 2 — identity verification.**
+2. ✅ **Hidden chats + decoy PIN** (Features 1 & 4) — app-lock / state-partition layer.
+3. 🟡 **Shadow chat `/alias`** (Feature 7) — crypto core + design shipped; dual-thread messaging next.
+4. Dual-thread shadow messaging (envelope thread-id routing), media UI (Req 7.3), web feature parity
+   (after Android), then Wave-3 XL features (multi-device, group chat).
