@@ -26,10 +26,10 @@ Legend: ✅ done · 🟡 partial · ⬜ not started
 
 | # | Feature | Requirement | Status |
 |---|---------|-------------|--------|
-| 1 | Per-chat hidden chats (per-chat secrets, search-bar entry) | §3 | ⬜ planned (PR: hidden chats + decoy PIN) |
+| 1 | Per-chat hidden chats (per-chat secrets, search-bar entry) | §3 | ✅ crypto core + encrypted vault + reveal/hide + auto-rehide (`docs/signature-features-1-4-hidden-chats-decoy-pin.md`); 🟡 OS leak-surface hardening follow-ups |
 | 2 | In-chat identity verification (rotating TOTP + duress) | §4 | ✅ crypto core + E2E + mobile UI (`docs/signature-feature-2-identity-verification.md`); 🟡 persistent seed + duress-UX hardening follow-ups |
 | 3 | Ephemeral secret conversation segments | §5 | 🟡 disappearing/view-once shipped; in-memory `/Start secret conversation` segment model planned |
-| 4 | Decoy PIN / duress app state | §6 | ⬜ planned (PR: hidden chats + decoy PIN) |
+| 4 | Decoy PIN / duress app state | §6 | ✅ PIN lock gate + decoy/real resolution + lockout (`docs/signature-features-1-4-hidden-chats-decoy-pin.md`); 🟡 separate decoy key bundle + curated decoy data follow-up |
 | 5 | Self-destructing messages (timer-based) | §7 | ✅ client TTL + store purge (Req 4); ⬜ server-side BullMQ TTL index follow-up |
 | 6 | View-once media | §8 | 🟡 view-once text shipped; media variant rides on Req 7.3 |
 | 7 | Dual-layer shadow chat with `/alias` command | §9 | ⬜ planned (PR: shadow chat) |

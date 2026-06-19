@@ -241,6 +241,17 @@ export * from './identity-verification';
 
 
 /**
+ * Hidden chats + decoy PIN crypto foundation (Signature Features 1 & 4, §3/§6).
+ *   - `secret-hash` — salted PBKDF2 verifiers for hidden-chat secrets and app PINs (never plaintext).
+ *   - `lockout-policy` — pure 5-fail/10-min → 30-min lockout math for unlock rate-limiting.
+ *   - `app-lock` — resolve an entered PIN to the real or decoy (duress) app state.
+ */
+export * from './secret-hash';
+export * from './lockout-policy';
+export * from './app-lock';
+
+
+/**
  * Versioned E2E content payload (Phase 2, Requirement 3). `encodeContentPayload` /
  * `decodeContentPayload` wrap the libsignal plaintext so reactions, edits, deletes (and later
  * timers/attachments) ride inside the existing ciphertext — the server still sees only an

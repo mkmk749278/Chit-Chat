@@ -117,6 +117,19 @@ interface VaultDoc {
   keyStoreSessions: Record<string, string>;
   /** `null` until seeded from the identity on first use, then accumulates across launches. */
   signal: SignalSection | null;
+  /**
+   * Salted app-PIN verifiers for the decoy-PIN / duress app state (Signature Feature 4, §6). Stored
+   * as PBKDF2 hashes, never plaintext (§6.2 / D8). Absent until the user sets a PIN.
+   */
+  appPins?: { real?: string; decoy?: string };
+  /**
+   * Hidden-chat unlock-secret verifiers, keyed by peer uid (Signature Feature 1, §3). Salted PBKDF2
+   * hashes; presence of a key marks the chat hidden. Living in the encrypted vault keeps even the
+   * existence of a hidden chat off plaintext storage.
+   */
+  hiddenChats?: Record<string, string>;
+  /** Recent failed-unlock timestamps (unix ms) for the rate-limit / lockout policy (§3.1, §6.2). */
+  unlockFailures?: number[];
 }
 
 const emptyDoc = (): VaultDoc => ({
@@ -128,6 +141,9 @@ const emptyDoc = (): VaultDoc => ({
   timers: {},
   keyStoreSessions: {},
   signal: null,
+  appPins: {},
+  hiddenChats: {},
+  unlockFailures: [],
 });
 
 /** Find a stored message row by its conversation + LOCAL `(direction, seq)`, or `undefined`. */

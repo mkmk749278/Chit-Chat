@@ -70,6 +70,12 @@ export interface ConversationScreenProps {
   onRequestVerification?: () => void;
   /** Answer the peer's verification with the normal or duress code (§4.2, §4.3). */
   onRespondVerification?: (kind: 'normal' | 'duress') => void;
+  /** Whether this chat is currently hidden (Signature Feature 1, §3). */
+  isHidden?: boolean;
+  /** Mark this chat hidden behind `secret` (§3.1). */
+  onHideChat?: (secret: string) => void;
+  /** Remove this chat's hidden status (§3.3). */
+  onUnhideChat?: () => void;
 }
 
 const STATUS_LABEL: Record<RenderableMessage['status'], string> = {
@@ -158,6 +164,9 @@ export function ConversationScreen({
   verification = 'none',
   onRequestVerification,
   onRespondVerification,
+  isHidden = false,
+  onHideChat,
+  onUnhideChat,
 }: ConversationScreenProps): React.JSX.Element {
   const t = useTheme();
   const connected = state.connection === 'connected';
@@ -188,6 +197,8 @@ export function ConversationScreen({
     { open: false, value: null, loading: false },
   );
   const [verifyOpen, setVerifyOpen] = useState(false);
+  const [hideOpen, setHideOpen] = useState(false);
+  const [hideSecret, setHideSecret] = useState('');
 
   const targetOf = (m: RenderableMessage): MessageTarget => ({ direction: m.direction, seq: m.seq });
 
@@ -273,6 +284,15 @@ export function ConversationScreen({
           >
             {verification === 'verified' ? '✓👤' : '👤'}
           </Text>
+        </Pressable>
+        <Pressable
+          onPress={() => setHideOpen(true)}
+          accessibilityRole="button"
+          accessibilityLabel="Hide chat"
+          hitSlop={10}
+          style={styles.headerAction}
+        >
+          <Text style={[styles.headerActionIcon, { color: isHidden ? t.secure : t.faint }]}>🫥</Text>
         </Pressable>
       </View>
 
@@ -505,6 +525,56 @@ export function ConversationScreen({
           </>
         )}
         <SheetItem label="Close" theme={t} onPress={() => setVerifyOpen(false)} />
+      </SheetModal>
+
+      {/* Hidden chat (Signature Feature 1, §3): set/clear a per-chat unlock secret. */}
+      <SheetModal visible={hideOpen} onClose={() => { setHideOpen(false); setHideSecret(''); }} theme={t}>
+        <Text style={[styles.sheetTitle, { color: t.text }]}>Hidden chat</Text>
+        {isHidden ? (
+          <>
+            <Text style={[styles.sheetHint, { color: t.faint }]}>
+              This chat is hidden. It won’t appear in your list — reveal it by typing its secret in
+              the search bar. You can unhide it here.
+            </Text>
+            <SheetItem
+              label="Unhide this chat"
+              theme={t}
+              onPress={() => {
+                onUnhideChat?.();
+                setHideOpen(false);
+              }}
+            />
+          </>
+        ) : (
+          <>
+            <Text style={[styles.sheetHint, { color: t.faint }]}>
+              Hide this chat behind a secret. It disappears from your list; type the secret in the
+              search bar to reveal it. There is no recovery if you forget it.
+            </Text>
+            <TextInput
+              style={[styles.editInput, { color: t.text, borderColor: t.divider }]}
+              value={hideSecret}
+              onChangeText={setHideSecret}
+              placeholder="Secret"
+              placeholderTextColor={t.faint}
+              secureTextEntry
+              autoFocus
+            />
+            <SheetItem
+              label="Hide this chat"
+              theme={t}
+              onPress={() => {
+                const secret = hideSecret.trim();
+                if (secret.length > 0) {
+                  onHideChat?.(secret);
+                }
+                setHideSecret('');
+                setHideOpen(false);
+              }}
+            />
+          </>
+        )}
+        <SheetItem label="Cancel" theme={t} onPress={() => { setHideOpen(false); setHideSecret(''); }} />
       </SheetModal>
 
       {/* View-once reveal (Req 4.3): the message is already purged; this shows its captured text once. */}

@@ -16,7 +16,7 @@
 
 import { StatusBar } from 'expo-status-bar';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, Pressable, SafeAreaView, StyleSheet, Text, useColorScheme, View } from 'react-native';
+import { Alert, AppState, Pressable, SafeAreaView, StyleSheet, Text, useColorScheme, View } from 'react-native';
 
 import {
   initialConversationState,
@@ -32,6 +32,7 @@ import {
 } from './src/app/chat-controller';
 import { CallsScreen } from './src/ui/CallsScreen';
 import { ChatsListScreen, type ChatSummary } from './src/ui/ChatsListScreen';
+import { AppLockScreen } from './src/ui/AppLockScreen';
 import { ConversationScreen } from './src/ui/ConversationScreen';
 import { animateNext } from './src/ui/motion';
 import { NewChatScreen, type ContactRow } from './src/ui/NewChatScreen';
@@ -85,7 +86,15 @@ export default function App(): React.JSX.Element {
   // Onboarding result (UX directive: phone → display name → optional PIN). v1 holds these
   // in-session; durable profile/PIN storage lands with the backend wiring pass.
   const [displayName, setDisplayName] = useState<string | null>(null);
-  const [, setAppPin] = useState<string | null>(null);
+  // App-lock / decoy-PIN state (Signature Feature 4, §6). `appMode` is `null` while the app is
+  // locked (a real PIN is set but not yet entered); `real` opens the full app, `decoy` opens the
+  // sanitised state (hidden chats stay hidden, hiding is disabled). Resolved via the secure-gate.
+  const [appMode, setAppMode] = useState<'real' | 'decoy' | null>(null);
+  const [lockKnown, setLockKnown] = useState(false); // whether we've checked if a PIN is set
+  const [lockError, setLockError] = useState<string | null>(null);
+  const [lockLocked, setLockLocked] = useState(false);
+  // Peer uids of hidden chats (Signature Feature 1, §3); excluded from the list + search.
+  const [hiddenPeers, setHiddenPeers] = useState<string[]>([]);
   const [tab, setTab] = useState<Tab>('chats');
   const [newChatOpen, setNewChatOpen] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -215,6 +224,96 @@ export default function App(): React.JSX.Element {
   const onRespondVerification = useCallback(
     (kind: 'normal' | 'duress') => void controller.respondVerification(kind),
     [controller],
+  );
+
+  // App-lock check (Signature Feature 4, §6): once signed in + onboarded, find out whether a real
+  // PIN is configured. If so, stay locked (appMode === null) until it is entered; otherwise the app
+  // is unlocked in real mode. Runs when the encrypted vault may have become available (setup ready).
+  useEffect(() => {
+    if (uid === null || displayName === null || lockKnown) {
+      return;
+    }
+    let cancelled = false;
+    void controller.hasAppPin().then((hasPin) => {
+      if (cancelled) {
+        return;
+      }
+      setLockKnown(true);
+      setAppMode(hasPin ? null : 'real');
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [controller, uid, displayName, lockKnown, setup]);
+
+  // Load the hidden-chat peer set once unlocked, so the list + search exclude them (§3.1).
+  useEffect(() => {
+    if (appMode === null) {
+      setHiddenPeers([]);
+      return;
+    }
+    let cancelled = false;
+    void controller.listHiddenPeers().then((peers) => {
+      if (!cancelled) {
+        setHiddenPeers(peers);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [controller, appMode]);
+
+  // Auto-relock + re-hide on backgrounding (§3.1 auto-rehide; §6 lock): drop to the lock screen and
+  // close any open (possibly revealed) hidden chat when the app leaves the foreground.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next !== 'active' && lockKnown) {
+        void controller.hasAppPin().then((hasPin) => {
+          if (hasPin) {
+            setAppMode(null);
+            setOpenChatId(null);
+          }
+        });
+      }
+    });
+    return () => sub.remove();
+  }, [controller, lockKnown]);
+
+  const onUnlock = useCallback(
+    (pin: string) => {
+      setLockError(null);
+      void controller.unlockApp(pin).then((result) => {
+        if ('mode' in result) {
+          setAppMode(result.mode);
+          setLockLocked(false);
+          setLockError(null);
+        } else if ('locked' in result) {
+          setLockLocked(true);
+          const mins = Math.ceil(result.msUntilUnlock / 60000);
+          setLockError(`Too many attempts. Try again in ${mins} min.`);
+        } else {
+          setLockError('Incorrect PIN.');
+        }
+      });
+    },
+    [controller],
+  );
+
+  // Reveal a hidden chat by typing its secret in the chat-list search bar (§3.3). A match opens that
+  // one chat; a non-match is indistinguishable from a failed search (the caller shows no results).
+  const onRevealSearch = useCallback(
+    (text: string) => {
+      if (appMode !== 'real' || text.trim().length === 0) {
+        return;
+      }
+      void controller.revealHiddenChat(text.trim()).then((result) => {
+        if ('peerUid' in result) {
+          animateNext();
+          setOpenChatId(result.peerUid);
+        }
+      });
+    },
+    [controller, appMode],
   );
 
   // Poll the open peer's presence (Req 5.2) while a conversation is open: immediately on open
@@ -439,7 +538,11 @@ export default function App(): React.JSX.Element {
     setUid(null);
     setPhone('');
     setDisplayName(null);
-    setAppPin(null);
+    setAppMode(null);
+    setLockKnown(false);
+    setLockError(null);
+    setLockLocked(false);
+    setHiddenPeers([]);
     setVerificationByPeer({});
   }, [controller]);
 
@@ -447,7 +550,11 @@ export default function App(): React.JSX.Element {
     ? conversations.find((c) => c.id === openChatId) ?? null
     : null;
 
+  // Hidden chats never appear in the list or contacts (§3.1); the only way in is the search-bar
+  // secret (onRevealSearch), which opens the chat by id even though it is filtered out here.
+  const hidden = new Set(hiddenPeers);
   const summaries: ChatSummary[] = [...conversations]
+    .filter((c) => !hidden.has(c.id))
     .sort((a, b) => b.lastAt - a.lastAt)
     .map((c) => ({
       id: c.id,
@@ -456,7 +563,9 @@ export default function App(): React.JSX.Element {
       time: timeLabel(c.lastAt),
       unread: 0,
     }));
-  const contacts: ContactRow[] = conversations.map((c) => ({ id: c.id, name: c.name }));
+  const contacts: ContactRow[] = conversations
+    .filter((c) => !hidden.has(c.id))
+    .map((c) => ({ id: c.id, name: c.name }));
 
   return (
     <SafeAreaView style={[styles.root, { backgroundColor: dark ? '#15171C' : '#FAFAF9' }]}>
@@ -467,11 +576,20 @@ export default function App(): React.JSX.Element {
           onDone={(name, pin) => {
             animateNext();
             setDisplayName(name);
-            setAppPin(pin);
+            // Durably store the chosen PIN as a salted verifier (§6.2); an unlocked session starts
+            // in real mode. A skipped PIN leaves the app unlocked (no gate).
+            if (pin !== null) {
+              void controller.setAppPin(pin, 'real');
+            }
+            setAppMode('real');
+            setLockKnown(true);
             // Publish the name so peers see it instead of a UID (best-effort).
             void controller.setDisplayName(name);
           }}
         />
+      ) : appMode === null ? (
+        // A real PIN is set but not yet entered: gate behind the lock screen (§6).
+        <AppLockScreen onUnlock={onUnlock} error={lockError} locked={lockLocked} />
       ) : openConversation !== null ? (
         <ConversationScreen
           state={openConversation.state}
@@ -490,6 +608,28 @@ export default function App(): React.JSX.Element {
           verification={verificationByPeer[openConversation.id] ?? 'none'}
           onRequestVerification={onRequestVerification}
           onRespondVerification={onRespondVerification}
+          isHidden={hidden.has(openConversation.id)}
+          onHideChat={
+            appMode === 'real'
+              ? (secret) => {
+                  const id = openConversation.id;
+                  void controller.hideChat(id, secret).then(() => {
+                    setHiddenPeers((prev) => (prev.includes(id) ? prev : [...prev, id]));
+                    setOpenChatId(null);
+                  });
+                }
+              : undefined
+          }
+          onUnhideChat={
+            appMode === 'real'
+              ? () => {
+                  const id = openConversation.id;
+                  void controller.unhideChat(id).then(() => {
+                    setHiddenPeers((prev) => prev.filter((p) => p !== id));
+                  });
+                }
+              : undefined
+          }
           onBack={() => {
             animateNext();
             setOpenChatId(null);
@@ -529,6 +669,7 @@ export default function App(): React.JSX.Element {
             <ChatsListScreen
               chats={summaries}
               onOpenChat={openChat}
+              onSearchSubmit={onRevealSearch}
               onNewChat={() => {
                 animateNext();
                 setNewChatOpen(true);
