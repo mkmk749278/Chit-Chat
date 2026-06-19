@@ -262,6 +262,19 @@ export * from './shadow-chat';
 
 
 /**
+ * Shadow Chat search-bar alias resolution — the ONE shared pure decision path both the web and the
+ * mobile search-bar adapters call (cross-cutting requirement C2). `resolveSearchInput` maps a typed
+ * search input + `AppMode` to a discriminated `{ kind: 'shadow' | 'search' }` outcome via the
+ * existing `isAliasInput` / `matchAlias` primitives and the real-PIN-gated `ShadowSecretStore` read
+ * surface; every non-match path returns the identical `search` shape so a wrong/non-existent alias
+ * and a decoy-mode alias are indistinguishable from an ordinary search (Requirements 1.3–1.6, 8.4,
+ * 8.6). `createShadowSearchHandler` wraps it with the single shared side-effect — opening the thread
+ * in the injected `ConversationRegistry` — leaving platform navigation to a callback.
+ */
+export * from './shadow-search';
+
+
+/**
  * `ShadowSequenceAllocator` — shadow-thread sequence allocation (Shadow Chat, design Component 3).
  * Issues `SHADOW_SEQ_OFFSET + n` (`1e9 + n`) from a dedicated per-thread `KeyStore` counter
  * (`shadow:${threadId}`), so shadow seqs stay contiguous within a thread for gap detection yet

@@ -15,7 +15,9 @@
   "include": [
     "src/crypto/crypto-box.ts",
     "src/crypto/persistent-store.ts",
-    "src/crypto/persistent-store.test.ts"
+    "src/crypto/persistent-store.test.ts",
+    "src/app/shadow-search.ts",
+    "src/app/shadow-search.test.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }
