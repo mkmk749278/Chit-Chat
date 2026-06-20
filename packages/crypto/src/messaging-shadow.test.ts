@@ -272,10 +272,11 @@ test('a surface send (no threadId) keeps seq <1e9 and emits no threadId-tagged e
   const frame = h.realtime.sent[0]!;
   assert.equal(frame.envelope.seq, 1);
   assert.ok(frame.envelope.seq < SHADOW_SEQ_OFFSET);
-  // optimistic event identical to the pre-shadow shape — no threadId key present.
+  // optimistic event identical to the pre-shadow shape (plus the P2 `createdAt` ordering key) —
+  // no threadId key present.
   assert.deepEqual(h.events[0], {
     type: 'message-appended',
-    message: { id: 'id-1', seq: 1, direction: 'out', text: 'hello', status: 'sending' },
+    message: { id: 'id-1', seq: 1, direction: 'out', text: 'hello', status: 'sending', createdAt: 1000 },
     remoteUid: 'bob',
   });
   assert.ok(h.events.every((e) => threadIdOf(e) === undefined));
@@ -296,9 +297,10 @@ test('a surface inbound message emits no threadId-tagged events (5.2)', async ()
 
   assert.deepEqual(h.events.at(-1), {
     type: 'message-appended',
-    message: { id: 'id-1', seq: 7, direction: 'in', text: 'hi back', status: 'received' },
+    message: { id: 'id-1', seq: 7, direction: 'in', text: 'hi back', status: 'received', createdAt: 1000 },
     remoteUid: 'bob',
   });
+  assert.ok(h.events.every((e) => threadIdOf(e) === undefined));
 });
 
 // --- shadow send -------------------------------------------------------------
