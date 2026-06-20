@@ -23,6 +23,8 @@
     "src/ui/overflow-menu-zorder.test.ts",
     "src/ui/shadow-creation-ui.test.ts",
     "src/ui/shadow-pin-settings-ui.test.ts",
+    "src/ui/shadow-invite-actions.ts",
+    "src/ui/shadow-invite-actions.test.ts",
     "src/app/shadow-search.ts",
     "src/app/shadow-search.test.ts",
     "src/app/shadow-invite-wiring.ts",
