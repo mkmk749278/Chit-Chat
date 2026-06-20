@@ -26,7 +26,8 @@
     "src/app/shadow-search.ts",
     "src/app/shadow-search.test.ts",
     "src/data/shadow-secret-persistence.ts",
-    "src/data/shadow-secret-persistence.test.ts"
+    "src/data/shadow-secret-persistence.test.ts",
+    "src/data/shadow-create-e2e.test.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }
