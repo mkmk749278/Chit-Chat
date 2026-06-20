@@ -19,7 +19,7 @@
 import React from 'react';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { CONVERSATION_ACTIONS, type ConversationActionKey } from './conversation-actions';
+import { CLEAR_CHAT_ACTION, CONVERSATION_ACTIONS, type ConversationActionKey } from './conversation-actions';
 import { Icon, type IconName } from './icons';
 import type { Theme } from './theme';
 
@@ -61,6 +61,13 @@ export interface ConversationOverflowMenuProps {
    * non-real mode, so the per-chat-PIN control is inert under coercion (Req 12.8).
    */
   onShadowPinSettings?: (() => void) | null;
+  /**
+   * Local "Clear chat" history purge entry point (privacy-first, local-only). When provided, a
+   * destructive "Clear chat" row is rendered at the BOTTOM of the menu. The container passes this
+   * ONLY for an open SURFACE chat in App_Mode `real` (matching the existing destructive "hide"
+   * gating); it is absent (no row) for a shadow thread and in any non-real mode.
+   */
+  onClearChat?: (() => void) | null;
 }
 
 /**
@@ -77,6 +84,7 @@ export function ConversationOverflowMenu({
   isHidden = false,
   anchor,
   onShadowPinSettings,
+  onClearChat,
 }: ConversationOverflowMenuProps): React.JSX.Element {
   const pos = anchor ?? DEFAULT_ANCHOR;
   return (
@@ -128,6 +136,20 @@ export function ConversationOverflowMenu({
               </Pressable>
             );
           })}
+          {/* Local "Clear chat" history purge — present ONLY for an open surface chat in real mode
+              (privacy-first, local-only). Destructive, rendered at the bottom below the standard
+              actions; absent for a shadow thread / non-real mode. */}
+          {onClearChat != null && (
+            <Pressable
+              onPress={onClearChat}
+              style={[styles.item, { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: t.divider }]}
+              accessibilityRole="button"
+              accessibilityLabel={CLEAR_CHAT_ACTION.label}
+            >
+              <Icon name="clear" size={18} color={t.danger} />
+              <Text style={[styles.text, { color: t.danger }]}>{CLEAR_CHAT_ACTION.label}</Text>
+            </Pressable>
+          )}
         </Pressable>
       </Pressable>
     </Modal>

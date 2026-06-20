@@ -25,6 +25,7 @@ export type IconName =
   | 'shield' // safety number
   | 'verified' // identity verified / verify identity
   | 'hide' // hide chat (eye-off)
+  | 'clear' // clear chat history (broom / delete-sweep)
   | 'view-once' // view-once composer toggle (eye)
   | 'calls' // tab: calls
   | 'settings' // tab: settings
@@ -49,6 +50,7 @@ const GLYPH: Record<IconName, React.ComponentProps<typeof MaterialIcons>['name']
   shield: 'shield',
   verified: 'verified-user',
   hide: 'visibility-off',
+  clear: 'delete-sweep',
   'view-once': 'visibility',
   calls: 'call',
   settings: 'settings',

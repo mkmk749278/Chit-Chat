@@ -195,3 +195,49 @@ test('messages-expired with unknown ids returns the same state reference', () =>
   const next = reduce(state, { type: 'messages-expired', ids: ['nope'] });
   assert.equal(next, state);
 });
+
+// --- conversation-cleared (Clear chat, local-only) ---------------------------
+
+test('conversation-cleared resets messages and gap markers to empty', () => {
+  let state = initialConversationState('mobile');
+  state = reduce(state, { type: 'message-appended', message: inbound(1, 'a', 'i1') });
+  state = reduce(state, { type: 'message-appended', message: inbound(3, 'c', 'i3') }); // creates a gap
+  state = reduce(state, { type: 'message-appended', message: out(2, 'b', 'o2') });
+  assert.ok(state.messages.length > 0);
+  assert.ok(state.missingBefore.length > 0);
+
+  const cleared = reduce(state, { type: 'conversation-cleared' });
+  assert.deepEqual(cleared.messages, []);
+  assert.deepEqual(cleared.missingBefore, []);
+});
+
+test('conversation-cleared preserves connection, composer, timer, and web ack', () => {
+  let state = initialConversationState('web'); // starts gated (webWarningAcknowledged false)
+  state = reduce(state, { type: 'web-warning-acknowledged' });
+  state = reduce(state, { type: 'connection-changed', connection: 'connected' });
+  state = reduce(state, { type: 'composer-changed', text: 'draft in progress' });
+  state = reduce(state, { type: 'timer-changed', ttlMs: 5000 });
+  state = reduce(state, { type: 'message-appended', message: out(1, 'hi', 'o1') });
+
+  const cleared = reduce(state, { type: 'conversation-cleared' });
+  assert.deepEqual(cleared.messages, []);
+  assert.deepEqual(cleared.missingBefore, []);
+  // Everything that is NOT message history is preserved.
+  assert.equal(cleared.connection, 'connected');
+  assert.deepEqual(cleared.composer, { text: 'draft in progress', canSend: true });
+  assert.equal(cleared.disappearingTtlMs, 5000);
+  assert.equal(cleared.webWarningAcknowledged, true);
+});
+
+test('conversation-cleared ignores its routing tags and does not mutate input', () => {
+  let state = initialConversationState('mobile');
+  state = reduce(state, { type: 'message-appended', message: out(1, 'hi', 'o1') });
+  const cleared = reduce(state, {
+    type: 'conversation-cleared',
+    remoteUid: 'peer-uid',
+    threadId: 'shadow-thread',
+  });
+  assert.deepEqual(cleared.messages, []);
+  // Input state is untouched (purity).
+  assert.equal(state.messages.length, 1);
+});

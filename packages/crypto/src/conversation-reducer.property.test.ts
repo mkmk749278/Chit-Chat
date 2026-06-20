@@ -72,3 +72,27 @@ test('Property 21: whitespace-only input never enables sending', () => {
     { numRuns: 100 },
   );
 });
+
+test('conversation-cleared always empties history and preserves non-history state', () => {
+  // Clear chat (local-only): for ANY accumulated conversation, applying `conversation-cleared` must
+  // empty the message list + gap markers while leaving connection, composer, the disappearing-timer,
+  // and the web acknowledgment exactly as they were.
+  fc.assert(
+    fc.property(fc.array(messageArb, { maxLength: 100 }), (messages) => {
+      let state = initialConversationState('mobile');
+      for (const message of messages) {
+        state = reduce(state, { type: 'message-appended', message });
+      }
+      const before = state;
+      const cleared = reduce(before, { type: 'conversation-cleared' });
+
+      assert.deepEqual(cleared.messages, []);
+      assert.deepEqual(cleared.missingBefore, []);
+      assert.equal(cleared.connection, before.connection);
+      assert.deepEqual(cleared.composer, before.composer);
+      assert.equal(cleared.disappearingTtlMs, before.disappearingTtlMs);
+      assert.equal(cleared.webWarningAcknowledged, before.webWarningAcknowledged);
+    }),
+    { numRuns: 200 },
+  );
+});

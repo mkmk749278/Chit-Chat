@@ -34,6 +34,13 @@ export interface ConversationScreenProps {
   onComposerChange: (text: string) => void;
   /** Called when the user submits the composer (only fired when sending is allowed). */
   onSend: () => void;
+  /**
+   * Clear this conversation's LOCAL history (the "Clear chat" action, local-only). When provided, a
+   * "Clear chat" control is rendered in the header; clicking it confirms, then invokes this callback
+   * (the container purges the conversation's in-memory rows and dispatches `conversation-cleared`).
+   * Passed ONLY for a SURFACE conversation — absent for a shadow thread, keeping parity with mobile.
+   */
+  onClearChat?: () => void;
 }
 
 /** Human-readable, non-technical label for each message status (6.5, 6.8, 6.9). */
@@ -50,6 +57,7 @@ export function ConversationScreen({
   selfLabel,
   onComposerChange,
   onSend,
+  onClearChat,
 }: ConversationScreenProps): JSX.Element {
   const connected = state.connection === 'connected';
   // On web the reducer gates messaging until the ephemerality warning is acknowledged
@@ -63,22 +71,43 @@ export function ConversationScreen({
     }
   };
 
+  // Local-only Clear chat: confirm, then let the container purge this conversation's in-memory rows
+  // and dispatch `conversation-cleared`. The chat stays open (now empty); this is "clear history".
+  const handleClearChat = (): void => {
+    if (onClearChat === undefined) {
+      return;
+    }
+    const ok =
+      typeof window === 'undefined' ||
+      window.confirm('Clear chat? This removes this chat’s messages from this device. It can’t be undone.');
+    if (ok) {
+      onClearChat();
+    }
+  };
+
   return (
     <section aria-label="Conversation" style={styles.screen}>
       <header style={styles.header}>
         <span style={styles.selfLabel}>{selfLabel}</span>
-        <span
-          role="status"
-          aria-label={connected ? 'Connected' : 'Disconnected'}
-          style={{ ...styles.connection, color: connected ? '#127a3d' : '#9a3412' }}
-        >
+        <span style={styles.headerRight}>
           <span
-            style={{
-              ...styles.connectionDot,
-              backgroundColor: connected ? '#16a34a' : '#dc2626',
-            }}
-          />
-          {connected ? 'Connected' : 'Disconnected'}
+            role="status"
+            aria-label={connected ? 'Connected' : 'Disconnected'}
+            style={{ ...styles.connection, color: connected ? '#127a3d' : '#9a3412' }}
+          >
+            <span
+              style={{
+                ...styles.connectionDot,
+                backgroundColor: connected ? '#16a34a' : '#dc2626',
+              }}
+            />
+            {connected ? 'Connected' : 'Disconnected'}
+          </span>
+          {onClearChat !== undefined && (
+            <button type="button" style={styles.clearButton} onClick={handleClearChat} aria-label="Clear chat">
+              Clear chat
+            </button>
+          )}
         </span>
       </header>
 
@@ -140,6 +169,17 @@ const styles: Record<string, CSSProperties> = {
     borderBottom: '1px solid #e2e8f0',
   },
   selfLabel: { fontWeight: 600 },
+  headerRight: { display: 'inline-flex', alignItems: 'center', gap: 12 },
+  clearButton: {
+    padding: '4px 10px',
+    borderRadius: 8,
+    border: '1px solid #fecaca',
+    background: '#fef2f2',
+    color: '#b91c1c',
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: 'pointer',
+  },
   connection: { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13 },
   connectionDot: { width: 8, height: 8, borderRadius: '50%', display: 'inline-block' },
   messageList: {

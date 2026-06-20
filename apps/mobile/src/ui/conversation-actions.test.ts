@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
+  CLEAR_CHAT_ACTION,
   CONVERSATION_ACTIONS,
   CONVERSATION_HEADER_ELEMENTS,
   conversationActionKeys,
@@ -44,5 +45,17 @@ test('redesigned header shows back, avatar, name, status, overflow (left → rig
   assert.deepEqual(
     [...CONVERSATION_HEADER_ELEMENTS],
     ['back', 'avatar', 'name', 'status', 'overflow'],
+  );
+});
+
+test('Clear chat is a separate action (not one of the four moved actions) with a non-empty label', () => {
+  // It must NOT leak into the shared four-action header/profile model (which would show it for shadow
+  // threads and break the four-action invariant); it is rendered conditionally in the overflow menu.
+  assert.equal(CLEAR_CHAT_ACTION.key, 'clear');
+  assert.equal(CLEAR_CHAT_ACTION.label, 'Clear chat');
+  assert.ok(CLEAR_CHAT_ACTION.label.trim().length > 0);
+  assert.ok(
+    !conversationActionKeys().includes(CLEAR_CHAT_ACTION.key as ConversationActionKey),
+    'Clear chat must not be a member of the four moved actions',
   );
 });
