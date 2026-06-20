@@ -19,7 +19,9 @@
     "src/ui/async-submit.ts",
     "src/ui/async-submit.test.ts",
     "src/ui/conversation-actions.ts",
-    "src/ui/conversation-actions.test.ts"
+    "src/ui/conversation-actions.test.ts",
+    "src/app/shadow-search.ts",
+    "src/app/shadow-search.test.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }

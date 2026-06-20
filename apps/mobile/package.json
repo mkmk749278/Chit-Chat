@@ -10,7 +10,7 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsc -p tsconfig.test.json && node --test dist/crypto/*.test.js dist/ui/*.test.js"
+    "test": "tsc -p tsconfig.test.json && node --test dist/crypto/*.test.js dist/ui/*.test.js dist/app/*.test.js"
   },
   "dependencies": {
     "@chat-app/crypto": "0.0.0",

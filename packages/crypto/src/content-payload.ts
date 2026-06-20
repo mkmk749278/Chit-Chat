@@ -73,12 +73,50 @@ export type ContentPayload =
   | { type: 'unsupported' };
 
 /**
+ * The result of decoding a content payload. Separates the discriminated message `payload`
+ * (text/reaction/edit/delete/timer/attachment/…) from the optional shadow-routing `threadId`
+ * (Shadow Chat, design Component 2). `threadId` present ⇒ the message belongs to a shadow thread;
+ * `threadId` absent ⇒ a surface chat. The `payload` field is byte-for-byte the value the
+ * pre-shadow {@link decodeContentPayload} returned for the same input, so all existing per-`type`
+ * routing keeps working unchanged.
+ */
+export interface DecodedContentPayload {
+  /** The existing discriminated content payload (text/reaction/edit/delete/timer/attachment/…). */
+  payload: ContentPayload;
+  /**
+   * Present ⇒ this message belongs to a shadow thread; absent ⇒ a surface chat. Carried INSIDE
+   * the encrypted body only, so the server never sees it (Shadow Chat, Req 3.1). Surfaced only
+   * when the encoded envelope held a non-empty string of 1..255 characters; otherwise absent.
+   */
+  threadId?: string;
+}
+
+/** Lower/upper bounds for a routable shadow threadId carried on the content envelope (Req 6.1/6.4). */
+const THREAD_ID_MAX_LENGTH = 255;
+
+/** Whether `value` is a routable shadow threadId: a non-empty string of 1..255 characters. */
+function isThreadId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= THREAD_ID_MAX_LENGTH;
+}
+
+/**
  * Serialize a content payload to the string that will be encrypted as the libsignal plaintext.
  * Always emits the versioned envelope, so once both peers run Phase 2 every message — including
  * plain text — is wrapped (and a user who literally types JSON is safely inside `body`).
+ *
+ * When `threadId` is omitted (or is not a routable 1..255-char string) the output is BYTE-FOR-BYTE
+ * identical to the pre-shadow encoder, so surface messages are completely unchanged on the wire
+ * (Shadow Chat, Req 5.1, Property 6). When a valid `threadId` is supplied it is appended to the
+ * envelope so it rides INSIDE the ciphertext, leaving `v` and every existing field intact
+ * (Req 6.1).
+ *
+ * @param payload  - the discriminated content payload to serialize.
+ * @param threadId - optional shadow thread id; included only when a non-empty 1..255-char string.
  */
-export function encodeContentPayload(payload: ContentPayload): string {
-  return JSON.stringify({ v: CONTENT_PAYLOAD_VERSION, ...payload });
+export function encodeContentPayload(payload: ContentPayload, threadId?: string): string {
+  return isThreadId(threadId)
+    ? JSON.stringify({ v: CONTENT_PAYLOAD_VERSION, ...payload, threadId })
+    : JSON.stringify({ v: CONTENT_PAYLOAD_VERSION, ...payload });
 }
 
 /** Type guard: a finite, safe-integer sequence number. */
@@ -87,18 +125,24 @@ function isSeq(value: unknown): value is number {
 }
 
 /**
- * Parse a decrypted plaintext into a {@link ContentPayload}. Total (never throws):
+ * Parse a decrypted plaintext into a {@link DecodedContentPayload}. Total (never throws):
  *   - a recognized `{v:1,type,…}` envelope with valid fields → that typed payload;
  *   - a `{v:1}` envelope with an unknown type or invalid fields → `{ type: 'unsupported' }`;
  *   - anything else (bare string, non-JSON, legacy Phase 1 text) → `{ type: 'text', body: raw }`.
+ *
+ * The returned `payload` is byte-for-byte the value the pre-shadow decoder produced for the same
+ * input — all existing per-`type` validation is preserved verbatim (Req 5.3, 6.5). The optional
+ * shadow `threadId` is read ONCE at the envelope level and surfaced only when it is a non-empty
+ * string of 1..255 characters; a missing, empty, non-string, or over-255 `threadId` routes to the
+ * surface chat (`threadId` absent, Req 6.3/6.4). Decoding never throws (Req 6.6/6.7).
  */
-export function decodeContentPayload(raw: string): ContentPayload {
+export function decodeContentPayload(raw: string): DecodedContentPayload {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
     // Not JSON at all — a legacy Phase 1 plain-text message.
-    return { type: 'text', body: raw };
+    return { payload: { type: 'text', body: raw } };
   }
 
   if (
@@ -107,10 +151,22 @@ export function decodeContentPayload(raw: string): ContentPayload {
     (parsed as { v?: unknown }).v !== CONTENT_PAYLOAD_VERSION
   ) {
     // Valid JSON but not our envelope (e.g. a user typed a JSON-looking message on old code).
-    return { type: 'text', body: raw };
+    return { payload: { type: 'text', body: raw } };
   }
 
   const env = parsed as Record<string, unknown>;
+  const payload = decodeEnvelopePayload(env);
+  // Surface the optional shadow threadId only when it is a routable 1..255-char string; otherwise
+  // absent ⇒ surface chat. Read once at the envelope level, independently of per-type validation.
+  return isThreadId(env.threadId) ? { payload, threadId: env.threadId } : { payload };
+}
+
+/**
+ * Decode the discriminated content payload from a validated `{v:1,…}` envelope. Holds the existing
+ * per-`type` validation verbatim, so the result is identical to the pre-shadow decoder and is
+ * unaffected by the presence or absence of the envelope's optional `threadId` (Req 6.5).
+ */
+function decodeEnvelopePayload(env: Record<string, unknown>): ContentPayload {
   switch (env.type) {
     case 'text':
       return typeof env.body === 'string'

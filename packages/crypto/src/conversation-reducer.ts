@@ -143,10 +143,24 @@ export interface ConversationState {
  * The reaction/edit/delete events address their target by its LOCAL `(targetDirection,
  * targetSeq)`; the Messaging layer maps the on-wire sender-relative reference onto local
  * direction before dispatching. An event whose target is not in the list is ignored (3.5).
+ *
+ * Shadow Chat (design Component 5): every event that scopes to a single conversation carries an
+ * OPTIONAL `threadId`. When present the event belongs to a shadow thread; when absent it belongs to
+ * the surface chat (Shadow Chat, Req 5.2, 7.2). The pure {@link reduce} function deliberately
+ * IGNORES `threadId` — it is read only by the `ConversationRegistry`, which routes each event to the
+ * correct per-thread {@link ConversationState} before calling `reduce`. Adding it here therefore
+ * does not change `reduce`'s behaviour for any existing or shadow event; it is purely a routing tag.
  */
 export type ConversationEvent =
-  | { type: 'message-appended'; message: RenderableMessage; remoteUid?: string }
-  | { type: 'status-updated'; id: string; status: MessageStatus; remoteUid?: string; error?: string }
+  | { type: 'message-appended'; message: RenderableMessage; remoteUid?: string; threadId?: string }
+  | {
+      type: 'status-updated';
+      id: string;
+      status: MessageStatus;
+      remoteUid?: string;
+      error?: string;
+      threadId?: string;
+    }
   | { type: 'composer-changed'; text: string }
   | { type: 'connection-changed'; connection: ConnectionStatus }
   | { type: 'web-warning-acknowledged' }
@@ -160,6 +174,7 @@ export type ConversationEvent =
        * place rather than jumping to the top of the list. Optional/absent sorts as if `0`.
        */
       createdAt?: number;
+      threadId?: string;
     }
   | {
       type: 'reaction-applied';
@@ -167,6 +182,7 @@ export type ConversationEvent =
       targetSeq: number;
       emoji: string;
       remoteUid?: string;
+      threadId?: string;
     }
   | {
       type: 'message-edited';
@@ -174,15 +190,17 @@ export type ConversationEvent =
       targetSeq: number;
       body: string;
       remoteUid?: string;
+      threadId?: string;
     }
   | {
       type: 'message-deleted';
       targetDirection: 'in' | 'out';
       targetSeq: number;
       remoteUid?: string;
+      threadId?: string;
     }
-  | { type: 'timer-changed'; ttlMs: number; remoteUid?: string }
-  | { type: 'messages-expired'; ids: string[]; remoteUid?: string };
+  | { type: 'timer-changed'; ttlMs: number; remoteUid?: string; threadId?: string }
+  | { type: 'messages-expired'; ids: string[]; remoteUid?: string; threadId?: string };
 
 /**
  * The reducer contract consumed by the platform UIs (design Component 7).
