@@ -492,10 +492,17 @@ function AppShell(): React.JSX.Element {
       }
       // Provision the Master_Secret / Alias_Key once (no-op if already provisioned) so bindAlias has
       // a context to derive from (Req 11.6); secrets stay in the encrypted vault (Req 9.1, 9.5).
-      await controller.provisionShadowContext();
+      // A `false` result means the encrypted store is not open yet (setup still running) — a
+      // distinct, recoverable "not ready" condition rather than a derivation/persistence failure.
+      const provisioned = await controller.provisionShadowContext();
+      if (!provisioned) {
+        throw new Error('Secure storage is still setting up. Try again in a moment.');
+      }
       const ref = await store.bindAlias('real', alias, target.peerUid, myUid, pin);
       if (ref === null) {
-        throw new Error('Could not create the shadow chat.');
+        // Secrets were not released (not real mode, or provisioning did not persist) — distinct
+        // from a thrown derivation/persistence error, which propagates with its own message.
+        throw new Error('Shadow chat could not be set up: secure storage is unavailable.');
       }
       shadowRegistryRef.current?.openShadowThread(ref.threadId, ref.peerUid);
       openShadowThreadLocal(ref, target.name);
