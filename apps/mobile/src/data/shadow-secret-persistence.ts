@@ -34,6 +34,7 @@
 
 import type {
   AliasEntry,
+  InvitedThreadRef,
   ShadowSecretPersistence,
   ShadowThreadRef,
 } from '@chat-app/crypto';
@@ -107,6 +108,52 @@ export function createVaultShadowSecretPersistence(vault: PersistentVault): Shad
         next.push(stored);
         section.aliasEntries = next;
         doc.shadowSecrets = section;
+      });
+    },
+
+    async loadInvitedThreads(): Promise<ReadonlyArray<InvitedThreadRef>> {
+      return vault.read((doc) =>
+        (doc.shadowSecrets?.invitedThreads ?? []).map((entry) => ({
+          ...entry.ref,
+          threadKey: new Uint8Array(Buffer.from(entry.threadKey, 'base64')),
+        })),
+      );
+    },
+
+    async saveInvitedThread(record: InvitedThreadRef): Promise<void> {
+      // Atomic upsert keyed by threadId (re-binding the same thread replaces, never duplicates). The
+      // 32-byte shared key is base64-encoded inside the AES blob; one mutate = one encrypted write.
+      await vault.mutate((doc) => {
+        const section = doc.shadowSecrets ?? {};
+        const { threadKey, ...ref } = record;
+        const stored = { threadKey: toBase64(threadKey), ref };
+        const existing = section.invitedThreads ?? [];
+        const next = existing.filter((candidate) => candidate.ref.threadId !== record.threadId);
+        next.push(stored);
+        section.invitedThreads = next;
+        doc.shadowSecrets = section;
+      });
+    },
+
+    async deleteInvitedThread(threadId: string): Promise<void> {
+      // All-or-nothing local delete of the invited record + shared key AND any AliasEntry pointing at
+      // the threadId, in ONE encrypted blob write — so a revoke never strands a keyless record or a
+      // dangling alias (Req 7, 15). A failed mutate leaves the prior blob intact (no partial delete).
+      await vault.mutate((doc) => {
+        const section = doc.shadowSecrets;
+        if (section === undefined) {
+          return;
+        }
+        if (section.invitedThreads !== undefined) {
+          section.invitedThreads = section.invitedThreads.filter(
+            (candidate) => candidate.ref.threadId !== threadId,
+          );
+        }
+        if (section.aliasEntries !== undefined) {
+          section.aliasEntries = section.aliasEntries.filter(
+            (candidate) => candidate.ref.threadId !== threadId,
+          );
+        }
       });
     },
   };

@@ -32,6 +32,7 @@ import {
   type AppMode,
   type ConversationEvent,
   type ConversationRegistry,
+  type InvitedThreadRef,
   type SearchResolution,
   type ShadowSecretPersistence,
   type ShadowSecretStore,
@@ -49,6 +50,7 @@ export function createInMemoryShadowSecretPersistence(): ShadowSecretPersistence
   let masterSecret: Uint8Array | null = null;
   let aliasKey: Uint8Array | null = null;
   const entries = new Map<string, AliasEntry<ShadowThreadRef>>();
+  const invited = new Map<string, InvitedThreadRef>();
   return {
     async loadMasterSecret() {
       return masterSecret;
@@ -67,6 +69,20 @@ export function createInMemoryShadowSecretPersistence(): ShadowSecretPersistence
     },
     async saveAliasEntry(entry) {
       entries.set(entry.aliasHash, entry);
+    },
+    async saveInvitedThread(record) {
+      invited.set(record.threadId, { ...record, threadKey: record.threadKey.slice() });
+    },
+    async loadInvitedThreads() {
+      return [...invited.values()].map((r) => ({ ...r, threadKey: r.threadKey.slice() }));
+    },
+    async deleteInvitedThread(threadId) {
+      invited.delete(threadId);
+      for (const [aliasHash, entry] of [...entries.entries()]) {
+        if (entry.ref.threadId === threadId) {
+          entries.delete(aliasHash);
+        }
+      }
     },
   };
 }

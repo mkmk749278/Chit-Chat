@@ -36,6 +36,7 @@
 import {
   ShadowSecretStore,
   type AliasEntry,
+  type InvitedThreadRef,
   type ShadowSecretPersistence,
   type ShadowSecretStoreOptions,
   type ShadowThreadRef,
@@ -64,6 +65,15 @@ function cloneEntry(entry: AliasEntry<ShadowThreadRef>): AliasEntry<ShadowThread
 }
 
 /**
+ * Deep-clone an {@link InvitedThreadRef} (Shadow Chat Invites), copying the 32-byte shared
+ * `threadKey` into a fresh `Uint8Array` so the stored copy is fully isolated from the caller's — a
+ * later mutation/zeroing of the passed-in key cannot corrupt the stored record, and vice-versa.
+ */
+function cloneInvited(record: InvitedThreadRef): InvitedThreadRef {
+  return { ...record, threadKey: record.threadKey.slice() };
+}
+
+/**
  * In-memory (session) implementation of the shared {@link ShadowSecretPersistence} port for the
  * Web_App. All state lives in the private fields below and nowhere else; no method reaches for any
  * persistent store. See the module doc for the storage scope, the atomic-write contract, and the
@@ -78,6 +88,9 @@ export class InMemoryShadowSecretPersistence implements ShadowSecretPersistence 
 
   /** Hash-only alias entries keyed by their opaque `aliasHash` so a re-bind replaces, never dupes. */
   private readonly entries = new Map<string, AliasEntry<ShadowThreadRef>>();
+
+  /** Invited shadow threads (Shadow Chat Invites) keyed by `threadId`; holds the shared `threadKey`. */
+  private readonly invited = new Map<string, InvitedThreadRef>();
 
   /** Set once {@link destroy} runs; further writes are rejected so wiped secrets cannot return. */
   private destroyed = false;
@@ -141,6 +154,47 @@ export class InMemoryShadowSecretPersistence implements ShadowSecretPersistence 
     this.entries.set(stored.aliasHash, stored);
   }
 
+  /** @inheritdoc */
+  async saveInvitedThread(record: InvitedThreadRef): Promise<void> {
+    this.assertLive();
+    // Validate + clone into a standalone record BEFORE the single Map.set commit (atomic; Req 15).
+    if (record === null || typeof record !== 'object') {
+      throw new TypeError('shadow-secret-persistence: invited thread must be an object');
+    }
+    if (typeof record.threadId !== 'string' || record.threadId.length === 0) {
+      throw new TypeError('shadow-secret-persistence: invited thread requires a non-empty threadId');
+    }
+    if (!(record.threadKey instanceof Uint8Array) || record.threadKey.length !== 32) {
+      throw new TypeError('shadow-secret-persistence: invited thread requires a 32-byte threadKey');
+    }
+    this.invited.set(record.threadId, cloneInvited(record));
+  }
+
+  /** @inheritdoc */
+  async loadInvitedThreads(): Promise<ReadonlyArray<InvitedThreadRef>> {
+    if (this.destroyed) {
+      return [];
+    }
+    return [...this.invited.values()].map(cloneInvited);
+  }
+
+  /** @inheritdoc */
+  async deleteInvitedThread(threadId: string): Promise<void> {
+    this.assertLive();
+    // All-or-nothing local delete of the record + its shared threadKey + any AliasEntry pointing at
+    // the threadId, so a revoke never strands a keyless record (Req 7, 15). Zero the key bytes first.
+    const existing = this.invited.get(threadId);
+    if (existing !== undefined) {
+      zero(existing.threadKey);
+      this.invited.delete(threadId);
+    }
+    for (const [aliasHash, entry] of [...this.entries.entries()]) {
+      if (entry.ref.threadId === threadId) {
+        this.entries.delete(aliasHash);
+      }
+    }
+  }
+
   /**
    * Synchronously wipe all in-memory shadow secrets and alias mappings: the master secret and alias
    * key bytes are overwritten with zeros before being released, and the alias map is cleared, so once
@@ -153,6 +207,11 @@ export class InMemoryShadowSecretPersistence implements ShadowSecretPersistence 
     this.masterSecret = null;
     this.aliasKey = null;
     this.entries.clear();
+    // Zero every shared invited-thread key before releasing the records (session-end wipe).
+    for (const record of this.invited.values()) {
+      zero(record.threadKey);
+    }
+    this.invited.clear();
     this.destroyed = true;
   }
 
