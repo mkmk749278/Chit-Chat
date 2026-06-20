@@ -91,6 +91,18 @@ export interface ConversationScreenProps {
    * (matching the existing destructive "hide" gating); absent for a shadow thread / non-real mode.
    */
   onClearChat?: () => void;
+  /**
+   * "Clear shadow chat" — purge this shadow thread's local history but keep it working (Shadow Chat
+   * Invites, Req 6). Shows a confirm, then invokes this callback. Passed ONLY for an open shadow
+   * thread in real mode; absent otherwise.
+   */
+  onClearShadowChat?: () => void;
+  /**
+   * "Revoke shadow chat" — delete the key + history on both sides and close the thread (Req 7).
+   * Shows a destructive confirm, then invokes this callback. Passed ONLY for an open shadow thread in
+   * real mode; absent otherwise.
+   */
+  onRevokeShadowChat?: () => void;
 }
 
 const STATUS_LABEL: Record<RenderableMessage['status'], string> = {
@@ -266,6 +278,8 @@ export function ConversationScreen({
   onUnhideChat,
   onSetThreadPin,
   onClearChat,
+  onClearShadowChat,
+  onRevokeShadowChat,
 }: ConversationScreenProps): React.JSX.Element {
   const t = useTheme();
   const connected = state.connection === 'connected';
@@ -408,6 +422,32 @@ export function ConversationScreen({
       [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Clear', style: 'destructive', onPress: () => onClearChat?.() },
+      ],
+    );
+  };
+
+  /** Confirm and clear THIS shadow thread's local history while keeping it working (Req 6). */
+  const confirmClearShadowChat = (): void => {
+    setOverflowOpen(false);
+    Alert.alert(
+      'Clear shadow chat?',
+      'This erases this shadow chat’s messages from this device. The chat keeps working.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Clear', style: 'destructive', onPress: () => onClearShadowChat?.() },
+      ],
+    );
+  };
+
+  /** Confirm and REVOKE this shadow chat — delete the key + history on both sides (Req 7). */
+  const confirmRevokeShadowChat = (): void => {
+    setOverflowOpen(false);
+    Alert.alert(
+      'Revoke shadow chat?',
+      'This deletes the key and history on BOTH sides and closes the chat. It can’t be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Revoke', style: 'destructive', onPress: () => onRevokeShadowChat?.() },
       ],
     );
   };
@@ -824,6 +864,8 @@ export function ConversationScreen({
             : undefined
         }
         onClearChat={onClearChat !== undefined ? confirmClearChat : undefined}
+        onClearShadowChat={onClearShadowChat !== undefined ? confirmClearShadowChat : undefined}
+        onRevokeShadowChat={onRevokeShadowChat !== undefined ? confirmRevokeShadowChat : undefined}
       />
 
       {/* Shadow-chat per-chat PIN settings (task 16.1, Req 12.5/12.7/12.8): add / change / remove the

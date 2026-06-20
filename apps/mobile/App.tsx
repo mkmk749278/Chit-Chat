@@ -44,6 +44,8 @@ import { animateNext } from './src/ui/motion';
 import { NewChatScreen, type ContactRow } from './src/ui/NewChatScreen';
 import { OnboardingScreen } from './src/ui/OnboardingScreen';
 import { RowActionMenu } from './src/ui/RowActionMenu';
+import { ShadowInviteRequestCard } from './src/ui/ShadowInviteRequestCard';
+import { reduceInviteCards, type ShadowInviteCard } from './src/ui/shadow-invite-actions';
 import { SettingsScreen } from './src/ui/SettingsScreen';
 import { ShadowChatCreateSheet } from './src/ui/ShadowChatCreateSheet';
 import { ShadowPinPrompt } from './src/ui/ShadowPinPrompt';
@@ -118,6 +120,9 @@ function AppShell(): React.JSX.Element {
     null,
   );
   const [createSheet, setCreateSheet] = useState<{ peerUid: string; name: string } | null>(null);
+  // Shadow Chat Invites (design Component A): inbound Accept/Decline request cards, keyed by inviteId.
+  // Folded from the controller's onShadowInvite stream; a card auto-dismisses on `invite-resolved`.
+  const [inviteCards, setInviteCards] = useState<ReadonlyMap<string, ShadowInviteCard>>(new Map());
   const [pinPrompt, setPinPrompt] = useState<{
     verify: (pin: string) => Promise<boolean>;
     resolve: (opened: boolean) => void;
@@ -250,6 +255,20 @@ function AppShell(): React.JSX.Element {
 
   // Surface encryption-setup progress/failure (identity + device registration + connect).
   useEffect(() => controller.onSetupChange(setSetup), [controller]);
+
+  // Shadow Chat Invites: fold the lifecycle event stream into the visible request-card set. Only an
+  // `invite-received` (emitted by the coordinator in real mode only) adds a card; `invite-resolved`
+  // removes it, so the card auto-dismisses with no residue. Inert in decoy/locked (no event fires).
+  useEffect(
+    () => controller.onShadowInvite((event) => setInviteCards((prev) => reduceInviteCards(prev, event))),
+    [controller],
+  );
+  // The single request card currently shown (the oldest pending invite) and its inviter's name.
+  const activeInviteCard: ShadowInviteCard | null = [...inviteCards.values()][0] ?? null;
+  const activeInvitePeerName =
+    activeInviteCard === null
+      ? ''
+      : conversations.find((c) => c.id === activeInviteCard.peerUid)?.name ?? activeInviteCard.peerUid;
 
   // Presence opt-in (Req 5.1): the signed-in user's own setting, restored from the backend.
   const [presenceEnabled, setPresenceEnabled] = useState(false);
@@ -891,6 +910,42 @@ function AppShell(): React.JSX.Element {
                 }
               : undefined
           }
+          onClearShadowChat={
+            appMode === 'real' && shadowThreadIds.has(openConversation.id)
+              ? () => {
+                  const threadId = openConversation.id;
+                  // Local-only purge of this shadow thread's history; the record + shared key are kept
+                  // so the chat keeps working. Reset the open view to empty via `conversation-cleared`.
+                  void controller.clearShadowChat(threadId).then(() => {
+                    setConversations((prev) =>
+                      prev.map((c) =>
+                        c.id === threadId
+                          ? { ...c, state: reduce(c.state, { type: 'conversation-cleared', remoteUid: threadId }) }
+                          : c,
+                      ),
+                    );
+                  });
+                }
+              : undefined
+          }
+          onRevokeShadowChat={
+            appMode === 'real' && shadowThreadIds.has(openConversation.id)
+              ? () => {
+                  const threadId = openConversation.id;
+                  // Delete the key + history on both sides and close the thread; then drop it from the
+                  // list and leave the conversation view (the thread no longer exists on this device).
+                  void controller.revokeShadowChat(threadId).then(() => {
+                    setShadowThreadIds((prev) => {
+                      const next = new Set(prev);
+                      next.delete(threadId);
+                      return next;
+                    });
+                    setConversations((prev) => prev.filter((c) => c.id !== threadId));
+                    setOpenChatId(null);
+                  });
+                }
+              : undefined
+          }
           onBack={() => {
             animateNext();
             setOpenChatId(null);
@@ -1039,12 +1094,46 @@ function AppShell(): React.JSX.Element {
             setCreateSheet({ peerUid: row.id, name: row.name });
           }
         }}
+        onShadowInvite={
+          rowMenu?.kind === 'contact'
+            ? () => {
+                const row = rowMenu;
+                setRowMenu(null);
+                if (row !== null) {
+                  // Consent-based invite (Req 1.1): the recipient gets an Accept/Decline card. The
+                  // coordinator is real-mode gated, so this is a no-op in decoy/locked.
+                  void controller.createShadowInvite(row.id);
+                }
+              }
+            : undefined
+        }
       />
       <ShadowChatCreateSheet
         visible={createSheet !== null}
         onClose={() => setCreateSheet(null)}
         contactName={createSheet?.name ?? ''}
         onCreate={onCreateShadowChat}
+      />
+      <ShadowInviteRequestCard
+        visible={activeInviteCard !== null}
+        theme={theme}
+        peerName={activeInvitePeerName}
+        {...(activeInviteCard?.label !== undefined ? { label: activeInviteCard.label } : {})}
+        onAccept={(routing) => {
+          const card = activeInviteCard;
+          if (card !== null) {
+            setInviteCards((prev) => reduceInviteCards(prev, { type: 'invite-resolved', inviteId: card.inviteId, reason: 'accepted' }));
+            void controller.acceptShadowInvite(card.inviteId, routing);
+          }
+        }}
+        onDecline={() => {
+          const card = activeInviteCard;
+          if (card !== null) {
+            setInviteCards((prev) => reduceInviteCards(prev, { type: 'invite-resolved', inviteId: card.inviteId, reason: 'declined' }));
+            void controller.declineShadowInvite(card.inviteId);
+          }
+        }}
+        onClose={() => setInviteCards((prev) => new Map(prev))}
       />
       <ShadowPinPrompt
         visible={pinPrompt !== null}

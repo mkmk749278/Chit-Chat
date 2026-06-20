@@ -41,6 +41,13 @@ export interface RowActionMenuProps {
   showShadowAction: boolean;
   /** Invoke the "Shadow chat" action (opens the creation sheet). Only reachable when shown. */
   onShadowChat: () => void;
+  /**
+   * Invoke the "Send shadow invite" action (Shadow Chat Invites, Req 1.1): sends a consent-based
+   * invite to the contact, who receives an Accept/Decline card. Shown under the same real-mode gate
+   * as {@link onShadowChat} and only for a contact row (a real two-party peer). Optional so existing
+   * call sites are unaffected.
+   */
+  onShadowInvite?: () => void;
 }
 
 /** The long-press overlay menu (top-level modal portal). See the module doc. */
@@ -53,6 +60,7 @@ export function RowActionMenu({
   onPrimaryAction,
   showShadowAction,
   onShadowChat,
+  onShadowInvite,
 }: RowActionMenuProps): React.JSX.Element {
   return (
     <SheetModal visible={visible} onClose={onClose} theme={t}>
@@ -63,6 +71,9 @@ export function RowActionMenu({
       </View>
       <SheetItem label={primaryActionLabel} onPress={onPrimaryAction} theme={t} />
       {showShadowAction && <SheetItem label="Shadow chat" onPress={onShadowChat} theme={t} />}
+      {showShadowAction && onShadowInvite !== undefined && (
+        <SheetItem label="Send shadow invite" onPress={onShadowInvite} theme={t} />
+      )}
       <SheetItem label="Cancel" onPress={onClose} theme={t} destructive />
     </SheetModal>
   );
