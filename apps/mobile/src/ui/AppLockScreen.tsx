@@ -9,30 +9,50 @@
  */
 
 import React, { useState } from 'react';
-import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
+import { runBusy, submitGate } from './async-submit';
 import { useTheme } from './theme';
 
 export interface AppLockScreenProps {
-  /** Submit the entered PIN. The container resolves real/decoy/locked/invalid and updates state. */
-  onUnlock: (pin: string) => void;
+  /**
+   * Submit the entered PIN. The container resolves real/decoy/locked/invalid and updates state. May
+   * return a promise: while it is pending the unlock hash is in flight, so the screen shows a spinner
+   * and disables the control until it resolves (Requirement 1.3).
+   */
+  onUnlock: (pin: string) => void | Promise<void>;
   /** A neutral error to show after a failed attempt (wrong PIN or lockout), else `null`. */
   error?: string | null;
   /** Whether entry is currently disabled by a lockout. */
   locked?: boolean;
+  /** True while the unlock hash is in flight, when the container drives the busy state itself. */
+  busy?: boolean;
 }
 
-export function AppLockScreen({ onUnlock, error = null, locked = false }: AppLockScreenProps): React.JSX.Element {
+export function AppLockScreen({
+  onUnlock,
+  error = null,
+  locked = false,
+  busy: busyProp = false,
+}: AppLockScreenProps): React.JSX.Element {
   const t = useTheme();
   const [pin, setPin] = useState('');
+  const [busyLocal, setBusyLocal] = useState(false);
   const valid = /^\d{4,6}$/.test(pin);
+  // In-flight if either the container says so or our own awaited submit is running.
+  const busy = busyProp || busyLocal;
+  const { disabled, showProgress } = submitGate({ valid, locked, busy });
 
   const submit = (): void => {
-    if (!valid || locked) {
-      return;
-    }
-    onUnlock(pin);
-    setPin('');
+    void runBusy({
+      enabled: valid && !locked,
+      busy: busyLocal,
+      setBusy: setBusyLocal,
+      action: async () => {
+        await onUnlock(pin);
+        setPin('');
+      },
+    });
   };
 
   return (
@@ -46,7 +66,7 @@ export function AppLockScreen({ onUnlock, error = null, locked = false }: AppLoc
           onChangeText={setPin}
           keyboardType="number-pad"
           secureTextEntry
-          editable={!locked}
+          editable={!locked && !busy}
           maxLength={6}
           accessibilityLabel="PIN"
           onSubmitEditing={submit}
@@ -54,13 +74,18 @@ export function AppLockScreen({ onUnlock, error = null, locked = false }: AppLoc
         />
         {error !== null && <Text style={[styles.error, { color: t.danger }]}>{error}</Text>}
         <Pressable
-          style={[styles.button, { backgroundColor: t.brand }, (!valid || locked) && styles.buttonDisabled]}
-          disabled={!valid || locked}
+          style={[styles.button, { backgroundColor: t.brand }, disabled && styles.buttonDisabled]}
+          disabled={disabled}
           onPress={submit}
           accessibilityRole="button"
           accessibilityLabel="Unlock"
+          accessibilityState={{ disabled, busy: showProgress }}
         >
-          <Text style={[styles.buttonText, { color: t.onBrand }]}>Unlock</Text>
+          {showProgress ? (
+            <ActivityIndicator color={t.onBrand} accessibilityLabel="Unlocking" />
+          ) : (
+            <Text style={[styles.buttonText, { color: t.onBrand }]}>Unlock</Text>
+          )}
         </Pressable>
       </View>
     </View>

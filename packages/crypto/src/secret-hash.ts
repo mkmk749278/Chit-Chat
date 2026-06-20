@@ -73,17 +73,71 @@ function randomBytes(length: number): Uint8Array {
 const toB64 = (b: Uint8Array): string => Buffer.from(b).toString('base64');
 const fromB64 = (s: string): Uint8Array => new Uint8Array(Buffer.from(s, 'base64'));
 
-/** Derive the PBKDF2 bits for `secret` under `salt`/`iterations`. */
+/**
+ * The ONLY expensive primitive in this module: derive `keyLenBytes` of PBKDF2-HMAC-SHA256 bits from
+ * `password` under `salt`/`iterations`. A provider MUST compute exactly the standard
+ * PBKDF2-HMAC-SHA256 function (RFC 8018) so verifiers are interchangeable between providers — a
+ * verifier produced under one provider verifies unchanged under another, with no re-hashing or
+ * migration. Platforms inject a native/off-thread implementation (e.g. React Native binds
+ * `react-native-quick-crypto` so the 210k-iteration derivation runs on a background thread and never
+ * blocks the JS/UI thread); the default uses WebCrypto `crypto.subtle.deriveBits`.
+ *
+ * Injecting this seam is the entire freeze fix: *where* the PBKDF2 bytes are computed is pluggable,
+ * while the verifier format, salt handling, iteration count, and constant-time compare below are
+ * untouched. The default path is byte-for-byte the previous WebCrypto behaviour.
+ */
+export interface Pbkdf2Provider {
+  deriveBits(
+    password: Uint8Array,
+    salt: Uint8Array,
+    iterations: number,
+    keyLenBytes: number,
+  ): Promise<Uint8Array>;
+}
+
+/**
+ * The WebCrypto-backed default provider. Performs exactly the `subtle.importKey` /
+ * `subtle.deriveBits` calls this module used inline before the port was extracted, so on web, Node,
+ * and the React Native WebCrypto fallback nothing observable changes.
+ */
+const webCryptoPbkdf2Provider: Pbkdf2Provider = {
+  async deriveBits(password, salt, iterations, keyLenBytes) {
+    const subtle = getSubtle();
+    const baseKey = await subtle.importKey('raw', password, { name: 'PBKDF2' }, false, ['deriveBits']);
+    const bits = await subtle.deriveBits(
+      { name: 'PBKDF2', salt, iterations, hash: 'SHA-256' },
+      baseKey,
+      keyLenBytes * 8,
+    );
+    return new Uint8Array(bits);
+  },
+};
+
+/** The process-wide PBKDF2 provider; the WebCrypto default until {@link setPbkdf2Provider} swaps it. */
+let activePbkdf2Provider: Pbkdf2Provider = webCryptoPbkdf2Provider;
+
+/**
+ * Install a process-wide PBKDF2 provider (mobile binds the native, off-thread adapter at boot). The
+ * provider only changes *where* the bits are derived — the verifier format and constant-time compare
+ * are unaffected, so any verifier stored under the previous provider keeps verifying.
+ */
+export function setPbkdf2Provider(provider: Pbkdf2Provider): void {
+  activePbkdf2Provider = provider;
+}
+
+/** The current PBKDF2 provider — the WebCrypto-backed default until `setPbkdf2Provider` replaces it. */
+export function getPbkdf2Provider(): Pbkdf2Provider {
+  return activePbkdf2Provider;
+}
+
+/**
+ * Derive the PBKDF2 bits for `secret` under `salt`/`iterations`. Routes the single expensive
+ * primitive through the injected {@link Pbkdf2Provider} (default: WebCrypto) instead of inlining a
+ * per-iteration loop, so a platform can move it off the JS thread without touching this module.
+ */
 async function derive(secret: string, salt: Uint8Array, iterations: number): Promise<Uint8Array> {
-  const subtle = getSubtle();
   const keyMaterial = new TextEncoder().encode(secret);
-  const baseKey = await subtle.importKey('raw', keyMaterial, { name: 'PBKDF2' }, false, ['deriveBits']);
-  const bits = await subtle.deriveBits(
-    { name: 'PBKDF2', salt, iterations, hash: 'SHA-256' },
-    baseKey,
-    KEY_BYTES * 8,
-  );
-  return new Uint8Array(bits);
+  return getPbkdf2Provider().deriveBits(keyMaterial, salt, iterations, KEY_BYTES);
 }
 
 /**

@@ -5,8 +5,19 @@
  */
 
 import React, { useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 
+import { runBusy, submitGate } from './async-submit';
 import { initials, useTheme } from './theme';
 
 /** Diagnostics surfaced for troubleshooting encryption setup + discovery. */
@@ -45,10 +56,10 @@ export function SettingsScreen({
   appLockEnabled?: boolean;
   /** Whether a decoy PIN is set (§6). */
   decoyEnabled?: boolean;
-  /** Set the real or decoy PIN. */
-  onSetAppPin?: (pin: string, kind: 'real' | 'decoy') => void;
-  /** Remove the real or decoy PIN. */
-  onClearAppPin?: (kind: 'real' | 'decoy') => void;
+  /** Set the real or decoy PIN. May hash asynchronously (Requirement 1.3). */
+  onSetAppPin?: (pin: string, kind: 'real' | 'decoy') => void | Promise<void>;
+  /** Remove the real or decoy PIN. May resolve asynchronously (Requirement 1.3). */
+  onClearAppPin?: (kind: 'real' | 'decoy') => void | Promise<void>;
   /** Lock the app immediately (to test the lock screen); requires a real PIN. */
   onLockNow?: () => void;
 }): React.JSX.Element {
@@ -58,17 +69,45 @@ export function SettingsScreen({
   // PIN-entry modal: which kind we're setting, plus the entered digits.
   const [pinModal, setPinModal] = useState<'real' | 'decoy' | null>(null);
   const [pinDraft, setPinDraft] = useState('');
+  // True while a real/decoy PIN set-or-clear hash is in flight (Requirement 1.3).
+  const [pinBusy, setPinBusy] = useState(false);
   const pinValid = /^\d{4,6}$/.test(pinDraft);
+  const pinGate = submitGate({ valid: pinValid, busy: pinBusy });
 
   const closePinModal = (): void => {
+    if (pinBusy) {
+      return;
+    }
     setPinModal(null);
     setPinDraft('');
   };
   const submitPin = (): void => {
-    if (pinModal !== null && pinValid) {
-      onSetAppPin?.(pinDraft, pinModal);
+    if (pinModal === null) {
+      return;
     }
-    closePinModal();
+    const kind = pinModal;
+    void runBusy({
+      enabled: pinValid,
+      busy: pinBusy,
+      setBusy: setPinBusy,
+      action: async () => {
+        await onSetAppPin?.(pinDraft, kind);
+        setPinModal(null);
+        setPinDraft('');
+      },
+    });
+  };
+  // Set (open the entry modal) or clear an existing PIN; clearing runs behind the same busy flag so
+  // its row is disabled while the vault mutation resolves.
+  const onPinRow = (kind: 'real' | 'decoy', enabled: boolean): void => {
+    if (pinBusy) {
+      return;
+    }
+    if (enabled) {
+      void runBusy({ enabled: true, busy: pinBusy, setBusy: setPinBusy, action: () => onClearAppPin?.(kind) });
+    } else {
+      setPinModal(kind);
+    }
   };
 
   const runSelfTest = async (): Promise<void> => {
@@ -106,20 +145,26 @@ export function SettingsScreen({
         <Pressable
           style={styles.row}
           accessibilityRole="button"
-          onPress={() => (appLockEnabled ? onClearAppPin?.('real') : setPinModal('real'))}
+          disabled={pinBusy}
+          onPress={() => onPinRow('real', appLockEnabled)}
         >
           <Text style={styles.rowIcon}>🔒</Text>
           <Text style={[styles.rowLabel, { color: t.text }]}>App lock PIN</Text>
-          <Text style={[styles.rowValue, { color: appLockEnabled ? t.secure : t.brandSoft }]}>
-            {appLockEnabled ? 'On · tap to remove' : 'Set PIN ›'}
-          </Text>
+          {pinBusy ? (
+            <ActivityIndicator color={t.brandSoft} accessibilityLabel="Updating app lock PIN" />
+          ) : (
+            <Text style={[styles.rowValue, { color: appLockEnabled ? t.secure : t.brandSoft }]}>
+              {appLockEnabled ? 'On · tap to remove' : 'Set PIN ›'}
+            </Text>
+          )}
         </Pressable>
         <Divider color={t.divider} />
         {/* Decoy PIN (§6): opens a sanitised app state — hidden chats stay hidden. */}
         <Pressable
           style={styles.row}
           accessibilityRole="button"
-          onPress={() => (decoyEnabled ? onClearAppPin?.('decoy') : setPinModal('decoy'))}
+          disabled={pinBusy}
+          onPress={() => onPinRow('decoy', decoyEnabled)}
         >
           <Text style={styles.rowIcon}>🕶️</Text>
           <Text style={[styles.rowLabel, { color: t.text }]}>Decoy PIN</Text>
@@ -245,19 +290,25 @@ export function SettingsScreen({
               keyboardType="number-pad"
               secureTextEntry
               maxLength={6}
+              editable={!pinBusy}
               autoFocus
               accessibilityLabel="PIN"
               onSubmitEditing={submitPin}
             />
             <Pressable
-              style={[styles.sheetButton, { backgroundColor: t.brand }, !pinValid && styles.sheetButtonDisabled]}
-              disabled={!pinValid}
+              style={[styles.sheetButton, { backgroundColor: t.brand }, pinGate.disabled && styles.sheetButtonDisabled]}
+              disabled={pinGate.disabled}
               onPress={submitPin}
               accessibilityRole="button"
+              accessibilityState={{ disabled: pinGate.disabled, busy: pinGate.showProgress }}
             >
-              <Text style={[styles.sheetButtonText, { color: t.onBrand }]}>Save PIN</Text>
+              {pinGate.showProgress ? (
+                <ActivityIndicator color={t.onBrand} accessibilityLabel="Saving PIN" />
+              ) : (
+                <Text style={[styles.sheetButtonText, { color: t.onBrand }]}>Save PIN</Text>
+              )}
             </Pressable>
-            <Pressable style={styles.sheetCancel} onPress={closePinModal} accessibilityRole="button">
+            <Pressable style={styles.sheetCancel} onPress={closePinModal} disabled={pinBusy} accessibilityRole="button">
               <Text style={[styles.sheetCancelText, { color: t.brandSoft }]}>Cancel</Text>
             </Pressable>
           </Pressable>

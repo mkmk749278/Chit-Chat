@@ -253,7 +253,7 @@ test('send while connected transmits a send frame and renders sending (5.2, 6.2)
   assert.equal(h.store.rows[0]!.plaintext, 'hello');
   assert.deepEqual(h.events[0], {
     type: 'message-appended',
-    message: { id: 'id-1', seq: 1, direction: 'out', text: 'hello', status: 'sending' },
+    message: { id: 'id-1', seq: 1, direction: 'out', text: 'hello', status: 'sending', createdAt: 1000 },
     remoteUid: 'bob',
   });
 });
@@ -403,7 +403,7 @@ test('onEnvelope decrypts and renders inbound plaintext as received (5.4)', asyn
   assert.equal(h.store.rows.at(-1)!.status, 'received');
   assert.deepEqual(h.events.at(-1), {
     type: 'message-appended',
-    message: { id: 'id-1', seq: 7, direction: 'in', text: 'hi back', status: 'received' },
+    message: { id: 'id-1', seq: 7, direction: 'in', text: 'hi back', status: 'received', createdAt: 1000 },
     remoteUid: 'bob',
   });
 });
@@ -423,7 +423,7 @@ test('onEnvelope on decrypt failure renders no plaintext + delivery-error (5.5, 
 
   assert.equal(h.store.rows.at(-1)!.plaintext, null);
   assert.equal(h.store.rows.at(-1)!.status, 'delivery-error');
-  assert.deepEqual(h.events.at(-1), { type: 'inbound-delivery-error', id: 'id-1', seq: 9, remoteUid: 'bob' });
+  assert.deepEqual(h.events.at(-1), { type: 'inbound-delivery-error', id: 'id-1', seq: 9, remoteUid: 'bob', createdAt: 1000 });
 });
 
 test('an inbound deliver frame routes through onEnvelope', async () => {

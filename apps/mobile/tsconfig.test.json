@@ -16,6 +16,10 @@
     "src/crypto/crypto-box.ts",
     "src/crypto/persistent-store.ts",
     "src/crypto/persistent-store.test.ts",
+    "src/ui/async-submit.ts",
+    "src/ui/async-submit.test.ts",
+    "src/ui/conversation-actions.ts",
+    "src/ui/conversation-actions.test.ts",
     "src/app/shadow-search.ts",
     "src/app/shadow-search.test.ts"
   ],

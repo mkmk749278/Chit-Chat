@@ -8,8 +8,10 @@
  */
 
 import React, { useState } from 'react';
-import { FlatList, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
+import { runBusy } from './async-submit';
+import { Icon } from './icons';
 import { avatarColor, initials, useTheme } from './theme';
 
 export interface ChatSummary {
@@ -30,6 +32,7 @@ export function ChatsListScreen({
   onOpenChat,
   onNewChat,
   onSearchSubmit,
+  revealing: revealingProp = false,
 }: {
   chats: ChatSummary[];
   onOpenChat: (id: string) => void;
@@ -37,15 +40,41 @@ export function ChatsListScreen({
   /**
    * Called when the user submits the search field (return key). Used for the hidden-chat secret
    * entry (Signature Feature 1, §3.3): a matching secret reveals that one chat; a non-match is
-   * indistinguishable from an ordinary failed search. Optional so the screen stays presentational.
+   * indistinguishable from an ordinary failed search. The reveal checks the secret against EVERY
+   * hidden chat (no short-circuit, §3.1), so it can take real time — it may return a promise, during
+   * which the search bar shows a spinner and is disabled (Requirement 1.3, 4.6). Optional so the
+   * screen stays presentational.
    */
-  onSearchSubmit?: (text: string) => void;
+  onSearchSubmit?: (text: string) => void | Promise<void>;
+  /** True while a hidden-chat reveal is in flight, when the container drives the state itself. */
+  revealing?: boolean;
 }): React.JSX.Element {
   const t = useTheme();
   const [query, setQuery] = useState('');
+  const [revealingLocal, setRevealingLocal] = useState(false);
+  // In-flight if either the container says so or our own awaited reveal is running.
+  const revealing = revealingProp || revealingLocal;
   const trimmed = query.trim().toLowerCase();
   const visible =
     trimmed.length === 0 ? chats : chats.filter((c) => c.name.toLowerCase().includes(trimmed));
+
+  const submitSearch = (): void => {
+    if (onSearchSubmit === undefined) {
+      return;
+    }
+    const text = query;
+    void runBusy({
+      enabled: !revealingLocal,
+      busy: revealingLocal,
+      setBusy: setRevealingLocal,
+      action: async () => {
+        // Pass the raw query through; the secure-gate checks it against all hidden-chat candidates
+        // without short-circuiting (§3.1 timing safety) — that flow is intentionally untouched here.
+        await onSearchSubmit(text);
+        setQuery('');
+      },
+    });
+  };
 
   return (
     <View style={[styles.screen, { backgroundColor: t.bg }]}>
@@ -57,26 +86,28 @@ export function ChatsListScreen({
           accessibilityRole="button"
           accessibilityLabel="New chat"
         >
-          <Text style={[styles.headerButtonText, { color: t.brandSoft }]}>✎</Text>
+          <Icon name="compose" size={20} color={t.brandSoft} />
         </Pressable>
       </View>
 
       <View style={[styles.search, { backgroundColor: t.field }]}>
+        <View style={styles.searchIcon}>
+          <Icon name="search" size={18} color={t.faint} />
+        </View>
         <TextInput
           style={[styles.searchInput, { color: t.text }]}
           placeholder="Search"
           placeholderTextColor={t.faint}
           value={query}
           onChangeText={setQuery}
-          onSubmitEditing={() => {
-            if (onSearchSubmit !== undefined) {
-              onSearchSubmit(query);
-              setQuery('');
-            }
-          }}
+          onSubmitEditing={submitSearch}
+          editable={!revealing}
           returnKeyType="search"
           accessibilityLabel="Search chats"
         />
+        {revealing && (
+          <ActivityIndicator style={styles.searchSpinner} color={t.brandSoft} accessibilityLabel="Revealing" />
+        )}
       </View>
 
       <FlatList
@@ -114,8 +145,8 @@ export function ChatsListScreen({
         )}
         ListEmptyComponent={
           <View style={styles.empty}>
-            <Text style={styles.emptyIcon}>💬</Text>
-            <Text style={[styles.emptyTitle, { color: t.text }]}>
+            <Icon name="chats" size={40} color={t.faint} />
+            <Text style={[styles.emptyTitle, { color: t.text, marginTop: 12 }]}>
               {trimmed.length > 0 ? 'No matches' : 'No chats yet'}
             </Text>
             <Text style={[styles.emptyBody, { color: t.subtext }]}>
@@ -133,7 +164,7 @@ export function ChatsListScreen({
         accessibilityRole="button"
         accessibilityLabel="Start new chat"
       >
-        <Text style={[styles.fabText, { color: t.onBrand }]}>+</Text>
+        <Icon name="compose" size={24} color={t.onBrand} />
       </Pressable>
     </View>
   );
@@ -157,14 +188,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  headerButtonText: { fontSize: 17, fontWeight: '700' },
   search: {
     marginHorizontal: 20,
     marginBottom: 10,
     borderRadius: 12,
     paddingHorizontal: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
   },
-  searchInput: { paddingHorizontal: 12, paddingVertical: 10, fontSize: 15 },
+  searchIcon: { paddingLeft: 8 },
+  searchInput: { flex: 1, paddingHorizontal: 12, paddingVertical: 10, fontSize: 15 },
+  searchSpinner: { marginRight: 10 },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -195,7 +229,6 @@ const styles = StyleSheet.create({
   badgeText: { color: '#fff', fontSize: 11, fontWeight: '700' },
   separator: { height: StyleSheet.hairlineWidth, marginLeft: 86 },
   empty: { alignItems: 'center', marginTop: 96, paddingHorizontal: 40 },
-  emptyIcon: { fontSize: 40, marginBottom: 12 },
   emptyTitle: { fontSize: 17, fontWeight: '700' },
   emptyBody: { fontSize: 13, textAlign: 'center', marginTop: 6 },
   fab: {
@@ -209,5 +242,4 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     elevation: 4,
   },
-  fabText: { fontSize: 30, lineHeight: 34, fontWeight: '600' },
 });

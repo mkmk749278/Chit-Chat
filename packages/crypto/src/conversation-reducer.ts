@@ -14,7 +14,8 @@
  *
  * The reducer guarantees, for any arrival order and any duplication of events:
  *   - each message appears exactly once, keyed by `(remoteUid?/direction/seq)`, and
- *     the list is ordered ascending by `seq` (Requirements 6.2, 6.9);
+ *     the list is ordered chronologically by `createdAt` with a stable `seq` tiebreak
+ *     (Requirements 6.2, 6.9, 2.1, 2.2);
  *   - `composer.canSend` is `true` only when the trimmed composer text is non-empty
  *     and its length is within 1..4096 (Requirements 6.3, 6.4);
  *   - inbound delivery-error entries carry `text === null` while failed outbound
@@ -47,6 +48,18 @@ export interface RenderableMessage {
   seq: number;
   /** `out` for messages this device sent, `in` for messages it received. */
   direction: 'out' | 'in';
+  /**
+   * Wall-clock creation time in unix-ms, used as the PRIMARY render-ordering key (P2). Sourced
+   * from `MessageRow.createdAt` for outbound messages and from the receive time for inbound
+   * messages (both already exist in `messaging.ts`). Ordering by `createdAt` makes a
+   * cross-direction back-and-forth and backfilled store-and-forward messages render
+   * chronologically, instead of by the per-direction `seq` (which jumbles a real conversation).
+   *
+   * OPTIONAL at the type level for backward compatibility: an absent or non-finite value sorts as
+   * if `0`, so legacy rows keep a deterministic position via the `seq`/`messageKey` tiebreak
+   * (Requirements 2.1, 2.2).
+   */
+  createdAt?: number;
   /**
    * Decrypted text for display, or `null` for an inbound delivery-error entry whose
    * ciphertext could not be decrypted (Requirements 5.5, 6.9).
@@ -83,7 +96,7 @@ export interface RenderableMessage {
 export interface ConversationState {
   /** Connection indicator state surfaced by the Realtime_Client (4.7, 6.6). */
   connection: ConnectionStatus;
-  /** Messages rendered ascending by `seq`, each exactly once (6.2). */
+  /** Messages rendered chronologically by `createdAt` (stable `seq` tiebreak), each exactly once (6.2, 2.1, 2.2). */
   messages: RenderableMessage[];
   /**
    * Inbound sequence numbers that immediately follow a detected gap — i.e. for each `s`
@@ -156,6 +169,11 @@ export type ConversationEvent =
       id: string;
       seq: number;
       remoteUid?: string;
+      /**
+       * Receive time in unix-ms (P2). Stamped so a failed-decrypt row sorts chronologically in
+       * place rather than jumping to the top of the list. Optional/absent sorts as if `0`.
+       */
+      createdAt?: number;
       threadId?: string;
     }
   | {
@@ -234,11 +252,27 @@ function messageKey(message: Pick<RenderableMessage, 'direction' | 'seq'>): stri
 }
 
 /**
- * Insert or replace a message in the list, keeping it deduplicated by
- * `(direction, seq)` and ordered ascending by `seq`. A repeated arrival for an
- * existing key replaces the stored entry rather than adding a duplicate row, so the
- * list contains each `(direction, seq)` exactly once regardless of arrival order or
- * duplication (Requirement 6.2).
+ * The render-ordering key for a message: its `createdAt` when finite, else `0` (P2). Absent or
+ * non-finite timestamps (legacy rows) collapse to `0` so they retain a deterministic position via
+ * the `seq`/`messageKey` tiebreak rather than sorting unpredictably (Requirements 2.1, 2.2).
+ */
+function orderKey(message: RenderableMessage): number {
+  return typeof message.createdAt === 'number' && Number.isFinite(message.createdAt)
+    ? message.createdAt
+    : 0;
+}
+
+/**
+ * Insert or replace a message in the list, keeping it deduplicated by `(direction, seq)` (P2) and
+ * ordered by `createdAt` ascending with a stable, total tiebreak. A repeated arrival for an
+ * existing key replaces the stored entry rather than adding a duplicate row, so the list contains
+ * each `(direction, seq)` exactly once regardless of arrival order or duplication (Requirement
+ * 6.2 / 2.3).
+ *
+ * Primary order is wall-clock `createdAt` so a cross-direction back-and-forth renders
+ * chronologically (Requirement 2.1). When two messages share the same `createdAt` (same-ms
+ * send/receive, or legacy rows with no timestamp), the prior `seq`-then-`direction` ordering breaks
+ * the tie, producing a deterministic total order independent of arrival order (Requirement 2.2).
  */
 function upsertMessage(
   messages: readonly RenderableMessage[],
@@ -247,9 +281,15 @@ function upsertMessage(
   const key = messageKey(incoming);
   const next = messages.filter((existing) => messageKey(existing) !== key);
   next.push(incoming);
-  next.sort((a, b) =>
-    a.seq === b.seq ? messageKey(a).localeCompare(messageKey(b)) : a.seq - b.seq,
-  );
+  next.sort((a, b) => {
+    const byTime = orderKey(a) - orderKey(b);
+    if (byTime !== 0) {
+      return byTime;
+    }
+    // Stable, total tiebreak when timestamps tie: fall back to the prior seq-then-direction
+    // ordering so the comparator is deterministic for equal createdAt (Requirement 2.2).
+    return a.seq === b.seq ? messageKey(a).localeCompare(messageKey(b)) : a.seq - b.seq;
+  });
   return next;
 }
 
@@ -358,6 +398,7 @@ export function reduce(
         direction: 'in',
         text: null,
         status: 'delivery-error',
+        ...(event.createdAt !== undefined ? { createdAt: event.createdAt } : {}),
       });
       return {
         ...state,
@@ -399,6 +440,8 @@ export function reduce(
           text: null,
           status: m.status,
           deleted: true,
+          // Preserve the ordering key so the tombstone stays in chronological place (P2).
+          ...(m.createdAt !== undefined ? { createdAt: m.createdAt } : {}),
         })),
       };
 
