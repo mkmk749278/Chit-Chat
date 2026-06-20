@@ -20,8 +20,13 @@
     "src/ui/async-submit.test.ts",
     "src/ui/conversation-actions.ts",
     "src/ui/conversation-actions.test.ts",
+    "src/ui/overflow-menu-zorder.test.ts",
+    "src/ui/shadow-creation-ui.test.ts",
+    "src/ui/shadow-pin-settings-ui.test.ts",
     "src/app/shadow-search.ts",
-    "src/app/shadow-search.test.ts"
+    "src/app/shadow-search.test.ts",
+    "src/data/shadow-secret-persistence.ts",
+    "src/data/shadow-secret-persistence.test.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }

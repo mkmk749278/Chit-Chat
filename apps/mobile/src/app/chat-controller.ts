@@ -46,6 +46,7 @@ import {
   KeyStoreSequenceAllocator,
   reduce,
   RealtimeClient,
+  ShadowSecretStore,
   ShadowSequenceAllocator,
   type ConversationEvent,
   type ConversationState,
@@ -55,6 +56,7 @@ import {
   type RegistrationResult,
   type SafetyNumber,
   type SessionManager,
+  type ShadowSecretPersistence,
   type VerificationEvent,
   type VerificationResponseKind,
 } from '@chat-app/crypto';
@@ -65,6 +67,7 @@ import { API_BASE_URL, REGISTER_URL, WS_URL } from '../api/api-config';
 import { createDirectoryClient, createPreKeyClaimClient, type DirectoryClient } from '../api/api-clients';
 import { createNativeVault, probeNativeCrypto } from '../crypto/native-vault';
 import { createSecureGate, type RevealResult, type SecureGate, type UnlockResult } from './secure-gate';
+import { createVaultShadowSecretPersistence } from '../data/shadow-secret-persistence';
 import {
   createPersistentKeyStore,
   createPersistentSignalProtocolStore,
@@ -214,6 +217,28 @@ export interface ChatController {
    * encrypted store is open.
    */
   loadConversations(): Promise<RehydratedConversation[]>;
+  /**
+   * The device-local, real-PIN-gated {@link ShadowSecretStore} for Shadow Chat, backed by the
+   * encrypted on-device vault so its master secret, alias key, and alias→thread mappings survive
+   * app restarts (Requirements 9.8, 9.9). `null` before the encrypted store is open (e.g. setup
+   * still running) or when the controller has no vault. Provisioned during bootstrap on launch.
+   */
+  getShadowSecretStore(): ShadowSecretStore | null;
+  /**
+   * Ensure the device-local shadow secrets (the Master_Secret and the Alias_Key) exist so a shadow
+   * chat can actually be bound (Shadow Chat, Requirement 11.6). The long-press creation flow calls
+   * this in App_Mode `real` immediately before {@link ShadowSecretStore.bindAlias}: `bindAlias`
+   * derives the thread id from `{ masterSecret, aliasKey }` and binds NOTHING when they are absent,
+   * so the very first shadow chat on a device needs the secrets provisioned once. When neither
+   * secret is present this generates a fresh 32-byte CSPRNG Master_Secret and a fresh 32-byte
+   * Alias_Key and persists them DURABLY through the same encrypted vault the store reads from
+   * (Requirements 9.1, 9.5, 9.8) — never to any network endpoint — so they survive restarts and a
+   * later `/alias` re-resolves to the same thread. Idempotent: a no-op once provisioned. Returns
+   * `false` (provisioning nothing) when the encrypted store is not yet open. The caller MUST only
+   * invoke it in real mode; it performs no App_Mode check of its own (the secrets are still
+   * release-gated behind real mode by {@link ShadowSecretStore}).
+   */
+  provisionShadowContext(): Promise<boolean>;
   subscribe(listener: (event: ControllerEvent) => void): () => void;
   /**
    * Subscribe to sign-in state. Fires with the signed-in UID when Firebase restores a
@@ -303,6 +328,11 @@ export function createMobileController(): ChatController {
   // Live messaging stack, created on sign-in and torn down on sign-out.
   let vault: PersistentVault | null = null;
   let gate: SecureGate | null = null;
+  let shadowSecretStore: ShadowSecretStore | null = null;
+  // The narrow durable persistence the shadow store reads/writes through. Retained so the long-press
+  // creation flow can provision the Master_Secret / Alias_Key once (Req 11.6) without widening the
+  // store's port; the secrets live ONLY in the encrypted vault and never reach the network.
+  let shadowSecretPersistence: ShadowSecretPersistence | null = null;
   let keyStore: KeyStore | null = null;
   let messaging: Messaging | null = null;
   let sessions: SessionManager | null = null;
@@ -378,6 +408,18 @@ export function createMobileController(): ChatController {
     keyStore = store;
     // Bind the secure-gate (app PIN lock + hidden chats, §3/§6) to the encrypted vault.
     gate = createSecureGate(vault);
+    // Provision the Shadow Chat secret store from DURABLE state (Shadow Chat, task 12.1): the store
+    // reads/writes the shadow master secret, alias key, and alias→thread mappings through the SAME
+    // encrypted vault, so a shadow chat provisioned in a previous session is rehydrated on launch and
+    // survives restarts (Requirements 9.8, 9.9). Real-PIN gating and fail-closed reads live in the
+    // shared `ShadowSecretStore`; read-path persistence errors are swallowed to keep the result
+    // observationally identical to decoy/null mode (no UI signal that shadow data exists, Req 8.7).
+    shadowSecretPersistence = createVaultShadowSecretPersistence(vault);
+    shadowSecretStore = new ShadowSecretStore(shadowSecretPersistence, {
+      onPersistenceError: () => {
+        /* fail closed: getShadowContext/listAliasEntries already return null/[]; nothing to surface */
+      },
+    });
 
     const identityManager = new DefaultIdentityManager(store, createPureTsLibsignalKeyGen());
     await identityManager.ensureIdentity(uid);
@@ -472,6 +514,9 @@ export function createMobileController(): ChatController {
     realtime = null;
     keyStore = null;
     vault = null;
+    gate = null;
+    shadowSecretStore = null;
+    shadowSecretPersistence = null;
     activeRecipient = null;
   }
 
@@ -790,6 +835,34 @@ export function createMobileController(): ChatController {
       return () => listeners.delete(listener);
     },
 
+    getShadowSecretStore(): ShadowSecretStore | null {
+      return shadowSecretStore;
+    },
+
+    async provisionShadowContext(): Promise<boolean> {
+      // No encrypted vault open yet (setup still running / signed out) → provision nothing.
+      const persistence = shadowSecretPersistence;
+      if (persistence === null) {
+        return false;
+      }
+      // Idempotent: provision each secret only when absent, so an already-provisioned device (incl.
+      // one rehydrated from a previous session) is untouched and existing thread ids stay valid.
+      const [existingSecret, existingKey] = await Promise.all([
+        persistence.loadMasterSecret(),
+        persistence.loadAliasKey(),
+      ]);
+      if (existingSecret === null || existingSecret.length === 0) {
+        // 32-byte CSPRNG master secret (seeds deriveShadowThreadId). Persisted only into the
+        // encrypted vault; never transmitted off-device (Req 9.1, 9.5).
+        await persistence.saveMasterSecret(crypto.getRandomValues(new Uint8Array(32)));
+      }
+      if (existingKey === null || existingKey.length === 0) {
+        // 32-byte CSPRNG alias-HMAC key (keys hashAlias / matchAlias).
+        await persistence.saveAliasKey(crypto.getRandomValues(new Uint8Array(32)));
+      }
+      return true;
+    },
+
     onAuthStateChanged(listener: (uid: string | null) => void): () => void {
       authListeners.add(listener);
       // Fire immediately with the current known state so a late subscriber isn't stuck.
@@ -966,6 +1039,14 @@ export function createDemoController(): ChatController {
     subscribe(listener: (event: ControllerEvent) => void): () => void {
       listeners.add(listener);
       return () => listeners.delete(listener);
+    },
+    getShadowSecretStore(): ShadowSecretStore | null {
+      // Demo controller has no encrypted vault to back the durable shadow store.
+      return null;
+    },
+    async provisionShadowContext(): Promise<boolean> {
+      // No encrypted vault in the demo controller, so there is nothing to provision.
+      return false;
     },
     onAuthStateChanged(): () => void {
       return () => undefined;

@@ -8,14 +8,16 @@ privacy messenger. It is the standalone breakout of **Wave 3 / Requirement 8** (
 explicitly deferred this feature until it had its own design and security review. These
 requirements are **derived from** the approved design document
 (`.kiro/specs/shadow-chat/design.md`) and trace to that design's behaviour, constraints, and its
-ten Correctness Properties.
+fourteen Correctness Properties.
 
 A **shadow chat** is a completely independent, invisible parallel thread with an existing contact.
 The contact already appears in the normal ("surface") chat list; the shadow thread is reachable
 **only** by typing a private `/alias` (for example `/contact1`) into the chat search bar. Typing the
 exact correct alias opens that contact's shadow thread; a wrong alias and a non-existent alias are
-**indistinguishable**, because the app never confirms that an alias exists. Each contact has exactly
-**one** shadow thread.
+**indistinguishable**, because the app never confirms that an alias exists. A contact may have **any
+number** of shadow threads — there is no per-contact or overall cap — each created from a long-press
+**"Shadow chat"** action and keyed by a distinct `/alias`, and each may **optionally** carry its own
+per-chat PIN that is blank by default.
 
 The feature is shaped end-to-end by one hard constraint: **the deployed backend at
 `api.luminchat.app` is frozen and cannot be redeployed.** No requirement below may introduce a
@@ -25,10 +27,13 @@ fully blind, and surface chat behaviour is byte-for-byte unchanged whenever no `
 
 The pure cryptographic core already exists and is implemented and tested (`shadow-chat.ts`,
 `secret-hash.ts`, `content-payload.ts`, `app-lock.ts`, `lockout-policy.ts` in `@chat-app/crypto`).
-Its cryptographic semantics MUST NOT change; the one additive change permitted is extending
-`content-payload.ts` with an optional `threadId`. These requirements cover the remaining work:
+Its cryptographic semantics MUST NOT change, with two reviewed additive exceptions: extending
+`content-payload.ts` with an optional `threadId`, and extending `deriveShadowThreadId` with an
+**optional alias discriminator** so a contact may hold any number of distinct shadow threads (see
+Requirement 2). These requirements cover the remaining work:
 messaging integration, the per-thread conversation store, the two-client end-to-end test, the
-search-bar alias interception, and device-local secret persistence.
+search-bar alias interception, the long-press shadow-chat creation flow, the optional per-chat PIN
+lock, and durable device-local secret persistence.
 
 ### Relationship to parent requirements and cross-cutting constraints
 
@@ -49,6 +54,12 @@ storage-size analysis (documented in the hidden-chat threat model, not addressed
 non-shadow hidden-chat secret/UX surfaces beyond the decoy/real PIN gating needed for plausible
 deniability.
 
+Two **UI-layout bugs** are explicitly **out of scope** for this feature and are tracked separately as
+their own fixes: (a) the status-bar/notch overlap, and (b) the `⋮` overflow menu drawing behind
+messages. They are not part of this feature's acceptance criteria. The only cross-reference is that
+the new long-press shadow-chat menu (Requirement 11) is specified to render as a top-level overlay
+with correct z-order so it does not reproduce the same class of z-order defect.
+
 ## Glossary
 
 - **Client_App**: The Chit-Chat client on either the Mobile_App (React Native / Expo, `apps/mobile`)
@@ -60,7 +71,8 @@ deniability.
 - **Surface_Chat**: The normal, visible 1:1 conversation with a contact, identified by the contact's
   Firebase UID, exactly as delivered in Phase 1.
 - **Shadow_Thread**: An invisible, independent parallel conversation with the same contact,
-  identified by a derived `threadId`. Each contact has exactly one Shadow_Thread.
+  identified by a derived `threadId`. A contact may have **any number** of Shadow_Threads, each bound
+  to a distinct Alias; there is no per-contact or overall cap.
 - **threadId**: The deterministic, symmetric hexadecimal identifier of a Shadow_Thread, produced by
   the Thread_Id_Deriver. Absent ⇒ Surface_Chat; present ⇒ Shadow_Thread.
 - **Master_Secret**: The device-local shadow master secret that seeds `threadId` derivation. Never
@@ -72,12 +84,14 @@ deniability.
 - **Alias**: A user-private string beginning with `/` (for example `/contact1`) typed into the chat
   search bar to open a Shadow_Thread; its normalised grammar is `/` followed by one or more
   lowercase alphanumeric characters.
-- **Alias_Entry**: A device-local mapping `{ aliasHash, ref: { peerUid, threadId } }` where
-  `aliasHash` is the HMAC of the normalised Alias under the Alias_Key. The plaintext Alias is never
-  stored.
-- **Thread_Id_Deriver**: The pure-core function `deriveShadowThreadId(masterSecret, uidA, uidB)` that
-  computes a `threadId` as a hex HMAC-SHA256 over the canonically sorted UID pair plus the literal
-  `"shadow"`.
+- **Alias_Entry**: A device-local mapping `{ aliasHash, ref: { peerUid, threadId, pinVerifier? } }`
+  where `aliasHash` is the HMAC of the normalised Alias under the Alias_Key and the optional
+  `pinVerifier` is the hash-only PBKDF2 verifier of the Alias's optional per-chat PIN. The plaintext
+  Alias and the plaintext per-chat PIN are never stored.
+- **Thread_Id_Deriver**: The pure-core function
+  `deriveShadowThreadId(masterSecret, uidA, uidB, alias?)` that computes a `threadId` as a hex
+  HMAC-SHA256 over the canonically sorted UID pair plus the literal `"shadow"`, optionally followed by
+  the ASCII Unit Separator `0x1f` and the normalised Alias when an Alias discriminator is supplied.
 - **Alias_Resolver**: The search-bar adapter logic that detects alias input and resolves it to a
   Shadow_Thread via the pure-core `isAliasInput` / `matchAlias` functions.
 - **Content_Payload_Codec**: The pure-core `encodeContentPayload` / `decodeContentPayload` pair that
@@ -107,6 +121,17 @@ deniability.
   state), or `null` (no PIN matched; indistinguishable between "no PIN set" and "wrong PIN").
 - **Key_Store**: The on-device encrypted storage (SQLCipher on mobile, in-memory on web) used for
   sequence counters and device-local secrets.
+- **Long_Press_Menu**: The overlay popup menu opened by a press-and-hold (long-press) gesture on a
+  chat-list row or a contact / new-chat row; in App_Mode `real` it includes a "Shadow chat" action.
+- **Shadow_Chat_Creation_Sheet**: The sheet opened from the "Shadow chat" action that collects a new
+  Alias and an optional per-chat PIN before binding a new Shadow_Thread.
+- **Per_Chat_PIN**: An optional, user-chosen secret that gates re-entry to a single Shadow_Thread.
+  Its default is none; when set it is stored only as the hash-only PBKDF2 `pinVerifier` on the
+  Alias_Entry. It is independent of the App_Lock PIN.
+- **Secret_Hasher**: The pure-core `secret-hash.ts` component (`hashSecret` / `verifySecret`,
+  PBKDF2-HMAC-SHA256) used to produce and verify the per-chat PIN `pinVerifier`.
+- **Pbkdf2_Provider**: The injected, off-UI-thread provider that runs PBKDF2 work for the
+  Secret_Hasher so that per-chat PIN hashing and verification never block the user interface.
 
 ## Requirements
 
@@ -122,7 +147,7 @@ deniability.
 4. IF the entered alias input is not a grammatically valid normalised alias, OR is a grammatically valid normalised alias whose hash matches no stored Alias_Entry, THEN THE Alias_Resolver SHALL return no shadow result and SHALL present the input as an ordinary search, such that a wrong alias and a non-existent alias produce identical observable behaviour, including a total elapsed matching time that differs between the two cases by no more than 50 milliseconds.
 5. WHILE the Client_App is in any App_Mode other than `real`, THE Alias_Resolver SHALL NOT resolve any alias input to a Shadow_Thread and SHALL present the input as an ordinary search.
 6. THE Alias_Resolver SHALL examine every stored Alias_Entry when matching an alias, without short-circuiting on the first match, such that the total elapsed matching time varies by no more than 50 milliseconds regardless of which entry matches or whether any entry matches.
-7. THE Client_App SHALL associate at most one Shadow_Thread with each contact.
+7. THE Client_App SHALL allow any number of distinct Shadow_Threads to be associated with each contact, and any number of Shadow_Threads overall, each Shadow_Thread bound to a distinct Alias, and SHALL impose no per-contact or global cap on the number of Shadow_Threads.
 8. WHEN a binding between an alias and a contact's Shadow_Thread is created in App_Mode `real`, THE Client_App SHALL derive the `threadId` from the Thread_Id_Deriver and SHALL store the mapping as an Alias_Entry hash through the Shadow_Secret_Store.
 
 ### Requirement 2: Deterministic, Symmetric Thread-Id Derivation
@@ -137,8 +162,14 @@ deniability.
 4. WHEN two distinct Master_Secrets are used for the same UID pair, THE Thread_Id_Deriver SHALL produce different `threadId` values, so that thread identities are compartmentalised by Master_Secret.
 5. IF the Thread_Id_Deriver is given an empty Master_Secret, or either UID is empty or missing, or the two supplied UIDs are identical, THEN THE Thread_Id_Deriver SHALL return an error indicating invalid input and SHALL NOT produce a `threadId`.
 6. THE Thread_Id_Deriver SHALL derive the `threadId` using only the provided Master_Secret and UID pair as inputs, requiring no handshake, network round-trip, or message exchange between the two devices to converge on that value.
+7. WHEN the Thread_Id_Deriver is supplied a grammatically valid normalised Alias discriminator together with a non-empty Master_Secret and two distinct non-empty UIDs, THE Thread_Id_Deriver SHALL compute the `threadId` as the HMAC-SHA256, keyed by the Master_Secret, over the two UIDs sorted in ascending byte-wise lexicographic order, concatenated with the literal ASCII string `"shadow"`, followed by the ASCII Unit Separator byte `0x1f`, followed by the normalised Alias.
+8. WHEN the Thread_Id_Deriver is supplied two distinct grammatically valid normalised Aliases for the same Master_Secret and UID pair, THE Thread_Id_Deriver SHALL produce two different `threadId` values, so that distinct Aliases identify distinct Shadow_Threads for the same contact.
+9. WHEN no Alias discriminator is supplied (the Alias argument is omitted, empty, or absent), THE Thread_Id_Deriver SHALL produce a `threadId` that is byte-for-byte identical to the value produced by the pre-discriminator derivation for the same Master_Secret and UID pair, so that previously derived single-thread identifiers remain valid without migration.
+10. THE Thread_Id_Deriver SHALL produce, for every Master_Secret, UID pair, and valid Alias, a discriminated `threadId` that is not equal to any `threadId` derived without an Alias discriminator, because the `0x1f` separator cannot occur in a normalised Alias or in a UID, making the discriminated and non-discriminated identifier spaces disjoint.
+11. WHEN an Alias discriminator is supplied, THE Thread_Id_Deriver SHALL produce an identical `threadId` regardless of the order in which the two UIDs are supplied and SHALL produce a byte-for-byte identical `threadId` across repeated calls for the same Master_Secret, UID pair, and Alias, so that both peers converge on the same discriminated identifier offline from only the shared Master_Secret and the shared Alias with no handshake.
+12. IF the Thread_Id_Deriver is supplied an Alias discriminator that is not a grammatically valid normalised Alias, THEN THE Thread_Id_Deriver SHALL return an error indicating invalid input and SHALL NOT produce a `threadId`.
 
-> Aligns with design Correctness Property 1 and parent Requirement 8 / §9.4 (no-handshake derivation).
+> Aligns with design Correctness Property 1 (deterministic, symmetric, alias-discriminated, no-handshake derivation), Correctness Property 1b (alias-discrimination collision-resistance and legacy compatibility), and parent Requirement 8 / §9.4 (no-handshake derivation).
 
 ### Requirement 3: Server-Blind Wire Compatibility
 
@@ -246,8 +277,10 @@ deniability.
 5. THE Client_App SHALL store shadow secrets and mappings only through the existing encrypted Key_Store mechanism (SQLCipher on the Mobile_App, in-memory on the Web_App) and SHALL NOT write them to any unencrypted storage location.
 6. WHILE App_Mode is not `real`, THE Client_App SHALL deny all read and write access to the Master_Secret, the Alias_Key, and the Alias_Entry mappings.
 7. IF a Key_Store write of a shadow secret or alias mapping fails, THEN THE Shadow_Secret_Store SHALL abort the write operation, SHALL NOT leave any partial or plaintext secret or mapping persisted, and SHALL surface an error indication to the Client_App identifying the failed persistence operation.
+8. THE Shadow_Secret_Store SHALL persist the Master_Secret, the Alias_Key, and the Alias_Entry mappings — including each Alias_Entry's optional per-chat PIN `pinVerifier` — durably within the encrypted Key_Store on the Mobile_App (SQLCipher vault), such that they survive Client_App restarts, and as in-memory state on the Web_App; WHEN the Mobile_App is restarted, an Alias that resolved to a Shadow_Thread before the restart SHALL resolve to the same Shadow_Thread after the restart.
+9. THE Shadow_Secret_Store SHALL persist each optional per-chat PIN only as the hash-only `pinVerifier` within the corresponding Alias_Entry, and SHALL NOT persist the plaintext per-chat PIN, nor any reversible encoding of it, in any structure.
 
-> Aligns with design Correctness Property 9 and parent §9.3 / §9.4 and cross-cutting C1.
+> Aligns with design Correctness Property 9 (alias plaintext never persisted), Correctness Property 12 (durable persistence round-trip across restarts), and parent §9.3 / §9.4 and cross-cutting C1.
 
 ### Requirement 10: Verifiability and Core-First Delivery
 
@@ -255,7 +288,7 @@ deniability.
 
 #### Acceptance Criteria
 
-1. THE shadow feature SHALL ship pure-core unit and property tests (no network, filesystem, or UI dependencies) covering the Content_Payload_Codec `threadId` round-trip and decode totality, the Shadow_Sequence_Allocator offset and contiguity, the Conversation_Registry routing and exclusion, the Shadow_Secret_Store real-versus-decoy behaviour, and the alias indistinguishability and hash-only persistence.
+1. THE shadow feature SHALL ship pure-core unit and property tests (no network, filesystem, or UI dependencies) covering the Content_Payload_Codec `threadId` round-trip and decode totality, the Thread_Id_Deriver alias-discriminated derivation (distinct valid Aliases for the same pair yielding distinct `threadId` values, an omitted Alias reproducing the byte-for-byte legacy `threadId`, and disjointness of the discriminated and legacy identifier spaces), the Shadow_Sequence_Allocator offset and contiguity, the Conversation_Registry routing and exclusion, the Shadow_Secret_Store real-versus-decoy behaviour, the optional per-chat PIN gating including set, change, and removal performed after creation (hash-only persistence and off-UI-thread verification), the durable persistence round-trip across a simulated Client_App restart, and the alias indistinguishability and hash-only persistence.
 2. WHEN the Content_Payload_Codec decode test executes, THE shadow feature SHALL verify decode totality such that every input byte sequence (including empty, maximum-length, and arbitrary random sequences) returns either a valid decoded payload or a defined decode-failure result, and SHALL fail the test if any input raises a thrown exception or unhandled error.
 3. Each property test SHALL execute a minimum of 100 randomised iterations and SHALL reference the design Correctness Property it validates.
 4. IF any single randomised iteration of a property test produces a counterexample that violates the referenced Correctness Property, THEN THE property test SHALL fail and SHALL report the counterexample input.
@@ -263,4 +296,40 @@ deniability.
 6. THE two-client end-to-end test SHALL capture every frame placed on the transport and SHALL assert that no `threadId` and no plaintext ever appear on the wire and that a shadow Ciphertext_Envelope and a surface Ciphertext_Envelope expose an identical field-name set and identical field count, such that no single per-frame attribute classifies a frame as surface or shadow.
 7. WHILE the two-client end-to-end test has not passed, THE shadow feature SHALL prevent any UI work, comprising search-bar alias interception and chat-list, notification, and preview exclusion, from beginning.
 
-> Aligns with cross-cutting C3 (verifiable) and C2 (shared core) and the design's "core-first" sequencing and end-to-end test as the explicit gate.
+> Aligns with cross-cutting C3 (verifiable) and C2 (shared core), the design's "core-first" sequencing and end-to-end test as the explicit gate, and Correctness Properties 1, 1b, 11, and 12.
+
+### Requirement 11: Create a Shadow Chat from a Long-Press Menu
+
+**User Story:** As an at-risk user, I want to create a new shadow chat for a contact from a long-press menu, so that I can start a hidden conversation without anything in the surface chat changing and without leaving a visible trace.
+
+#### Acceptance Criteria
+
+1. WHEN a user performs a press-and-hold (long-press) gesture on a chat-list row or on a contact / new-chat row, THE Client_App SHALL open the Long_Press_Menu for that row.
+2. WHILE the Client_App is in App_Mode `real`, THE Long_Press_Menu SHALL include a "Shadow chat" action.
+3. WHILE the Client_App is in any App_Mode other than `real`, THE Long_Press_Menu SHALL NOT include the "Shadow chat" action and SHALL present only the ordinary row actions.
+4. WHEN the user selects the "Shadow chat" action in App_Mode `real`, THE Client_App SHALL open the Shadow_Chat_Creation_Sheet containing an Alias input field and an optional per-chat PIN input field, where the per-chat PIN field is blank by default.
+5. THE Shadow_Chat_Creation_Sheet SHALL accept the entered Alias only when, after normalisation through the same normalisation used by the Alias_Resolver, the Alias begins with `/` and is a grammatically valid normalised Alias; otherwise THE Shadow_Chat_Creation_Sheet SHALL reject the Alias and SHALL NOT create a Shadow_Thread.
+6. WHEN the user confirms the Shadow_Chat_Creation_Sheet in App_Mode `real` with a grammatically valid normalised Alias, THE Client_App SHALL derive a new alias-discriminated `threadId` for that contact from the Thread_Id_Deriver using the entered Alias as the discriminator and SHALL persist a hash-only Alias_Entry binding that Alias to the new Shadow_Thread through the Shadow_Secret_Store.
+7. WHEN a Shadow_Thread is created through the Shadow_Chat_Creation_Sheet, THE Client_App SHALL NOT disturb the contact's Surface_Chat, meaning it SHALL send no message, SHALL advance no surface sequence number, and SHALL mutate no Surface_Chat Conversation_State.
+8. THE Client_App SHALL render the Long_Press_Menu as a top-level overlay (a modal portal) drawn above all other chat-list and conversation content, such that the menu and any shadow-chat content it leads to are never drawn behind other user-interface elements.
+9. WHEN a Shadow_Thread has been created through the Shadow_Chat_Creation_Sheet, THE Client_App SHALL keep that Shadow_Thread fully hidden from the default chat list, notifications, and previews, and SHALL make it re-enterable only by entering its bound `/alias` through the Alias_Resolver.
+10. IF the user attempts to create a Shadow_Thread while the Client_App is in any App_Mode other than `real`, THEN THE Client_App SHALL perform no binding, SHALL persist nothing, and SHALL leave all existing state unchanged.
+
+> Aligns with design Correctness Property 13 (creation-flow inertness under decoy/locked mode), Correctness Property 1b (alias-discriminated derivation), and parent Requirement 8.1 / 8.2.
+
+### Requirement 12: Optional Per-Chat PIN Lock
+
+**User Story:** As an at-risk user, I want each shadow chat to optionally carry its own PIN that I can set at creation or add later, so that I can add a second lock to especially sensitive threads while keeping it entirely my choice.
+
+#### Acceptance Criteria
+
+1. THE Client_App SHALL treat the per-chat PIN as optional, defaulting to no per-chat PIN, and SHALL NOT require a per-chat PIN to create or open any Shadow_Thread.
+2. WHEN a user enters the bound `/alias` of a Shadow_Thread whose Alias_Entry has no `pinVerifier` set, THE Client_App SHALL open that Shadow_Thread directly without prompting for a per-chat PIN.
+3. WHEN a user enters the bound `/alias` of a Shadow_Thread whose Alias_Entry has a `pinVerifier` set, THE Client_App SHALL prompt for the per-chat PIN and SHALL open the Shadow_Thread only when `verifySecret` confirms the entered per-chat PIN against the stored `pinVerifier`.
+4. IF the entered per-chat PIN does not verify against the stored `pinVerifier`, THEN THE Client_App SHALL present a generic failure with no shadow-specific signal and SHALL NOT open the Shadow_Thread.
+5. WHEN the user is in App_Mode `real`, THE Client_App SHALL allow the per-chat PIN of a Shadow_Thread to be set at creation through the Shadow_Chat_Creation_Sheet and, on an already-created Shadow_Thread, to be added, changed, or removed through a chat settings or options action, treating both paths as first-class.
+6. THE Client_App SHALL store the per-chat PIN only as the hash-only `pinVerifier` produced by the Secret_Hasher (PBKDF2 via `secret-hash.ts`) on the Alias_Entry, and SHALL NOT persist the plaintext per-chat PIN and SHALL NOT transmit the per-chat PIN to any network endpoint, whether the per-chat PIN is set at creation or set, changed, or removed later.
+7. WHEN the Client_App verifies a per-chat PIN or performs a later set, change, or removal of a per-chat PIN, THE Client_App SHALL run the PBKDF2 work on the Pbkdf2_Provider off the user-interface thread and SHALL display a progress indicator while the operation is in flight, such that the user interface does not freeze.
+8. WHILE the Client_App is in App_Mode `decoy` or `null`, THE Client_App SHALL NOT present any per-chat PIN settings entry point, and any per-chat PIN set, change, or removal operation SHALL be inert, performing no operation and persisting nothing.
+
+> Aligns with design Correctness Property 11 (per-chat PIN gating including later set/change/remove, hash-only and off-thread) and parent Requirement 8.1 (no shadow-specific signal on failure).

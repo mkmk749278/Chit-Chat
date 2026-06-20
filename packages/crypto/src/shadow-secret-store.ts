@@ -38,6 +38,12 @@
  */
 
 import type { AppMode } from './app-lock';
+import {
+  getPbkdf2Provider,
+  hashSecret,
+  setPbkdf2Provider,
+  type Pbkdf2Provider,
+} from './secret-hash';
 import { deriveShadowThreadId, hashAlias, type AliasEntry } from './shadow-chat';
 
 /** A device-local reference from an alias to the contact's shadow thread. */
@@ -46,6 +52,15 @@ export interface ShadowThreadRef {
   peerUid: string;
   /** The derived shadow thread id (from {@link deriveShadowThreadId}). */
   threadId: string;
+  /**
+   * Optional hash-only verifier for this shadow chat's per-chat PIN (design "Optional per-chat PIN",
+   * Requirements 11.6, 12.5, 12.6). When a user sets a PIN on the chat, it is hashed via
+   * `secret-hash.hashSecret` (PBKDF2-HMAC-SHA256) and ONLY the resulting self-describing verifier
+   * string is stored here — never the plaintext PIN. Absent ⇒ the chat has no per-chat PIN and opens
+   * directly (the default). The verifier is checked off the UI thread with `secret-hash.verifySecret`
+   * at re-entry; it is independent of the App_Lock PIN and never transmitted off the device.
+   */
+  pinVerifier?: string;
 }
 
 /** The pair of device-local secrets released only in real-PIN mode. */
@@ -95,6 +110,19 @@ export interface ShadowSecretStoreOptions {
    * secret value. Write paths (`putAlias` / `bindAlias`) do not use this hook — they propagate.
    */
   onPersistenceError?: (operation: ShadowSecretOperation, error: unknown) => void;
+  /**
+   * Off-UI-thread PBKDF2 provider seam used ONLY when {@link ShadowSecretStore.bindAlias} hashes an
+   * optional per-chat PIN into its hash-only `pinVerifier` (design "Optional per-chat PIN" — PIN
+   * hashing "runs off the UI thread (the existing off-thread `Pbkdf2Provider`) so the app never
+   * freezes"; Requirements 11.6, 12.5). This is ADDITIVE and narrow: it neither changes the
+   * {@link ShadowSecretPersistence} port shape nor the `secret-hash` module — when supplied, the
+   * store installs this provider for the single `hashSecret` call (restoring the prior provider
+   * immediately afterwards) so the expensive PBKDF2 derivation runs on the platform's background
+   * thread. When omitted, PIN hashing uses whatever process-wide provider `secret-hash` already has
+   * installed (on mobile the off-thread native provider bound at boot; otherwise the WebCrypto
+   * default), so behaviour is unchanged for callers that do not inject one.
+   */
+  pbkdf2Provider?: Pbkdf2Provider;
 }
 
 /**
@@ -104,6 +132,7 @@ export interface ShadowSecretStoreOptions {
 export class ShadowSecretStore {
   private readonly persistence: ShadowSecretPersistence;
   private readonly onPersistenceError?: (operation: ShadowSecretOperation, error: unknown) => void;
+  private readonly pbkdf2Provider?: Pbkdf2Provider;
 
   /**
    * @param persistence - the narrow device-local persistence port (bound by the platform adapter to
@@ -113,6 +142,7 @@ export class ShadowSecretStore {
   constructor(persistence: ShadowSecretPersistence, options: ShadowSecretStoreOptions = {}) {
     this.persistence = persistence;
     this.onPersistenceError = options.onPersistenceError;
+    this.pbkdf2Provider = options.pbkdf2Provider;
   }
 
   /**
@@ -174,26 +204,41 @@ export class ShadowSecretStore {
   /**
    * Bind an `alias` to a contact's shadow thread in real-PIN mode and return the resulting
    * {@link ShadowThreadRef}, or `null` (persisting nothing) in any non-real mode (Requirements 1.7,
-   * 1.8, 8.2). In real mode it loads the context, derives the `threadId` via `deriveShadowThreadId`,
-   * computes the opaque `aliasHash` via `hashAlias`, stores the hash-only `AliasEntry`, and returns
-   * the ref.
+   * 1.8, 8.2). In real mode it loads the context, derives the **alias-discriminated** `threadId` via
+   * `deriveShadowThreadId(masterSecret, myUid, peerUid, alias)` — so a single contact pair can hold
+   * any number of distinct shadow threads, one per distinct alias (design Component 1; Requirements
+   * 1.8, 2.7–2.12) — computes the opaque `aliasHash` via `hashAlias`, optionally hashes a supplied
+   * per-chat PIN into a hash-only `pinVerifier`, stores EXACTLY ONE hash-only `AliasEntry`, and
+   * returns the ref.
+   *
+   * **Optional per-chat PIN (Requirements 11.6, 12.5, 12.6).** When a non-empty `pin` is supplied it
+   * is hashed via `secret-hash.hashSecret` (PBKDF2-HMAC-SHA256) and ONLY the resulting verifier is
+   * stored on `ref.pinVerifier` — never the plaintext PIN. The expensive derivation runs through the
+   * injected off-UI-thread {@link ShadowSecretStoreOptions.pbkdf2Provider} seam (or the process-wide
+   * provider when none is injected) so the UI never freezes. An omitted/empty `pin` leaves
+   * `pinVerifier` absent — the default no-PIN chat that opens directly.
    *
    * Fails closed by ABORTING (Requirements 8.7, 9.7): any persistence-port error (loading the
    * context or saving the entry) propagates to the caller, leaving nothing partial persisted — the
-   * threadId is derived purely in memory and the single `saveAliasEntry` is the only write, so an
-   * abort before/at that write leaves no partial mapping. Returns `null` (binding nothing) when the
-   * shadow secrets are not provisioned. Throws if `alias` is not a grammatically valid alias.
+   * threadId, aliasHash, and any pinVerifier are computed purely in memory and the single
+   * `saveAliasEntry` is the only write, so an abort before/at that write leaves no partial mapping.
+   * Returns `null` (binding nothing) when the shadow secrets are not provisioned. Throws if `alias`
+   * is not a grammatically valid alias (before any write, so nothing partial is persisted).
    *
    * @param mode - the resolved {@link AppMode}, or `null` when no PIN matched.
-   * @param alias - the raw alias text (e.g. `"/contact1"`); never persisted in plaintext.
+   * @param alias - the raw alias text (e.g. `"/contact1"`); never persisted in plaintext, and also
+   *   the per-chat discriminator mixed into the derived `threadId`.
    * @param peerUid - the contact's UID the shadow thread is with.
    * @param myUid - this device's own UID; the pair seeds the symmetric thread-id derivation.
+   * @param pin - the optional, user-chosen per-chat PIN; when non-empty it is hashed (never stored
+   *   in plaintext) into `ref.pinVerifier`. Omitted/empty ⇒ no per-chat PIN (the default).
    */
   async bindAlias(
     mode: AppMode | null,
     alias: string,
     peerUid: string,
     myUid: string,
+    pin?: string,
   ): Promise<ShadowThreadRef | null> {
     if (mode !== 'real') {
       return null; // non-real mode binds nothing and persists nothing (Req 8.2, 8.6)
@@ -204,15 +249,105 @@ export class ShadowSecretStore {
     if (context === null) {
       return null; // secrets not provisioned: nothing to bind against
     }
-    const threadId = await deriveShadowThreadId(context.masterSecret, myUid, peerUid);
+    // Alias-discriminated derivation (Req 1.8, 2.7): mixing the alias in lets one contact pair hold
+    // many distinct threads. Throws on a grammatically invalid alias BEFORE any write (fail-closed).
+    const threadId = await deriveShadowThreadId(context.masterSecret, myUid, peerUid, alias);
     const aliasHash = await hashAlias(alias, context.aliasKey);
     if (aliasHash === null) {
       throw new Error('shadow-secret-store: cannot bind a grammatically invalid alias');
     }
     const ref: ShadowThreadRef = { peerUid, threadId };
-    // The ONLY write: store the opaque hash + ref. Never the plaintext/normalised alias (Req 9.2).
+    // Optional per-chat PIN: store ONLY the hash-only verifier, derived off the UI thread (Req 11.6,
+    // 12.5). An omitted/empty PIN leaves the chat with no per-chat lock (the default).
+    if (pin !== undefined && pin !== '') {
+      ref.pinVerifier = await this.hashPin(pin);
+    }
+    // The ONLY write: store the opaque hash + ref. Never the plaintext/normalised alias or the
+    // plaintext PIN (Req 9.2, 12.6).
     await this.persistence.saveAliasEntry({ aliasHash, ref });
     return ref;
+  }
+
+  /**
+   * Set, change, or remove the optional per-chat PIN of an already-bound shadow thread, returning the
+   * updated {@link ShadowThreadRef} (Requirements 12.5, 12.6, 12.7, 12.8). This is the "add/change/
+   * remove later" companion to {@link bindAlias}'s creation-time PIN: it locates the bound entry by
+   * its derived `threadId` and rewrites ONLY that entry's hash-only `pinVerifier`, leaving every other
+   * field (`aliasHash`, `peerUid`, `threadId`) and every other entry untouched.
+   *
+   * **Hash-only, never plaintext (Requirement 12.6).** When `newPin` is a non-empty string it is
+   * hashed via the existing off-UI-thread {@link hashPin} helper (PBKDF2-HMAC-SHA256 through the
+   * injected {@link ShadowSecretStoreOptions.pbkdf2Provider} seam, or the process-wide provider when
+   * none is injected) and ONLY the resulting verifier is stored on `ref.pinVerifier`; the plaintext
+   * PIN is never persisted or transmitted. When `newPin` is `null` (or empty) the lock is removed by
+   * clearing `ref.pinVerifier` to `undefined`, so the chat opens directly again (Requirement 12.1).
+   *
+   * **Real-mode only; inert under decoy/locked (Requirement 12.8).** In any non-`real` mode this is a
+   * no-op: it returns `null` and persists nothing, so the per-chat-PIN control is inert under coercion
+   * and reveals nothing. In `real` mode, if no bound entry has `ref.threadId === threadId` it returns
+   * `null` and persists nothing.
+   *
+   * **Fails closed by ABORTING (Requirements 8.7, 9.7).** Like the other write/binding paths, any
+   * persistence-port error (loading the entries or saving the updated entry) propagates to the caller,
+   * leaving the prior verifier unchanged — the updated ref is computed purely in memory and the single
+   * `saveAliasEntry` is the only write, so an abort before/at that write leaves the stored entry as it
+   * was. It does not use `onPersistenceError` (that hook is for the fail-closed READ paths only).
+   *
+   * @param mode - the resolved {@link AppMode}, or `null` when no PIN matched. Only `real` acts.
+   * @param threadId - the derived shadow thread id whose bound entry's per-chat PIN is being changed.
+   * @param newPin - the new per-chat PIN: a non-empty string SETS/CHANGES the lock (stored hash-only),
+   *   while `null` (or an empty string) REMOVES it. The plaintext is never stored or transmitted.
+   */
+  async setThreadPin(
+    mode: AppMode | null,
+    threadId: string,
+    newPin: string | null,
+  ): Promise<ShadowThreadRef | null> {
+    if (mode !== 'real') {
+      return null; // non-real mode is inert: change nothing, persist nothing (Req 12.8)
+    }
+    // Load entries directly (NOT via listAliasEntries) so a persistence error ABORTS by propagating,
+    // rather than being swallowed to [] (Req 9.7 — write paths fail closed loudly).
+    const entries = await this.persistence.loadAliasEntries();
+    const entry = entries.find((candidate) => candidate.ref.threadId === threadId);
+    if (entry === undefined) {
+      return null; // no bound thread matches: persist nothing (Req 12.5 only acts on a bound thread)
+    }
+    // Touch ONLY this entry's pinVerifier; preserve aliasHash, peerUid, threadId, and every other
+    // field verbatim. A non-empty PIN is hashed hash-only off the UI thread (Req 12.6, 12.7); a null
+    // or empty PIN clears the lock to undefined (Req 12.1).
+    const updatedRef: ShadowThreadRef = { ...entry.ref };
+    if (newPin !== null && newPin !== '') {
+      updatedRef.pinVerifier = await this.hashPin(newPin);
+    } else {
+      updatedRef.pinVerifier = undefined;
+    }
+    // The ONLY write: persist the same aliasHash with the updated ref. Atomic per the port contract,
+    // so an abort here leaves the prior verifier unchanged (Req 9.7).
+    await this.persistence.saveAliasEntry({ aliasHash: entry.aliasHash, ref: updatedRef });
+    return updatedRef;
+  }
+
+  /**
+   * Hash a per-chat PIN into the hash-only `pinVerifier` via `secret-hash.hashSecret`, routing the
+   * expensive PBKDF2 derivation through the injected off-UI-thread {@link Pbkdf2Provider} seam when
+   * one was supplied. The seam is installed for ONLY this single `hashSecret` call and the prior
+   * process-wide provider is restored immediately afterwards (in a `finally`, even on throw), so the
+   * `secret-hash` module is used unchanged and no global state leaks beyond the derivation. When no
+   * provider was injected, the process-wide provider is used as-is (on mobile the native off-thread
+   * provider installed at boot; otherwise the WebCrypto default).
+   */
+  private async hashPin(pin: string): Promise<string> {
+    if (this.pbkdf2Provider === undefined) {
+      return hashSecret(pin);
+    }
+    const previous = getPbkdf2Provider();
+    setPbkdf2Provider(this.pbkdf2Provider);
+    try {
+      return await hashSecret(pin);
+    } finally {
+      setPbkdf2Provider(previous);
+    }
   }
 
   /**

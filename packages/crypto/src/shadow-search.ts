@@ -32,6 +32,30 @@
  * `shadow-chat.ts` primitives, and returns a decision. {@link createShadowSearchHandler} adds the
  * one shared side-effecting step both platforms need — opening the thread in the injected
  * {@link ConversationRegistry} — while leaving platform-specific navigation to a callback.
+ *
+ * ## Optional per-chat PIN re-entry (design "Opening a shadow thread … optional PIN branch"; tasks
+ * 13/14, Requirements 12.2, 12.3, 12.4, 12.7)
+ *
+ * A matched shadow thread MAY carry an optional, hash-only `pinVerifier` (see
+ * {@link ShadowThreadRef.pinVerifier}). {@link resolveSearchInput} stays a pure decision and simply
+ * surfaces that verifier on the `shadow` outcome; the gating itself lives in the ONE shared
+ * {@link createShadowSearchHandler} (C2 — web and mobile branch identically). On a real-mode alias
+ * match the handler branches on `pinVerifier`:
+ *   - **absent (the default)** ⇒ open the thread directly, exactly as before;
+ *   - **present** ⇒ the handler requires a successful off-UI-thread verification through the injected
+ *     {@link ShadowSearchHandlerDeps.requestPinAndVerify} seam BEFORE opening. A correct PIN opens
+ *     the thread; a wrong PIN (or any verification error, or a missing seam) yields the GENERIC
+ *     {@link SearchResolution} `{ kind: 'denied' }`, which carries NO threadId, peerUid, or any other
+ *     shadow-identifying field, so a failed PIN is indistinguishable from any other generic failure
+ *     and never opens the thread.
+ *
+ * The verification itself (the `secret-hash.verifySecret(pin, ref.pinVerifier)` call) and the
+ * PIN-prompt UI / busy-spinner are deliberately the platform's responsibility, injected through
+ * `requestPinAndVerify`: the platform shows its prompt modal, runs `verifySecret` OFF the UI thread
+ * (via the off-thread `Pbkdf2Provider` it binds at boot) inside the existing busy/spinner pattern,
+ * and resolves a single boolean. The core only orchestrates the branch and must not block — it
+ * `await`s the seam and then opens or denies. Keeping the branch in this one shared handler is what
+ * makes web and mobile go through an identical decision path (C2).
  */
 
 import type { AppMode } from './app-lock';
@@ -40,15 +64,34 @@ import { isAliasInput, matchAlias, type AliasEntry } from './shadow-chat';
 import type { ShadowContext, ShadowThreadRef } from './shadow-secret-store';
 
 /**
- * The discriminated outcome of resolving a typed search input. `shadow` means the input was a valid
- * alias that matched a provisioned shadow thread in real mode; `search` means "treat as an ordinary
- * search" and is returned for EVERY non-match case (not an alias, non-real mode, unprovisioned, no
- * match, or any internal error), always carrying the original input as `query` so the ordinary
- * search path is byte-for-byte identical regardless of why we fell through.
+ * The discriminated outcome of resolving (and, for the handler, acting on) a typed search input.
+ *
+ *   - `shadow` — the input was a valid alias that matched a provisioned shadow thread in real mode.
+ *     It carries the thread's `{ threadId, peerUid }` and, when the matched thread has an optional
+ *     per-chat PIN, its hash-only `pinVerifier` (so the handler knows to require verification before
+ *     opening). When the thread has no per-chat PIN, `pinVerifier` is absent and the thread opens
+ *     directly.
+ *   - `search` — "treat as an ordinary search"; returned for EVERY non-match case (not an alias,
+ *     non-real mode, unprovisioned, no match, or any internal error), always carrying the original
+ *     input as `query` so the ordinary search path is byte-for-byte identical regardless of why we
+ *     fell through (Requirements 1.4, 1.5, 8.4, 8.6).
+ *   - `denied` — a GENERIC failure outcome produced ONLY by {@link createShadowSearchHandler} when a
+ *     matched thread's per-chat PIN failed verification (or could not be verified). It deliberately
+ *     carries NO threadId, peerUid, query, or any other field, so a wrong per-chat PIN is
+ *     indistinguishable from any other generic failure and reveals nothing shadow-specific
+ *     (Requirements 12.3, 12.4, 12.7). {@link resolveSearchInput} itself never returns `denied` (it
+ *     stays a pure, PIN-agnostic decision); only the handler can, after running the injected verify
+ *     seam.
  */
 export type SearchResolution =
-  | { readonly kind: 'shadow'; readonly threadId: string; readonly peerUid: string }
-  | { readonly kind: 'search'; readonly query: string };
+  | {
+      readonly kind: 'shadow';
+      readonly threadId: string;
+      readonly peerUid: string;
+      readonly pinVerifier?: string;
+    }
+  | { readonly kind: 'search'; readonly query: string }
+  | { readonly kind: 'denied' };
 
 /**
  * The narrow READ surface of the device-local `ShadowSecretStore` that alias resolution needs. It is
@@ -104,7 +147,14 @@ export async function resolveSearchInput(
     if (ref === null) {
       return fallthrough;
     }
-    return { kind: 'shadow', threadId: ref.threadId, peerUid: ref.peerUid };
+    // Surface the matched thread plus its OPTIONAL per-chat PIN verifier (when set), so the handler
+    // can require off-thread verification before opening (Requirement 12.2). `resolveSearchInput`
+    // stays a pure, PIN-agnostic decision — it never prompts, verifies, or denies; it only reports
+    // whether a PIN is required by including `pinVerifier`. Omit the key entirely when absent so a
+    // no-PIN match's shape is unchanged (`{ kind: 'shadow', threadId, peerUid }`).
+    return ref.pinVerifier === undefined
+      ? { kind: 'shadow', threadId: ref.threadId, peerUid: ref.peerUid }
+      : { kind: 'shadow', threadId: ref.threadId, peerUid: ref.peerUid, pinVerifier: ref.pinVerifier };
   } catch {
     // Fail closed to the indistinguishable ordinary-search outcome: an internal error must never
     // surface a shadow-specific signal (Requirements 8.4, 8.6).
@@ -132,6 +182,24 @@ export interface ShadowSearchHandlerDeps {
    * normal query (Requirements 1.5, 8.4, 8.6).
    */
   readonly onOrdinarySearch: (query: string) => void;
+  /**
+   * OPTIONAL per-chat PIN prompt + verification seam (design "optional PIN branch"; tasks 13/14,
+   * Requirements 12.2, 12.3, 12.4, 12.7). Invoked by the handler ONLY when a real-mode alias match
+   * carries a per-chat `pinVerifier`. The platform implements it by: showing its PIN-prompt modal
+   * (with the existing busy/spinner pattern so submit is disabled while in flight), running
+   * `secret-hash.verifySecret(pin, ref.pinVerifier)` OFF the UI thread (via the off-thread
+   * `Pbkdf2Provider` it binds at boot), and resolving `true` when the entered PIN verifies, else
+   * `false` (including when the user cancels). The core merely `await`s this seam and must not block:
+   * `true` opens the thread, `false` (or a thrown error) yields the generic `{ kind: 'denied' }`
+   * with no shadow-specific signal.
+   *
+   * This is the single platform-specific verification seam — keeping it injected (rather than
+   * forking the handler per platform) is what lets web and mobile share ONE PIN-gating decision path
+   * (C2). When OMITTED, the handler cannot verify a per-chat PIN and therefore fails CLOSED: a
+   * PIN-protected thread is denied (never opened). Threads with no per-chat PIN are unaffected and
+   * always open directly, so adapters that do not yet wire a prompt keep working unchanged.
+   */
+  readonly requestPinAndVerify?: (ref: ShadowThreadRef) => Promise<boolean>;
 }
 
 /**
@@ -143,21 +211,80 @@ export interface ShadowSearchHandlerDeps {
  * {@link ShadowSearchHandlerDeps.onOrdinarySearch} with the original text. It returns the
  * {@link SearchResolution} so callers/tests can assert which branch was taken.
  *
- * The handler is intentionally thin: all decision logic lives in the pure {@link resolveSearchInput},
- * and the only side effects are the registry open + the two injected callbacks.
+ * **Optional per-chat PIN branch (Requirements 12.2, 12.3, 12.4, 12.7).** When the shadow match
+ * carries a `pinVerifier`, the thread is opened ONLY after the injected
+ * {@link ShadowSearchHandlerDeps.requestPinAndVerify} seam resolves `true` (the platform prompts and
+ * verifies off the UI thread). A correct PIN opens the thread and the handler returns the original
+ * `{ kind: 'shadow', … }`; a wrong PIN, a thrown verification error, or a missing seam yields the
+ * generic `{ kind: 'denied' }` (no shadow-identifying info) and opens nothing. A match WITHOUT a
+ * `pinVerifier` opens directly, exactly as before. No `onOrdinarySearch` is invoked for a denial —
+ * the prompt the platform already showed surfaces the generic failure.
+ *
+ * The handler is intentionally thin: all match logic lives in the pure {@link resolveSearchInput},
+ * the PIN prompt/verification lives behind the injected seam, and the only side effects are the
+ * registry open + the injected callbacks.
  */
 export function createShadowSearchHandler(
   deps: ShadowSearchHandlerDeps,
 ): (input: string) => Promise<SearchResolution> {
   return async (input: string): Promise<SearchResolution> => {
     const resolution = await resolveSearchInput(input, deps.getMode(), deps.store);
-    if (resolution.kind === 'shadow') {
-      // Open (or no-op if already open) the thread locally, then hand off to platform navigation.
-      deps.registry.openShadowThread(resolution.threadId, resolution.peerUid);
-      deps.onOpenShadowThread({ threadId: resolution.threadId, peerUid: resolution.peerUid });
-    } else {
+    if (resolution.kind === 'search') {
+      // Ordinary search path (the only non-shadow kind resolveSearchInput can produce).
       deps.onOrdinarySearch(resolution.query);
+      return resolution;
     }
-    return resolution;
+    if (resolution.kind !== 'shadow') {
+      // Defensive: resolveSearchInput never yields `denied` (only the handler does, below), but keep
+      // the switch total so a future resolution kind cannot silently open a thread.
+      return resolution;
+    }
+
+    const ref: ShadowThreadRef =
+      resolution.pinVerifier === undefined
+        ? { peerUid: resolution.peerUid, threadId: resolution.threadId }
+        : {
+            peerUid: resolution.peerUid,
+            threadId: resolution.threadId,
+            pinVerifier: resolution.pinVerifier,
+          };
+
+    // No per-chat PIN (the default): open directly — unchanged behaviour.
+    if (resolution.pinVerifier === undefined) {
+      return openAndReturn(deps, ref, resolution);
+    }
+
+    // Per-chat PIN set: require a successful off-UI-thread verification through the injected seam
+    // BEFORE opening. Fail CLOSED — a missing seam, a `false` result, or any thrown error all yield
+    // the generic denial with no shadow-specific signal and open nothing (Requirements 12.3, 12.4).
+    if (deps.requestPinAndVerify === undefined) {
+      return { kind: 'denied' };
+    }
+    let verified = false;
+    try {
+      verified = await deps.requestPinAndVerify(ref);
+    } catch {
+      verified = false;
+    }
+    if (!verified) {
+      return { kind: 'denied' };
+    }
+    return openAndReturn(deps, ref, resolution);
   };
+}
+
+/**
+ * Perform the single shared open side-effect for a verified/PIN-free shadow match — open the thread
+ * in the registry, then hand off to platform navigation — and return the original `shadow`
+ * resolution. Factored out so the no-PIN and PIN-verified paths open through identical code.
+ */
+function openAndReturn(
+  deps: ShadowSearchHandlerDeps,
+  ref: ShadowThreadRef,
+  resolution: Extract<SearchResolution, { kind: 'shadow' }>,
+): SearchResolution {
+  // Open (or no-op if already open) the thread locally, then hand off to platform navigation.
+  deps.registry.openShadowThread(ref.threadId, ref.peerUid);
+  deps.onOpenShadowThread(ref);
+  return resolution;
 }

@@ -199,7 +199,12 @@ minimum of **100 iterations**, each referencing the design Correctness Property 
 - Property tests use `fast-check` (≥100 iterations) and each references the Correctness Property it validates, reporting counterexamples on failure (Req 10.3, 10.4).
 - All 10 requirements and all 10 correctness properties are covered: P1→5.2/5.1, P2→2.3/5.1, P3→2.3/5.1, P4→7.4, P5→3.1/5.1, P6→1.3, P7→1.3, P8→4.3/5.1, P9→7.4, P10→7.3.
 
-## Task Dependency Graph
+## Task Dependency Graph (Completed Baseline — historical)
+
+> This graph scheduled the now-completed baseline (tasks 1–10, all `[x]`). It is preserved for
+> traceability. The **active** scheduling graph for the remaining (incomplete) work is the
+> `## Task Dependency Graph` section at the very end of this file, which covers only the Full-Vision
+> Delta tasks (epics 11–18).
 
 ```json
 {
@@ -215,6 +220,203 @@ minimum of **100 iterations**, each referencing the design Correctness Property 
     { "id": 8, "tasks": ["8.1", "8.2"] },
     { "id": 9, "tasks": ["8.3"] },
     { "id": 10, "tasks": ["8.4"] }
+  ]
+}
+```
+
+---
+
+# Full-Vision Delta — Implementation Plan
+
+## Completed baseline (done)
+
+Epics 1–10 above are **COMPLETE and green** (`[x]`) and MUST NOT be re-done. They shipped: the
+additive `content-payload` `threadId`, `ShadowSequenceAllocator` (`+1e9`), `messaging.ts` `threadId`
+routing, `ConversationRegistry`, the two-client e2e gate (`messaging-shadow-e2e.test.ts`),
+`ShadowSecretStore` (`getShadowContext` / `listAliasEntries` / `bindAlias` single-thread-per-pair),
+and the shared `shadow-search.ts` `/alias` interception wired on web + mobile with chat-list /
+notification / preview exclusion.
+
+Two gaps the baseline explicitly deferred — and that this delta closes — are: (1) the
+alias-**provisioning / binding UI** was never built, so today every `/alias` correctly falls through
+to ordinary search; and (2) `ShadowSecretPersistence` was effectively in-memory / unprovisioned, so
+nothing survived restart.
+
+## Delta overview
+
+This section implements the **full-vision evolution** documented in design.md's
+"Design Update — Full-Vision Evolution" and codified by requirements.md Requirements 1.7, 2.7–2.12,
+9.8–9.9, 11, and 12. All work stays in **TypeScript** (the design specifies concrete TS interfaces,
+not pseudocode) inside the existing `@chat-app/crypto` pure core (`packages/crypto/src`) plus the
+thin `apps/web` and `apps/mobile` adapters.
+
+The **frozen-server / no-wire-change** constraint is preserved everywhere: the alias-discriminated
+`threadId` still rides only inside the encrypted content payload, sequence offsets are unchanged, and
+no `CiphertextEnvelope` / ack / codec field changes (Req 3, Property 5). The only permitted core
+deltas are the **optional alias discriminator** on `deriveShadowThreadId` (the reviewed cryptographic
+deviation, Component 1) and the additive `setThreadPin` / `pinVerifier` on the store — the
+`KeyStore` / `ShadowSecretPersistence` / messaging ports keep their shapes.
+
+Per cross-cutting **C3**, every new pure-core unit ships `fast-check` property tests running a
+minimum of **100 iterations**, each referencing the design Correctness Property it validates.
+Production-grade: no scaffolds, no stubs, no placeholders — every task is fully buildable.
+
+## Tasks
+
+- [ ] 11. Alias-discriminated thread-id derivation (pure core, reviewed deviation)
+  - [ ] 11.1 Extend `deriveShadowThreadId` with the optional alias discriminator in `packages/crypto/src/shadow-chat.ts`
+    - Add the optional 4th parameter to `deriveShadowThreadId(masterSecret, uidA, uidB, alias?)`. When a grammatically valid `alias` is supplied, the HMAC-SHA256 input becomes `canonicalSortUids(uidA, uidB) + "shadow" + 0x1f + normalizeAlias(alias)` (ASCII Unit Separator `0x1f`); when `alias` is omitted/empty, emit the **byte-for-byte legacy** input `canonicalSortUids(uidA, uidB) + "shadow"` (no migration).
+    - Validate the alias via the existing `normalizeAlias`; throw an invalid-input error when a supplied alias is not grammatically valid (mirrors the existing empty-secret / empty-or-identical-uid throws). Keep output a 64-char lowercase hex string; keep derivation deterministic and symmetric (order-independent) with or without the alias.
+    - Do not change `canonicalSortUids`, `normalizeAlias`, `hashAlias`, `matchAlias`, or the space separator (changing it would re-key every existing thread id).
+    - _Requirements: 1.7, 2.7, 2.8, 2.9, 2.10, 2.11, 2.12_
+
+  - [ ]* 11.2 Extend the derivation property test `packages/crypto/src/shadow-chat-derivation.property.test.ts`
+    - **Property 1 (UPDATED): Deterministic, symmetric, alias-discriminated thread id** — for arbitrary non-empty `masterSecret`, uids `a`,`b`, and arbitrary optional valid alias `s`: `derive(secret,a,b,s) === derive(secret,b,a,s)`, stable across calls; distinct master secrets yield distinct ids.
+    - **Property 1b: Alias-discrimination collision-resistance + legacy compatibility** — for distinct valid aliases `s1 ≠ s2`, `derive(...,s1) !== derive(...,s2)`; `derive(...)` with the alias omitted equals the **byte-for-byte legacy** id; a discriminated id is never equal to any legacy id (the `0x1f` separator is disjoint from normalized-alias and uid charsets).
+    - Use `fast-check` with ≥100 iterations; report counterexamples on failure.
+    - _Validates: Property 1, Property 1b / Requirements 1.7, 2.7, 2.8, 2.9, 2.10, 2.11, 10.1, 10.3, 10.4_
+
+  - [ ]* 11.3 Extend unit tests in `packages/crypto/src/shadow-chat.test.ts`
+    - Assert a representative discriminated id equals the expected HMAC over `…"shadow" + 0x1f + alias`; assert omitted-alias output equals the pre-existing legacy id constant; assert an invalid alias discriminator throws; assert symmetry/determinism with the alias present.
+    - _Requirements: 2.7, 2.9, 2.12_
+
+- [ ] 12. Durable encrypted persistence for `ShadowSecretPersistence`
+  - [ ] 12.1 Implement the durable SQLCipher-backed adapter on mobile in `apps/mobile`
+    - Implement a concrete `ShadowSecretPersistence` (the unchanged narrow port from `shadow-secret-store.ts`) bound to the **existing encrypted on-device vault** — the same SQLCipher database and key the mobile `KeyStore` already uses — persisting the master secret, the alias key, and the full `AliasEntry<ShadowThreadRef>` set (including each optional `pinVerifier`).
+    - Make `saveAliasEntry` / `saveMasterSecret` / `saveAliasKey` **atomic** (all-or-nothing) so an aborted write leaves no partial or plaintext data (Req 9.7); never write to any unencrypted location (Req 9.5); never transmit secrets off-device (Req 9.1, C1). Wire the adapter into the mobile boot path so the `ShadowSecretStore` is provisioned from durable state on launch.
+    - _Requirements: 9.1, 9.5, 9.7, 9.8, 9.9_
+
+  - [ ] 12.2 Implement the in-memory (session) adapter on web in `apps/web`
+    - Implement the same `ShadowSecretPersistence` port as an in-memory Map-backed adapter (matching the baseline "in-memory on web" constraint), persisting master secret, alias key, and the `AliasEntry` set incl. `pinVerifier` for the session; same atomic-write contract on the write paths. Wire it into the web app boot path.
+    - _Requirements: 9.5, 9.8, 9.9_
+
+  - [ ]* 12.3 Write durable-persistence tests (core + adapter)
+    - **Property 12: Durable persistence round-trip** — for arbitrary master secret, alias key, and bound `AliasEntry` set persisted in `real` mode, a fresh `ShadowSecretStore` reading the same durable persistence (post-restart) recovers identical secrets and the identical entry set incl. each `pinVerifier`; a `/alias` that resolved before a simulated restart still resolves after. Use `fast-check` ≥100 iterations against a durable fake `ShadowSecretPersistence`.
+    - Assert fail-closed on write error: a failing `saveAliasEntry` causes the binding write path to abort (propagate) leaving nothing persisted (Req 9.7); add a mobile-adapter atomicity check that a mid-write failure persists no partial row.
+    - _Validates: Property 12 / Requirements 9.7, 9.8, 9.9_
+
+- [ ] 13. `ShadowSecretStore` — alias-discriminated `bindAlias` + `setThreadPin` (optional per-chat PIN)
+  - [ ] 13.1 Update `bindAlias` to be alias-discriminated and PIN-aware in `packages/crypto/src/shadow-secret-store.ts`
+    - Change the signature to `bindAlias(mode, alias, peerUid, myUid, pin?)`. In `real` mode only: derive the **alias-discriminated** `threadId` via `deriveShadowThreadId(masterSecret, myUid, peerUid, alias)`; compute `aliasHash` via `hashAlias`; when a non-empty `pin` is supplied, hash it via `secret-hash.hashSecret` (run **off the UI thread** through an injected `Pbkdf2Provider` seam added to the store) and set `ref.pinVerifier`; persist exactly **one** hash-only `AliasEntry` durably. Never store the plaintext/normalised alias or the plaintext PIN; return `null` (persisting nothing) in any non-real mode; abort (propagate) on any persistence error.
+    - Thread the injected hasher/`Pbkdf2Provider` through `ShadowSecretStoreOptions` (additive, no port-shape change); keep the existing fail-closed read-path semantics intact.
+    - _Requirements: 1.8, 9.9, 11.6, 12.5, 12.6_
+
+  - [ ] 13.2 Add `setThreadPin(mode, threadId, newPin)` to `packages/crypto/src/shadow-secret-store.ts`
+    - In `real` mode only: locate the `AliasEntry` whose `ref.threadId` matches; when `newPin` is a non-empty string, hash it off-thread via `secret-hash.hashSecret` and write `ref.pinVerifier`; when `newPin` is `null`, clear `ref.pinVerifier` (set to `undefined`). Persist the updated entry durably and hash-only (plaintext PIN never stored, never transmitted). Return the updated `ShadowThreadRef`, or `null` (no-op, persisting nothing) in any non-real mode. Abort (propagate) on persistence error.
+    - _Requirements: 12.5, 12.6, 12.7, 12.8_
+
+  - [ ]* 13.3 Extend store property + unit tests (`shadow-secret-store.property.test.ts`, `shadow-secret-store.test.ts`)
+    - **Property 11: Per-chat PIN gating incl. later set/change/remove** — absent `pinVerifier` ⇒ no PIN required; present ⇒ opens iff `verifySecret(pin, ref.pinVerifier)`; after `setThreadPin('real', threadId, newPin)` the next gating reflects the new state (non-empty ⇒ requires PIN; `null` ⇒ opens directly); the stored representation is only the PBKDF2 verifier (no plaintext PIN anywhere); in any non-real mode `setThreadPin` is a no-op.
+    - **Property 13: Creation-flow inertness under decoy/locked** — for `mode !== 'real'`, `bindAlias` returns `null` and persists nothing and `setThreadPin` is a `null` no-op; decoy and `null` are observationally identical.
+    - Confirm **Property 9** (alias plaintext never persisted) and **Property 10** (decoy reveals nothing) still hold for the new code paths. Assert the PIN hash runs through the injected off-thread `Pbkdf2Provider` seam. Use `fast-check` ≥100 iterations.
+    - _Validates: Property 9, Property 10, Property 11, Property 13 / Requirements 9.9, 12.5, 12.6, 12.8_
+
+- [ ] 14. Per-chat PIN re-entry in the shared search resolver
+  - [ ] 14.1 Extend the shared resolve path in `packages/crypto/src/shadow-search.ts`
+    - On an alias match in `real` mode, branch on `ref.pinVerifier`: when present, require an off-thread `verifySecret(pin, ref.pinVerifier)` (wrapped in the existing `runBusy` / `submitGate` busy pattern so a spinner shows and submit is disabled while verifying) before `openShadowThread`; when absent, open directly. A wrong PIN yields a **generic failure** with no shadow-specific signal and does not open the thread. Keep web + mobile on the **one shared handler** (C2) by extending `createShadowSearchHandler` rather than forking per platform.
+    - _Requirements: 12.2, 12.3, 12.4, 12.7_
+
+  - [ ]* 14.2 Extend `shadow-search.test.ts` / `shadow-search.property.test.ts`
+    - Assert: a PIN-set alias prompts and opens iff `verifySecret` returns true; a no-PIN alias opens directly without prompting; a wrong PIN returns a generic failure (indistinguishable from other failures) and does not open; verification runs through the injected off-thread provider. Property coverage references Property 11. Use `fast-check` ≥100 iterations for the property portion.
+    - _Validates: Property 11 / Requirements 12.2, 12.3, 12.4, 12.7_
+
+- [ ] 15. Long-press shadow-chat creation UI (web + mobile) — the missing provisioning piece
+  - [ ] 15.1 Mobile long-press overlay menu + creation sheet in `apps/mobile`
+    - Add a press-and-hold handler on a chat-list row (`src/ui/ChatsListScreen.tsx`) AND a contact / new-chat row (`src/ui/NewChatScreen.tsx`) that opens an overlay menu rendered through a React Native **`Modal` portal** (the same primitive `SheetModal` in `src/ui/action-sheet.tsx` uses) at top z-order — NOT an absolutely-positioned row sibling. Include a **"Shadow chat"** action **only when `App_Mode === 'real'`** (absent in decoy/`null`).
+    - Build the creation sheet: an **alias** field (must start with `/`, normalised/validated inline via `normalizeAlias`, refuses invalid) + an **optional PIN** field (blank by default, skippable). On confirm → `ShadowSecretStore.bindAlias('real', alias, peerUid, myUid, pin?)` → `ConversationRegistry.openShadowThread(threadId, peerUid)` → dismiss. Perform no send, advance no surface sequence, mutate no surface `ConversationState` or list entry. Keep the created thread hidden (re-enter only via `/alias`).
+    - _Requirements: 11.1, 11.2, 11.3, 11.4, 11.5, 11.6, 11.7, 11.8, 11.9, 11.10_
+
+  - [ ] 15.2 Web long-press overlay menu + creation sheet in `apps/web`
+    - Implement the equivalent top-layer overlay (a portal-rendered overlay above all chat-list / conversation content) and creation sheet on web (`apps/web/app/components`), wired to the **same** `bindAlias` + `ConversationRegistry.openShadowThread` path so `/alias` now resolves to a real bound thread end-to-end. Same real-mode-only gating, inline alias validation, optional-PIN field, and surface non-disturbance as mobile.
+    - _Requirements: 11.1, 11.2, 11.3, 11.4, 11.5, 11.6, 11.7, 11.8, 11.9, 11.10_
+
+  - [ ]* 15.3 Write creation-UI adapter tests (web + mobile)
+    - Assert per platform: the "Shadow chat" action appears only in `real` mode (absent under decoy/`null`); an invalid alias is rejected and binds nothing; creation leaves the surface chat untouched (no send, no surface seq advance, no surface state mutation); the overlay renders through the top-level portal (z-order assertion). References Property 13 and Property 1b.
+    - _Validates: Property 13, Property 1b / Requirements 11.2, 11.3, 11.5, 11.7, 11.8, 11.10_
+
+- [ ] 16. Per-chat PIN settings (add / change / remove later) UI (web + mobile)
+  - [ ] 16.1 Mobile shadow-chat settings/options action in `apps/mobile`
+    - Add a shadow-chat settings/options action (reachable from within an open shadow thread, e.g. `src/ui/ConversationScreen.tsx`) that calls `ShadowSecretStore.setThreadPin(mode, threadId, newPin | null)` to add, change, or remove the per-chat PIN later. Not shown in any non-`real` mode. Run the PBKDF2 work off the UI thread with a progress indicator (`runBusy` / `async-submit.ts`).
+    - _Requirements: 12.5, 12.7, 12.8_
+
+  - [ ] 16.2 Web shadow-chat settings/options action in `apps/web`
+    - Implement the equivalent per-chat PIN settings action on web (`apps/web/app/components/ConversationScreen.tsx`) calling `setThreadPin` for add/change/remove; hidden in non-`real` mode; off-thread with a spinner.
+    - _Requirements: 12.5, 12.7, 12.8_
+
+  - [ ]* 16.3 Write PIN-settings adapter tests (web + mobile)
+    - Assert: the settings entry point is present only in `real` mode (absent under decoy/`null`, Property 13); set / change / remove each call `setThreadPin` with the right argument (non-empty vs `null`); the operation runs off-thread and shows the in-flight indicator. References Property 11.
+    - _Validates: Property 11, Property 13 / Requirements 12.5, 12.7, 12.8_
+
+- [ ] 17. UI bug fixes (independent of shadow-chat correctness properties)
+
+  > These two tasks are tracked here because they ship in this delivery, but they are **NOT part of
+  > the shadow-chat acceptance criteria or correctness properties** (design.md "Out of Scope" lists
+  > both as separate fixes). They reference no shadow requirement clause or Property.
+
+  - [ ] 17.1 Fix status-bar / notch overlap on mobile in `apps/mobile`
+    - Apply a global safe-area / insets fix (`SafeAreaView` / `useSafeAreaInsets` from `react-native-safe-area-context`) across the app shell and screen headers so content and headers no longer render under the status bar / notch.
+    - _UI bug fix — independent of shadow-chat correctness properties._
+
+  - [ ] 17.2 Fix the `⋮` overflow menu drawing behind messages in `apps/mobile`
+    - Re-render the conversation `⋮` overflow menu through a top-level `Modal` portal (the same modal-portal approach as the new long-press overlay) so it draws **above** the message list instead of behind message bubbles; fix its z-order/elevation.
+    - _UI bug fix — independent of shadow-chat correctness properties._
+
+  - [ ]* 17.3 Add a regression check for the `⋮` overflow-menu z-order
+    - Add an adapter/regression test asserting the overflow menu mounts at the top overlay layer (portal) and is not an absolutely-positioned sibling of message rows.
+    - _UI bug fix — independent of shadow-chat correctness properties._
+
+- [ ] 18. Integration, durable e2e coverage, and CI / delivery
+  - [ ] 18.1 Extend the two-client e2e in `packages/crypto/src/messaging-shadow-e2e.test.ts`
+    - Add coverage proving an alias bound through the new creation path (`bindAlias` with an alias discriminator) resolves to the same shadow thread **after a simulated restart** (fresh store over the same durable persistence, Property 12); that an alias-discriminated thread stays **isolated** from the surface chat and from other shadow threads of the same contact (Property 8); and that it remains **wire-blind** — no `threadId` and no plaintext on the wire, envelope shape identical to surface (Property 5, C1). Keep the existing baseline e2e assertions intact.
+    - _Validates: Property 5, Property 8, Property 12 / Requirements 9.8, 10.5, 10.6_
+
+  - [x] 18.2 Run the workspace test suite + web / backend / mobile CI-parity gates and land in PRs
+    - Run the full `@chat-app/crypto` `node --test` suite (incl. all new property tests at ≥100 iterations), the web gate (`next lint`, `tsc --noEmit`, `vitest run`, `next build`), the backend gate (`tsc`, jest), and the mobile gate (`tsc --noEmit`, `tsc -p tsconfig.test.json && node --test`) from `.github/workflows`. Fix any breakage introduced by the delta; document the results in the PR description; push branches and open PRs for review.
+    - **Full-vision delta CI-parity results (run from the repo root, mirroring `.github/workflows`; build shared packages first):**
+      - shared packages — `npm run build:packages` ✅ (`@chat-app/types`, `@chat-app/crypto`, `@chat-app/ui` all compile; dist refreshed before downstream gates).
+      - `@chat-app/crypto` — `npm test` (`tsc -p tsconfig.json && node --test dist/*.test.js`) ✅ **418/418 pass, 0 fail** (incl. the alias-discriminated derivation property tests, durable-persistence Property 12, per-chat-PIN Property 11, decoy Property 10/13, and the extended two-client e2e in `messaging-shadow-e2e.test.ts`).
+      - web (`apps/web`, web.yml gate) — `next lint` ✅ (no warnings/errors), `tsc --noEmit` ✅, `vitest run` ✅ **46/46 pass, 6 files** (incl. `shadow-search`, `shadow-creation`, `shadow-secret-persistence`, `ShadowPinSettings`), `next build` ✅ (the `fs`-module warning from the `@privacyresearch` libsignal dep is pre-existing and unrelated to shadow-chat).
+      - backend (`apps/backend`, backend.yml gate) — `tsc` build ✅, jest ✅ **99/99 pass, 17 suites** (no external DB/Firebase needed — tests use mocks). Backend untouched by the delta; confirmed no incidental breakage.
+      - mobile (`apps/mobile`, validated via pr.yml's workspace fan-out) — `tsc --noEmit` typecheck ✅, `tsc -p tsconfig.test.json && node --test` ✅ **47/47 pass** (incl. shadow creation-UI, PIN-settings UI, overflow-menu z-order regression, and the mobile shadow-search adapter unit + property tests).
+      - aggregate pr.yml gates — `lint --workspaces --if-present` ✅, `typecheck --workspaces --if-present` ✅ (all 6 workspaces), `build --workspaces --if-present` ✅.
+    - **Android native build — DEFERRED to GitHub Actions CI on the PR:** no Android SDK is installed in this sandbox, the native project is not committed (it is generated by `expo prebuild`), and the signed `build-android` job is itself gated on signing secrets (`ANDROID_KEYSTORE_BASE64`), so it is SKIPPED/green in CI until release setup. The mobile delta changes are pure TypeScript and are fully covered locally by the mobile typecheck + `node --test` runs above; native APK/AAB assembly is validated by the `android` workflow on the PR.
+    - **No integration breakage was introduced by combining epics 11–18; no fixes were required.** Changes committed to branch `spec/shadow-chat-full-vision-impl` (push handled by the platform).
+    - _Requirements: 10.1_
+
+  - [x] 18.3 Final checkpoint — full-vision delta verification
+    - All unit, property (≥100 iterations each), and the extended two-client e2e tests pass, and every feasible CI-parity job is green (crypto 418/418, web 46/46 + lint/typecheck/next build, backend 99/99 + tsc, mobile 47/47 + typecheck; aggregate lint/typecheck/build across all 6 workspaces). Android native APK/AAB assembly is deferred to GitHub Actions CI on the PR (no local Android SDK; build job gated on signing secrets), as documented in task 18.2.
+
+## Notes
+
+- Tasks marked with `*` are optional test sub-tasks and can be skipped for a faster MVP; core
+  implementation tasks (and the durable e2e in 18.1) are never optional.
+- Each delta task references the specific requirement clauses and design Correctness Properties it
+  implements for full traceability.
+- **Frozen server / no wire change is preserved:** the alias-discriminated `threadId` and the
+  per-chat `pinVerifier` live only inside the encrypted body or device-local encrypted vault; no
+  `CiphertextEnvelope` / ack / codec field changes (Req 3, Property 5).
+- The only permitted core deltas are the optional alias discriminator on `deriveShadowThreadId`
+  (Component 1's reviewed deviation) and the additive `setThreadPin` / `pinVerifier` + injected
+  off-thread `Pbkdf2Provider` seam on `ShadowSecretStore`. Port shapes (`KeyStore`,
+  `ShadowSecretPersistence`, messaging) are unchanged.
+- Property tests use `fast-check` (≥100 iterations) and each references the Correctness Property it
+  validates, reporting counterexamples on failure (Req 10.3, 10.4).
+- Delta property/requirement coverage: P1/P1b→11.2; P9/P10/P11/P13→13.3; P11→14.2, 16.3; P12→12.3,
+  18.1; P13/P1b→15.3; P5/P8/P12→18.1. Requirements 1.7, 2.7–2.12, 9.8–9.9, 11.1–11.10, 12.1–12.8 are
+  all covered by epics 11–18.
+- Epic 17 (UI bug fixes) is independent of shadow-chat correctness and references no shadow Property.
+
+## Task Dependency Graph
+
+```json
+{
+  "waves": [
+    { "id": 0, "tasks": ["11.1", "12.1", "12.2", "17.1", "17.2"] },
+    { "id": 1, "tasks": ["11.2", "11.3", "12.3", "13.1", "17.3"] },
+    { "id": 2, "tasks": ["13.2", "14.1", "15.1", "15.2"] },
+    { "id": 3, "tasks": ["13.3", "14.2", "15.3", "16.1", "16.2"] },
+    { "id": 4, "tasks": ["16.3", "18.1"] },
+    { "id": 5, "tasks": ["18.2"] }
   ]
 }
 ```

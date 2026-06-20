@@ -16,16 +16,18 @@
 
 import { StatusBar } from 'expo-status-bar';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, AppState, Pressable, SafeAreaView, StyleSheet, Text, useColorScheme, View } from 'react-native';
+import { Alert, AppState, Pressable, StyleSheet, Text, useColorScheme, View } from 'react-native';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
 import {
   initialConversationState,
   reduce,
-  ShadowSecretStore,
   createConversationRegistry,
+  verifySecret,
   type ConversationRegistry,
   type ConversationState,
   type MessageTarget,
+  type ShadowThreadRef,
 } from '@chat-app/crypto';
 
 import {
@@ -33,10 +35,7 @@ import {
   type ChatController,
   type SetupState,
 } from './src/app/chat-controller';
-import {
-  createInMemoryShadowSecretPersistence,
-  createMobileShadowSearchHandler,
-} from './src/app/shadow-search';
+import { createMobileShadowSearchHandler } from './src/app/shadow-search';
 import { CallsScreen } from './src/ui/CallsScreen';
 import { ChatsListScreen, type ChatSummary } from './src/ui/ChatsListScreen';
 import { AppLockScreen } from './src/ui/AppLockScreen';
@@ -44,9 +43,13 @@ import { ConversationScreen } from './src/ui/ConversationScreen';
 import { animateNext } from './src/ui/motion';
 import { NewChatScreen, type ContactRow } from './src/ui/NewChatScreen';
 import { OnboardingScreen } from './src/ui/OnboardingScreen';
+import { RowActionMenu } from './src/ui/RowActionMenu';
 import { SettingsScreen } from './src/ui/SettingsScreen';
+import { ShadowChatCreateSheet } from './src/ui/ShadowChatCreateSheet';
+import { ShadowPinPrompt } from './src/ui/ShadowPinPrompt';
 import { SignInScreen } from './src/ui/SignInScreen';
 import { TabBar, type Tab } from './src/ui/TabBar';
+import { useTheme } from './src/ui/theme';
 
 /** One chat thread: peer identity + its reducer-owned conversation state. */
 interface Conversation {
@@ -80,34 +83,45 @@ function previewOf(state: ConversationState): string {
   return '🔒 Encrypted message';
 }
 
-export default function App(): React.JSX.Element {
+function AppShell(): React.JSX.Element {
   const controllerRef = useRef<ChatController | null>(null);
   if (controllerRef.current === null) {
     controllerRef.current = createMobileController();
   }
   const controller = controllerRef.current;
   const dark = useColorScheme() === 'dark';
+  const theme = useTheme();
 
-  // Shadow Chat (task 8.2/8.3). The per-thread conversation registry + the device-local secret store
-  // are created once per mount (stable refs). The registry is the canonical isolator (shadow threads
-  // never enter `listSurfaceConversations` / `isNotifiable`); the store is the real-PIN-gated alias
-  // resolver. The store is backed by in-memory persistence for now — the durable encrypted-KeyStore
-  // binding + the alias-PROVISIONING flow are the documented follow-ups (and the KeyStore port may
-  // not change in this task), so until aliases are provisioned every `/alias` falls through to an
-  // ordinary search, indistinguishably (Req 1.5, 8.6).
+  // Shadow Chat. The per-thread conversation registry is created once per mount (stable ref) and is
+  // the canonical isolator (shadow threads never enter `listSurfaceConversations` / `isNotifiable`).
+  // The real-PIN-gated alias resolver + creation binding go through the controller's DURABLE
+  // `ShadowSecretStore` (`getShadowSecretStore()`), backed by the encrypted SQLCipher vault, so a
+  // shadow chat created via the long-press flow survives restarts and a later `/alias` re-resolves
+  // to the same thread (Requirements 9.8, 9.9, 11.6). Until the store is open (setup running) or no
+  // alias is bound yet, every `/alias` falls through to an ordinary search, indistinguishably
+  // (Req 1.5, 8.6).
   const shadowRegistryRef = useRef<ConversationRegistry | null>(null);
   if (shadowRegistryRef.current === null) {
     shadowRegistryRef.current = createConversationRegistry({ platform: 'mobile' });
-  }
-  const shadowStoreRef = useRef<ShadowSecretStore | null>(null);
-  if (shadowStoreRef.current === null) {
-    shadowStoreRef.current = new ShadowSecretStore(createInMemoryShadowSecretPersistence());
   }
   // Open shadow threads: threadId -> peer uid. A shadow message targets the peer with this threadId
   // so it rides the shadow thread (never the surface chat). These ids are EXCLUDED from the chat
   // list / contacts (task 8.3, Req 7.5/7.6).
   const shadowPeerRef = useRef<Map<string, string>>(new Map());
   const [shadowThreadIds, setShadowThreadIds] = useState<ReadonlySet<string>>(new Set());
+
+  // Long-press shadow-chat creation flow (Shadow Chat, task 15.1, Requirement 11). `rowMenu` is the
+  // row whose long-press overlay is open; `createSheet` is the contact a shadow chat is being created
+  // for; `pinPrompt` bridges the search handler's off-thread PIN re-entry verification to the modal
+  // prompt (resolving the handler's promise once the user verifies or cancels).
+  const [rowMenu, setRowMenu] = useState<{ id: string; name: string; kind: 'chat' | 'contact' } | null>(
+    null,
+  );
+  const [createSheet, setCreateSheet] = useState<{ peerUid: string; name: string } | null>(null);
+  const [pinPrompt, setPinPrompt] = useState<{
+    verify: (pin: string) => Promise<boolean>;
+    resolve: (opened: boolean) => void;
+  } | null>(null);
 
   const [uid, setUid] = useState<string | null>(null);
   const [phone, setPhone] = useState<string>('');
@@ -386,16 +400,60 @@ export default function App(): React.JSX.Element {
     [controller, appMode],
   );
 
-  // Search-bar submit (task 8.2): FIRST intercept a `/alias` through the ONE shared decision path
-  // (`createMobileShadowSearchHandler` → `@chat-app/crypto`), identical to the web adapter (C2). A
-  // real-mode alias hit opens that contact's shadow thread; every other outcome (not an alias, wrong
-  // alias, decoy/null mode, unprovisioned) falls through to the existing hidden-chat reveal / ordinary
+  // Open a resolved shadow thread locally: track it + its peer (so sends ride the shadow thread),
+  // exclude it from the surface list, add a hidden conversation entry, and show it. Shared by the
+  // /alias search path and the long-press creation path. Never touches the peer's surface chat.
+  const openShadowThreadLocal = useCallback(
+    (ref: { threadId: string; peerUid: string }, name?: string) => {
+      shadowPeerRef.current.set(ref.threadId, ref.peerUid);
+      setShadowThreadIds((prev) => {
+        const next = new Set(prev);
+        next.add(ref.threadId);
+        return next;
+      });
+      setConversations((prev) =>
+        prev.some((c) => c.id === ref.threadId)
+          ? prev
+          : [
+              {
+                id: ref.threadId,
+                name: name ?? ref.peerUid,
+                state: initialConversationState('mobile'),
+                lastAt: Date.now(),
+              },
+              ...prev,
+            ],
+      );
+      controller.openConversation(ref.peerUid);
+      animateNext();
+      setOpenChatId(ref.threadId);
+    },
+    [controller],
+  );
+
+  // Bridge the search handler's off-thread PIN re-entry (Req 12.3) to the modal prompt: the handler
+  // calls this with a `verify(pin)` closure; we surface the prompt and resolve the handler's promise
+  // once the user verifies (true) or dismisses (false). Verification runs inside the prompt behind
+  // its busy spinner, so the UI never freezes (Req 12.7).
+  const promptForPin = useCallback(
+    (verify: (pin: string) => Promise<boolean>) =>
+      new Promise<boolean>((resolve) => {
+        setPinPrompt({ verify, resolve });
+      }),
+    [],
+  );
+
+  // Search-bar submit (task 8.2 / 14.x): FIRST intercept a `/alias` through the ONE shared decision
+  // path (`createMobileShadowSearchHandler` → `@chat-app/crypto`), identical to the web adapter (C2).
+  // A real-mode alias hit opens that contact's shadow thread — prompting for the per-chat PIN first
+  // when the bound thread has one (Req 12.3) — while every other outcome (not an alias, wrong alias,
+  // decoy/null mode, unprovisioned) falls through to the existing hidden-chat reveal / ordinary
   // search with identical observable behaviour (Req 1.1–1.6, 8.4, 8.6). The handler never reveals
   // that a shadow thread exists.
   const onSearch = useCallback(
     (text: string) => {
       const registry = shadowRegistryRef.current;
-      const store = shadowStoreRef.current;
+      const store = controller.getShadowSecretStore();
       if (registry === null || store === null) {
         onRevealSearch(text);
         return;
@@ -404,38 +462,73 @@ export default function App(): React.JSX.Element {
         store,
         registry,
         getMode: () => appMode,
-        onOpenShadowThread: (ref) => {
-          // Track the thread + remember its peer so sends ride the shadow thread; exclude it from
-          // the surface chat list (task 8.3); then open it. Sends target the PEER with this
-          // `threadId`, so a shadow message never goes out on the surface chat.
-          shadowPeerRef.current.set(ref.threadId, ref.peerUid);
-          setShadowThreadIds((prev) => {
-            const next = new Set(prev);
-            next.add(ref.threadId);
-            return next;
-          });
-          setConversations((prev) =>
-            prev.some((c) => c.id === ref.threadId)
-              ? prev
-              : [
-                  {
-                    id: ref.threadId,
-                    name: ref.peerUid,
-                    state: initialConversationState('mobile'),
-                    lastAt: Date.now(),
-                  },
-                  ...prev,
-                ],
-          );
-          controller.openConversation(ref.peerUid);
-          animateNext();
-          setOpenChatId(ref.threadId);
-        },
+        onOpenShadowThread: (ref) => openShadowThreadLocal(ref),
         onOrdinarySearch: (query) => onRevealSearch(query),
+        requestPinAndVerify: (ref: ShadowThreadRef) =>
+          promptForPin((pin) =>
+            ref.pinVerifier !== undefined ? verifySecret(pin, ref.pinVerifier) : Promise.resolve(false),
+          ),
       });
       void handle(text);
     },
-    [appMode, controller, onRevealSearch],
+    [appMode, controller, onRevealSearch, openShadowThreadLocal, promptForPin],
+  );
+
+  // Long-press → "Shadow chat" → creation sheet confirm (Shadow Chat, Requirement 11.6, 11.7). In
+  // real mode only: ensure the device-local shadow secrets exist, bind the alias-discriminated
+  // thread (hash-only) durably through the store, open the (hidden) thread in the registry, and show
+  // it — WITHOUT sending any message, advancing any surface sequence, or mutating the contact's
+  // surface conversation. Throws on failure so the sheet surfaces a generic inline message.
+  const onCreateShadowChat = useCallback(
+    async (alias: string, pin?: string): Promise<void> => {
+      const target = createSheet;
+      if (appMode !== 'real' || target === null) {
+        throw new Error('Shadow chat is unavailable right now.');
+      }
+      const store = controller.getShadowSecretStore();
+      const myUid = controller.getUid() ?? uid;
+      if (store === null || myUid === null) {
+        throw new Error('Secure storage is still setting up. Try again in a moment.');
+      }
+      // Provision the Master_Secret / Alias_Key once (no-op if already provisioned) so bindAlias has
+      // a context to derive from (Req 11.6); secrets stay in the encrypted vault (Req 9.1, 9.5).
+      await controller.provisionShadowContext();
+      const ref = await store.bindAlias('real', alias, target.peerUid, myUid, pin);
+      if (ref === null) {
+        throw new Error('Could not create the shadow chat.');
+      }
+      shadowRegistryRef.current?.openShadowThread(ref.threadId, ref.peerUid);
+      openShadowThreadLocal(ref, target.name);
+      setCreateSheet(null);
+    },
+    [appMode, controller, uid, createSheet, openShadowThreadLocal],
+  );
+
+  // Open the row long-press overlay (Req 11.1). The menu offers "Shadow chat" only in real mode.
+  const onLongPressRow = useCallback((id: string, name: string, kind: 'chat' | 'contact') => {
+    setRowMenu({ id, name, kind });
+  }, []);
+
+  // Add / change / remove the OPEN shadow thread's optional per-chat PIN (Shadow Chat, task 16.1,
+  // Requirements 12.5, 12.7, 12.8). Real mode + shadow thread only: route to the DURABLE store's
+  // `setThreadPin('real', threadId, newPin | null)` — a non-empty PIN sets/changes the lock, `null`
+  // removes it. The PBKDF2 hashing runs off the UI thread inside the store (native provider), and the
+  // settings sheet awaits this behind its busy spinner so the UI never freezes (Req 12.7). The PIN is
+  // stored hash-only in the encrypted vault and never transmitted (Req 12.6). Throws on failure so
+  // the sheet surfaces a generic inline message; success dismisses it.
+  const onSetThreadPin = useCallback(
+    async (newPin: string | null): Promise<void> => {
+      const threadId = openChatRef.current;
+      const store = controller.getShadowSecretStore();
+      if (appMode !== 'real' || threadId === null || store === null || !shadowThreadIds.has(threadId)) {
+        throw new Error('Shadow chat settings are unavailable right now.');
+      }
+      const ref = await store.setThreadPin('real', threadId, newPin);
+      if (ref === null) {
+        throw new Error('Could not update the PIN.');
+      }
+    },
+    [appMode, controller, shadowThreadIds],
   );
 
   // Poll the open peer's presence (Req 5.2) while a conversation is open: immediately on open
@@ -677,6 +770,9 @@ export default function App(): React.JSX.Element {
     setVerificationByPeer({});
     setShadowThreadIds(new Set());
     shadowPeerRef.current.clear();
+    setRowMenu(null);
+    setCreateSheet(null);
+    setPinPrompt(null);
   }, [controller]);
 
   const openConversation = openChatId !== null
@@ -766,6 +862,9 @@ export default function App(): React.JSX.Element {
                 }
               : undefined
           }
+          onSetThreadPin={
+            appMode === 'real' && shadowThreadIds.has(openConversation.id) ? onSetThreadPin : undefined
+          }
           onBack={() => {
             animateNext();
             setOpenChatId(null);
@@ -775,6 +874,7 @@ export default function App(): React.JSX.Element {
         <NewChatScreen
           contacts={contacts}
           onStartChat={(id, name) => void startChat(id, name)}
+          onLongPressRow={(id, name) => onLongPressRow(id, name, 'contact')}
           onBack={() => {
             animateNext();
             setNewChatOpen(false);
@@ -806,6 +906,7 @@ export default function App(): React.JSX.Element {
               chats={summaries}
               onOpenChat={openChat}
               onSearchSubmit={onSearch}
+              onLongPressRow={(id, name) => onLongPressRow(id, name, 'chat')}
               onNewChat={() => {
                 animateNext();
                 setNewChatOpen(true);
@@ -886,6 +987,51 @@ export default function App(): React.JSX.Element {
           />
         </>
       )}
+      <RowActionMenu
+        visible={rowMenu !== null}
+        onClose={() => setRowMenu(null)}
+        theme={theme}
+        title={rowMenu?.name ?? ''}
+        primaryActionLabel={rowMenu?.kind === 'contact' ? 'Start chat' : 'Open chat'}
+        onPrimaryAction={() => {
+          const row = rowMenu;
+          setRowMenu(null);
+          if (row === null) {
+            return;
+          }
+          if (row.kind === 'contact') {
+            void startChat(row.id, row.name);
+          } else {
+            openChat(row.id);
+          }
+        }}
+        showShadowAction={appMode === 'real'}
+        onShadowChat={() => {
+          const row = rowMenu;
+          setRowMenu(null);
+          if (row !== null) {
+            setCreateSheet({ peerUid: row.id, name: row.name });
+          }
+        }}
+      />
+      <ShadowChatCreateSheet
+        visible={createSheet !== null}
+        onClose={() => setCreateSheet(null)}
+        contactName={createSheet?.name ?? ''}
+        onCreate={onCreateShadowChat}
+      />
+      <ShadowPinPrompt
+        visible={pinPrompt !== null}
+        onVerify={pinPrompt?.verify ?? (async () => false)}
+        onVerified={() => {
+          pinPrompt?.resolve(true);
+          setPinPrompt(null);
+        }}
+        onCancel={() => {
+          pinPrompt?.resolve(false);
+          setPinPrompt(null);
+        }}
+      />
       <StatusBar style={dark ? 'light' : 'dark'} />
     </SafeAreaView>
   );
@@ -897,3 +1043,20 @@ const styles = StyleSheet.create({
   bannerText: { fontSize: 13, fontWeight: '600' },
   bannerAction: { color: '#fff', fontSize: 12, fontWeight: '700', marginTop: 2, opacity: 0.9 },
 });
+
+/**
+ * Root export. Wraps the shell in {@link SafeAreaProvider} so that the shell's
+ * {@link SafeAreaView} (and any `useSafeAreaInsets` consumer in the screens it renders)
+ * resolves the real device insets on both iOS and Android. The previous root used
+ * `SafeAreaView` from `react-native`, which is an iOS-only no-op on Android and therefore
+ * let the shell + screen headers render underneath the status bar / notch. The
+ * `react-native-safe-area-context` provider/view pair pads the top (status bar / notch)
+ * and bottom (home indicator) insets globally, so every screen below sits in the safe area.
+ */
+export default function App(): React.JSX.Element {
+  return (
+    <SafeAreaProvider>
+      <AppShell />
+    </SafeAreaProvider>
+  );
+}

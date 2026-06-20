@@ -23,11 +23,18 @@ export function NewChatScreen({
   contacts,
   onStartChat,
   onBack,
+  onLongPressRow,
 }: {
   contacts: ContactRow[];
   /** Start (or reopen) a chat. `idOrE164` is an existing peer id or a new E.164 number. */
   onStartChat: (idOrE164: string, name: string) => void;
   onBack: () => void;
+  /**
+   * Press-and-hold on a recent-contact row (Shadow Chat, Requirement 11.1): opens the row's
+   * long-press overlay menu in the container (which offers "Shadow chat" in real mode). `id` is the
+   * peer id, `name` the display name. Optional so the screen stays presentational.
+   */
+  onLongPressRow?: (id: string, name: string) => void;
 }): React.JSX.Element {
   const t = useTheme();
   const [e164, setE164] = useState('');
@@ -67,6 +74,9 @@ export function NewChatScreen({
               <Pressable
                 style={styles.row}
                 onPress={() => onStartChat(item.id, item.name)}
+                onLongPress={
+                  onLongPressRow !== undefined ? () => onLongPressRow(item.id, item.name) : undefined
+                }
                 accessibilityRole="button"
               >
                 <View style={[styles.avatar, { backgroundColor: avatarColor(item.id) }]}>

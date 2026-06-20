@@ -33,6 +33,7 @@ import {
   type KeyStore,
   type MessageRow,
   type OneTimePreKeyRecord,
+  type ShadowThreadRef,
   type SignalAddress,
   type SignalProtocolStore,
   type SignedPreKeyRecord,
@@ -105,6 +106,36 @@ interface SignalSection {
   signedPreKeys: Record<string, string>;
 }
 
+/**
+ * One persisted shadow alias→thread mapping (Shadow Chat, design Component 6 / Requirement 9.2).
+ * `aliasHash` is the opaque HMAC of the normalised alias under the device-local alias key; the
+ * plaintext/normalised alias is NEVER stored here. `ref` is the full {@link ShadowThreadRef}
+ * (`peerUid`, `threadId`, and any optional `pinVerifier`); it is round-tripped as a whole so a
+ * later-added optional field (e.g. the per-chat PIN's hash-only `pinVerifier`) is preserved without
+ * a schema change.
+ */
+interface SerializedAliasEntry {
+  aliasHash: string;
+  ref: ShadowThreadRef;
+}
+
+/**
+ * Device-local Shadow Chat secrets and alias mappings (Shadow Chat, design Component 6 /
+ * Requirements 9.1, 9.5, 9.7, 9.8, 9.9). The master secret and alias-HMAC key are base64-encoded
+ * byte strings; the alias entries are hash-only mappings. Living inside this AES-encrypted vault
+ * document means the shadow secrets are encrypted at rest (never an unencrypted location, Req 9.5),
+ * survive app restarts (Req 9.8, 9.9), and are never transmitted off-device (Req 9.1). Absent until
+ * the shadow feature is provisioned in real-PIN mode.
+ */
+interface ShadowSecretsSection {
+  /** base64-encoded shadow master secret; absent/empty ⇒ not provisioned. */
+  masterSecret?: string;
+  /** base64-encoded alias-HMAC key; absent/empty ⇒ not provisioned. */
+  aliasKey?: string;
+  /** Hash-only alias→thread mappings; `[]`/absent ⇒ none bound. */
+  aliasEntries?: SerializedAliasEntry[];
+}
+
 interface VaultDoc {
   version: number;
   identity: SerializedIdentity | null;
@@ -130,6 +161,13 @@ interface VaultDoc {
   hiddenChats?: Record<string, string>;
   /** Recent failed-unlock timestamps (unix ms) for the rate-limit / lockout policy (§3.1, §6.2). */
   unlockFailures?: number[];
+  /**
+   * Device-local Shadow Chat secrets + alias→thread mappings (Shadow Chat, design Component 6).
+   * Encrypted at rest within this vault document and reused across launches, so a provisioned
+   * shadow store survives restarts (Requirements 9.8, 9.9) and never lands in an unencrypted
+   * location (Req 9.5). Absent until the feature is provisioned in real-PIN mode.
+   */
+  shadowSecrets?: ShadowSecretsSection;
 }
 
 const emptyDoc = (): VaultDoc => ({
@@ -144,6 +182,7 @@ const emptyDoc = (): VaultDoc => ({
   appPins: {},
   hiddenChats: {},
   unlockFailures: [],
+  shadowSecrets: {},
 });
 
 /** Find a stored message row by its conversation + LOCAL `(direction, seq)`, or `undefined`. */

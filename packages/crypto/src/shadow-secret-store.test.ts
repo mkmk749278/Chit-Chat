@@ -138,8 +138,9 @@ test('bindAlias stores hash-only — no plaintext/normalised alias appears in th
   assert.ok(!dump.includes('secretjournal'), 'normalised alias body leaked into the backing store');
   assert.ok(!dump.includes('/secretjournal'), 'plaintext alias leaked into the backing store');
 
-  // The derived threadId is the symmetric shadow thread id for the pair.
-  const expectedThreadId = await deriveShadowThreadId(MASTER, 'alice', 'bob');
+  // The derived threadId is the ALIAS-DISCRIMINATED shadow thread id for the pair: bindAlias now
+  // mixes the alias into the derivation (design Component 1), so the expected id includes the alias.
+  const expectedThreadId = await deriveShadowThreadId(MASTER, 'alice', 'bob', '/SecretJournal');
   assert.equal(ref?.threadId, expectedThreadId);
 });
 
