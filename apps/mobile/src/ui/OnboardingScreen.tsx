@@ -12,23 +12,39 @@
  */
 
 import React, { useState } from 'react';
-import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
+import { runBusy, submitGate } from './async-submit';
 import { useTheme } from './theme';
 
 export function OnboardingScreen({
   onDone,
 }: {
-  /** Called once with the chosen name and PIN (`null` when skipped). */
-  onDone: (displayName: string, pin: string | null) => void;
+  /**
+   * Called once with the chosen name and PIN (`null` when skipped). May return a promise: setting a
+   * PIN hashes it, so while it is pending the screen shows a spinner and disables the control
+   * (Requirement 1.3).
+   */
+  onDone: (displayName: string, pin: string | null) => void | Promise<void>;
 }): React.JSX.Element {
   const t = useTheme();
   const [step, setStep] = useState<'name' | 'pin'>('name');
   const [name, setName] = useState('');
   const [pin, setPin] = useState('');
+  const [busy, setBusy] = useState(false);
 
   const nameValid = name.trim().length >= 1 && name.trim().length <= 32;
   const pinValid = /^\d{4,6}$/.test(pin);
+  const pinGate = submitGate({ valid: pinValid, busy });
+
+  const setPinAndContinue = (): void => {
+    void runBusy({
+      enabled: pinValid,
+      busy,
+      setBusy,
+      action: () => onDone(name.trim(), pin),
+    });
+  };
 
   return (
     <View style={[styles.screen, { backgroundColor: t.bg }]}>
@@ -73,19 +89,30 @@ export function OnboardingScreen({
             keyboardType="number-pad"
             secureTextEntry
             maxLength={6}
+            editable={!busy}
             accessibilityLabel="PIN"
           />
           <Pressable
-            style={[styles.button, { backgroundColor: t.brand }, !pinValid && styles.buttonDisabled]}
-            disabled={!pinValid}
-            onPress={() => onDone(name.trim(), pin)}
+            style={[styles.button, { backgroundColor: t.brand }, pinGate.disabled && styles.buttonDisabled]}
+            disabled={pinGate.disabled}
+            onPress={setPinAndContinue}
             accessibilityRole="button"
+            accessibilityState={{ disabled: pinGate.disabled, busy: pinGate.showProgress }}
           >
-            <Text style={[styles.buttonText, { color: t.onBrand }]}>Set PIN</Text>
+            {pinGate.showProgress ? (
+              <ActivityIndicator color={t.onBrand} accessibilityLabel="Setting PIN" />
+            ) : (
+              <Text style={[styles.buttonText, { color: t.onBrand }]}>Set PIN</Text>
+            )}
           </Pressable>
           <Pressable
             style={styles.skip}
-            onPress={() => onDone(name.trim(), null)}
+            onPress={() => {
+              if (!busy) {
+                void onDone(name.trim(), null);
+              }
+            }}
+            disabled={busy}
             accessibilityRole="button"
           >
             <Text style={[styles.skipText, { color: t.subtext }]}>Skip for now</Text>

@@ -14,17 +14,8 @@
  * the edit draft) lives here; conversation state stays in the shared reducer.
  */
 
-import React, { useState } from 'react';
-import {
-  FlatList,
-  Modal,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import React, { useMemo, useState } from 'react';
+import { FlatList, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import type {
   ConversationState,
@@ -33,6 +24,12 @@ import type {
   SafetyNumber,
 } from '@chat-app/crypto';
 
+import { SheetItem, SheetModal } from './action-sheet';
+import { runBusy } from './async-submit';
+import { CONVERSATION_ACTIONS, type ConversationActionKey } from './conversation-actions';
+import { ContactProfileScreen } from './ContactProfileScreen';
+import { TIMER_PRESETS, timerLabel } from './disappearing';
+import { Icon } from './icons';
 import { avatarColor, initials, useTheme, type Theme } from './theme';
 
 export interface ConversationScreenProps {
@@ -72,40 +69,22 @@ export interface ConversationScreenProps {
   onRespondVerification?: (kind: 'normal' | 'duress') => void;
   /** Whether this chat is currently hidden (Signature Feature 1, §3). */
   isHidden?: boolean;
-  /** Mark this chat hidden behind `secret` (§3.1). */
-  onHideChat?: (secret: string) => void;
-  /** Remove this chat's hidden status (§3.3). */
-  onUnhideChat?: () => void;
+  /** Mark this chat hidden behind `secret` (§3.1). May hash asynchronously (Requirement 1.3). */
+  onHideChat?: (secret: string) => void | Promise<void>;
+  /** Remove this chat's hidden status (§3.3). May resolve asynchronously (Requirement 1.3). */
+  onUnhideChat?: () => void | Promise<void>;
 }
 
 const STATUS_LABEL: Record<RenderableMessage['status'], string> = {
-  sending: '🕓',
-  sent: '✓✓',
-  failed: '⚠ failed',
+  sending: '',
+  sent: '',
+  failed: 'failed',
   received: '',
-  'delivery-error': '⚠ could not be decrypted',
+  'delivery-error': 'could not be decrypted',
 };
 
 /** Quick-reaction palette shown in the long-press action sheet. */
 const REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
-
-/** Disappearing-timer presets, label → milliseconds (`0` = off). */
-const TIMER_PRESETS: ReadonlyArray<{ label: string; ms: number }> = [
-  { label: 'Off', ms: 0 },
-  { label: '30 seconds', ms: 30_000 },
-  { label: '5 minutes', ms: 5 * 60_000 },
-  { label: '1 hour', ms: 60 * 60_000 },
-  { label: '1 day', ms: 24 * 60 * 60_000 },
-  { label: '1 week', ms: 7 * 24 * 60 * 60_000 },
-];
-
-/** Human label for an active timer (matches a preset, else a coarse fallback). */
-function timerLabel(ttlMs: number): string {
-  if (ttlMs <= 0) {
-    return 'Off';
-  }
-  return TIMER_PRESETS.find((p) => p.ms === ttlMs)?.label ?? `${Math.round(ttlMs / 1000)}s`;
-}
 
 /** Coarse "last seen" phrasing from a unix-ms timestamp (already 5-min bucketed by the server). */
 function relativeLastSeen(at: number): string {
@@ -121,6 +100,106 @@ function relativeLastSeen(at: number): string {
     return `last seen ${hours}h ago`;
   }
   return `last seen ${Math.round(hours / 24)}d ago`;
+}
+
+/** Maximum gap between two same-direction messages that still groups them (P2/P3, Req 3.8). */
+const GROUP_WINDOW_MS = 5 * 60_000;
+const MS_PER_DAY = 24 * 60 * 60_000;
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
+
+/** A finite `createdAt`, or `0` for absent/non-finite (mirrors the reducer's ordering key). */
+function msgTime(m: RenderableMessage): number {
+  return typeof m.createdAt === 'number' && Number.isFinite(m.createdAt) ? m.createdAt : 0;
+}
+
+/** Whether a message carries a usable `createdAt` for time/day rendering. */
+function hasTime(m: RenderableMessage): boolean {
+  return typeof m.createdAt === 'number' && Number.isFinite(m.createdAt);
+}
+
+/** Local-time `HH:mm` from a unix-ms timestamp; empty when absent/non-finite (Req 3.7). */
+function timeLabel(ms?: number): string {
+  if (typeof ms !== 'number' || !Number.isFinite(ms)) {
+    return '';
+  }
+  const d = new Date(ms);
+  return `${`${d.getHours()}`.padStart(2, '0')}:${`${d.getMinutes()}`.padStart(2, '0')}`;
+}
+
+/** Local midnight (unix-ms) for the calendar day containing `ms`. */
+function startOfDay(ms: number): number {
+  const d = new Date(ms);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+/** A day-separator label: "Today" / "Yesterday" / "12 Jun" (+ year for other years) (Req 3.6). */
+function dayLabel(ms: number, now: number = Date.now()): string {
+  const day = startOfDay(ms);
+  const today = startOfDay(now);
+  if (day === today) {
+    return 'Today';
+  }
+  if (day === today - MS_PER_DAY) {
+    return 'Yesterday';
+  }
+  const d = new Date(ms);
+  const base = `${d.getDate()} ${MONTHS[d.getMonth()]}`;
+  return d.getFullYear() === new Date(now).getFullYear() ? base : `${base} ${d.getFullYear()}`;
+}
+
+/** A rendered message decorated with its day-separator + consecutive-grouping flags (Req 3.6, 3.8). */
+interface DecoratedMessage {
+  message: RenderableMessage;
+  /** Show a day-separator pill above this message (calendar day changed vs. the older neighbour). */
+  showDay: boolean;
+  /** The day-separator text, when `showDay`. */
+  dayText: string;
+  /** First message of a same-direction group: gets extra top spacing. */
+  isHead: boolean;
+  /** Last message of a same-direction group: gets the single tail (asymmetric corner). */
+  isTail: boolean;
+}
+
+/** Whether two messages fall on different calendar days (both must carry a usable `createdAt`). */
+function differentDay(a: RenderableMessage, b: RenderableMessage): boolean {
+  return hasTime(a) && hasTime(b) && startOfDay(msgTime(a)) !== startOfDay(msgTime(b));
+}
+
+/**
+ * Decorate the chronological message list (oldest → newest) with day-separator and grouping flags
+ * (Req 3.6, 3.8). A day separator is shown above the first message of each calendar day; a
+ * same-direction run within {@link GROUP_WINDOW_MS} (and within one day) forms a group whose first
+ * message is the head (extra spacing) and whose last message is the tail (single asymmetric corner).
+ */
+function decorateMessages(messages: readonly RenderableMessage[]): DecoratedMessage[] {
+  return messages.map((message, i) => {
+    const prev = messages[i - 1]; // chronologically older
+    const next = messages[i + 1]; // chronologically newer
+    const t = msgTime(message);
+
+    const showDay =
+      hasTime(message) && (prev === undefined || !hasTime(prev) || differentDay(prev, message));
+
+    const brokenFromPrev =
+      prev === undefined ||
+      prev.direction !== message.direction ||
+      t - msgTime(prev) > GROUP_WINDOW_MS ||
+      showDay;
+    const brokenToNext =
+      next === undefined ||
+      next.direction !== message.direction ||
+      msgTime(next) - t > GROUP_WINDOW_MS ||
+      differentDay(next, message);
+
+    return {
+      message,
+      showDay,
+      dayText: showDay ? dayLabel(t) : '',
+      isHead: brokenFromPrev,
+      isTail: brokenToNext,
+    };
+  });
 }
 
 /**
@@ -171,6 +250,10 @@ export function ConversationScreen({
   const t = useTheme();
   const connected = state.connection === 'connected';
   const canSend = state.composer.canSend && state.webWarningAcknowledged;
+  // Decorate the chronological list with day-separator + grouping flags, then reverse it for the
+  // `inverted` (bottom-anchored) FlatList so the newest message shows without manual scroll (Req 3.5).
+  const decorated = useMemo(() => decorateMessages(state.messages), [state.messages]);
+  const invertedData = useMemo(() => [...decorated].reverse(), [decorated]);
   // Local composer affordance: the next message is sent view-once (Req 4.3).
   const [composeViewOnce, setComposeViewOnce] = useState(false);
   // Captured content of a view-once message being revealed (the row is purged on open).
@@ -199,12 +282,82 @@ export function ConversationScreen({
   const [verifyOpen, setVerifyOpen] = useState(false);
   const [hideOpen, setHideOpen] = useState(false);
   const [hideSecret, setHideSecret] = useState('');
+  // True while the hide / unhide hash + vault mutation is in flight (Requirement 1.3).
+  const [hideBusy, setHideBusy] = useState(false);
+  // P3 header redesign: the overflow (⋮) menu and the Contact/Profile overlay are local UI only —
+  // they re-route the EXISTING action callbacks, so ConversationScreenProps is unchanged (Req 3.1–3.4).
+  const [overflowOpen, setOverflowOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+
+  const closeHide = (): void => {
+    if (hideBusy) {
+      return;
+    }
+    setHideOpen(false);
+    setHideSecret('');
+  };
+  const submitHide = (): void => {
+    const secret = hideSecret.trim();
+    void runBusy({
+      enabled: secret.length > 0,
+      busy: hideBusy,
+      setBusy: setHideBusy,
+      action: async () => {
+        await onHideChat?.(secret);
+        setHideSecret('');
+        setHideOpen(false);
+      },
+    });
+  };
+  const submitUnhide = (): void => {
+    void runBusy({
+      enabled: true,
+      busy: hideBusy,
+      setBusy: setHideBusy,
+      action: async () => {
+        await onUnhideChat?.();
+        setHideOpen(false);
+      },
+    });
+  };
 
   const targetOf = (m: RenderableMessage): MessageTarget => ({ direction: m.direction, seq: m.seq });
 
   const openSafety = (): void => {
     setSafety({ open: true, value: null, loading: true });
     void getSafetyNumber().then((value) => setSafety({ open: true, value, loading: false }));
+  };
+
+  /**
+   * Route an action chosen from the overflow menu or the Contact/Profile screen to the EXISTING
+   * action sheet for that flow (Req 3.3, 3.4). This reuses the same sheets and the same callbacks the
+   * removed header icons used — only the entry point changed.
+   */
+  const openAction = (key: ConversationActionKey): void => {
+    setOverflowOpen(false);
+    setProfileOpen(false);
+    switch (key) {
+      case 'disappearing':
+        setTimerOpen(true);
+        break;
+      case 'verify':
+        setVerifyOpen(true);
+        break;
+      case 'safety':
+        openSafety();
+        break;
+      case 'hide':
+        setHideOpen(true);
+        break;
+    }
+  };
+
+  /** Semantic icon for each overflow menu row. */
+  const overflowIcon: Record<ConversationActionKey, 'timer' | 'verified' | 'shield' | 'hide'> = {
+    disappearing: 'timer',
+    verify: 'verified',
+    safety: 'shield',
+    hide: 'hide',
   };
 
   const submitEdit = (): void => {
@@ -221,106 +374,152 @@ export function ConversationScreen({
   return (
     <View style={[styles.screen, { backgroundColor: t.bg }]}>
       <View style={[styles.header, { backgroundColor: t.surface, borderBottomColor: t.divider }]}>
-        <Pressable onPress={onBack} accessibilityRole="button" accessibilityLabel="Back" hitSlop={12}>
-          <Text style={[styles.back, { color: t.brandSoft }]}>‹</Text>
-        </Pressable>
-        <View style={[styles.avatar, { backgroundColor: avatarColor(peerName) }]}>
-          <Text style={styles.avatarText}>{initials(peerName)}</Text>
-        </View>
-        <View style={styles.headerBody}>
-          <Text style={[styles.peerName, { color: t.text }]} numberOfLines={1}>
-            {peerName}
-          </Text>
-          <Text
-            style={[
-              styles.headerStatus,
-              { color: peerTyping || peerOnline === true ? (peerTyping ? t.brandSoft : t.secure) : t.faint },
-            ]}
-          >
-            {headerStatus({ peerTyping, peerOnline, peerLastSeen, connected })}
-          </Text>
-        </View>
         <Pressable
-          onPress={() => setTimerOpen(true)}
+          onPress={onBack}
           accessibilityRole="button"
-          accessibilityLabel="Disappearing messages"
-          hitSlop={10}
-          style={styles.headerAction}
+          accessibilityLabel="Back"
+          hitSlop={12}
+          style={styles.headerBack}
         >
-          <Text style={[styles.headerActionIcon, { color: state.disappearingTtlMs > 0 ? t.secure : t.faint }]}>
-            ⏲
-          </Text>
+          <Icon name="back" size={22} color={t.brandSoft} />
         </Pressable>
+
+        {/* Tappable avatar + name + concise status → opens the Contact/Profile screen (Req 3.1, 3.2). */}
         <Pressable
-          onPress={openSafety}
+          style={styles.headerIdentity}
+          onPress={() => setProfileOpen(true)}
           accessibilityRole="button"
-          accessibilityLabel="Verify safety number"
-          hitSlop={10}
-          style={styles.headerAction}
+          accessibilityLabel={`${peerName}, open profile`}
         >
-          <Text style={[styles.headerActionIcon, { color: t.brandSoft }]}>🛡</Text>
+          <View style={[styles.avatar, { backgroundColor: avatarColor(peerName) }]}>
+            <Text style={styles.avatarText}>{initials(peerName)}</Text>
+          </View>
+          <View style={styles.headerBody}>
+            <View style={styles.nameRow}>
+              <Text style={[styles.peerName, { color: t.text }]} numberOfLines={1}>
+                {peerName}
+              </Text>
+              {/* Surface a verification prompt/badge for incoming or unverified peers (Req 3.3). */}
+              {(verification === 'incoming' || verification === 'unverified') && (
+                <View
+                  style={[
+                    styles.verifyBadge,
+                    { backgroundColor: verification === 'unverified' ? t.dangerSoft : t.brandFill },
+                  ]}
+                >
+                  <Icon
+                    name="verified"
+                    size={11}
+                    color={verification === 'unverified' ? t.danger : t.brandSoft}
+                  />
+                  <Text
+                    style={[
+                      styles.verifyBadgeText,
+                      { color: verification === 'unverified' ? t.danger : t.brandSoft },
+                    ]}
+                  >
+                    {verification === 'unverified' ? 'Unverified' : 'Verify'}
+                  </Text>
+                </View>
+              )}
+            </View>
+            <Text
+              style={[
+                styles.headerStatus,
+                { color: peerTyping || peerOnline === true ? (peerTyping ? t.brandSoft : t.secure) : t.faint },
+              ]}
+              numberOfLines={1}
+            >
+              {headerStatus({ peerTyping, peerOnline, peerLastSeen, connected })}
+            </Text>
+          </View>
         </Pressable>
+
+        {/* The single header action: an overflow (⋮) menu holding the four moved actions (Req 3.3). */}
         <Pressable
-          onPress={() => setVerifyOpen(true)}
+          onPress={() => setOverflowOpen((v) => !v)}
           accessibilityRole="button"
-          accessibilityLabel="Verify identity"
-          hitSlop={10}
-          style={styles.headerAction}
+          accessibilityLabel="More options"
+          hitSlop={12}
+          style={styles.overflowBtn}
         >
-          <Text
-            style={[
-              styles.headerActionIcon,
-              {
-                color:
-                  verification === 'verified'
-                    ? t.secure
-                    : verification === 'incoming'
-                      ? t.brandSoft
-                      : verification === 'unverified'
-                        ? t.danger
-                        : t.faint,
-              },
-            ]}
-          >
-            {verification === 'verified' ? '✓👤' : '👤'}
-          </Text>
+          <Icon name="more-vert" size={22} color={t.subtext} />
         </Pressable>
-        <Pressable
-          onPress={() => setHideOpen(true)}
-          accessibilityRole="button"
-          accessibilityLabel="Hide chat"
-          hitSlop={10}
-          style={styles.headerAction}
-        >
-          <Text style={[styles.headerActionIcon, { color: isHidden ? t.secure : t.faint }]}>🫥</Text>
-        </Pressable>
+
+        {overflowOpen && (
+          <>
+            <Pressable
+              style={styles.overflowScrim}
+              onPress={() => setOverflowOpen(false)}
+              accessibilityLabel="Dismiss menu"
+            />
+            <View style={[styles.overflowMenu, { backgroundColor: t.surface, borderColor: t.divider }]}>
+              {CONVERSATION_ACTIONS.map((action, idx) => {
+                const destructive = action.key === 'hide';
+                return (
+                  <Pressable
+                    key={action.key}
+                    onPress={() => openAction(action.key)}
+                    style={[
+                      styles.overflowItem,
+                      idx > 0 && { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: t.divider },
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityLabel={action.label}
+                  >
+                    <Icon name={overflowIcon[action.key]} size={18} color={destructive ? t.danger : t.subtext} />
+                    <Text style={[styles.overflowText, { color: destructive ? t.danger : t.text }]}>
+                      {destructive && isHidden ? 'Unhide chat' : action.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </>
+        )}
       </View>
 
       <FlatList
         style={styles.list}
         contentContainerStyle={styles.listContent}
-        data={state.messages}
-        keyExtractor={(m) => `${m.direction}:${m.seq}`}
-        renderItem={({ item }) => (
-          <>
-            {item.direction === 'in' && state.missingBefore.includes(item.seq) && (
-              <View style={styles.gap}>
-                <View style={[styles.gapLine, { backgroundColor: t.divider }]} />
-                <Text style={[styles.gapText, { color: t.faint }]}>⚠ Messages may be missing</Text>
-                <View style={[styles.gapLine, { backgroundColor: t.divider }]} />
-              </View>
-            )}
-            <Bubble
-              message={item}
-              theme={t}
-              onLongPress={() => setActionTarget(item)}
-              onReveal={() => revealViewOnce(item)}
-            />
-          </>
-        )}
-        ListHeaderComponent={
-          // One quiet reassurance line, then messages own the screen (UX directive:
-          // security is felt, not displayed — no amber warning boxes).
+        data={invertedData}
+        inverted
+        keyExtractor={(d) => `${d.message.direction}:${d.message.seq}`}
+        renderItem={({ item }) => {
+          const m = item.message;
+          return (
+            <View>
+              {/* Day separator above the first message of each calendar day (Req 3.6). */}
+              {item.showDay && (
+                <View style={styles.daySeparator}>
+                  <View style={[styles.dayPill, { backgroundColor: t.field }]}>
+                    <Text style={[styles.dayPillText, { color: t.faint }]}>{item.dayText}</Text>
+                  </View>
+                </View>
+              )}
+              {/* Existing inbound gap marker (Req 2.2) — unchanged, still driven by inbound seq. */}
+              {m.direction === 'in' && state.missingBefore.includes(m.seq) && (
+                <View style={styles.gap}>
+                  <View style={[styles.gapLine, { backgroundColor: t.divider }]} />
+                  <Text style={[styles.gapText, { color: t.faint }]}>⚠ Messages may be missing</Text>
+                  <View style={[styles.gapLine, { backgroundColor: t.divider }]} />
+                </View>
+              )}
+              <Bubble
+                message={m}
+                theme={t}
+                time={timeLabel(m.createdAt)}
+                isHead={item.isHead}
+                isTail={item.isTail}
+                onLongPress={() => setActionTarget(m)}
+                onReveal={() => revealViewOnce(m)}
+              />
+            </View>
+          );
+        }}
+        ListFooterComponent={
+          // With an inverted list the footer renders at the TOP (oldest end): one quiet reassurance
+          // line, then messages own the screen (UX directive: security is felt, not displayed).
           <View>
             <Text style={[styles.notice, { color: t.faint }]}>🔒 Messages are end-to-end encrypted</Text>
             {state.disappearingTtlMs > 0 && (
@@ -361,7 +560,7 @@ export function ConversationScreen({
           accessibilityRole="button"
           accessibilityLabel="Send"
         >
-          <Text style={[styles.sendText, { color: t.onBrand }]}>➤</Text>
+          <Icon name="send" size={20} color={t.onBrand} />
         </Pressable>
       </View>
 
@@ -528,7 +727,7 @@ export function ConversationScreen({
       </SheetModal>
 
       {/* Hidden chat (Signature Feature 1, §3): set/clear a per-chat unlock secret. */}
-      <SheetModal visible={hideOpen} onClose={() => { setHideOpen(false); setHideSecret(''); }} theme={t}>
+      <SheetModal visible={hideOpen} onClose={closeHide} theme={t}>
         <Text style={[styles.sheetTitle, { color: t.text }]}>Hidden chat</Text>
         {isHidden ? (
           <>
@@ -539,10 +738,9 @@ export function ConversationScreen({
             <SheetItem
               label="Unhide this chat"
               theme={t}
-              onPress={() => {
-                onUnhideChat?.();
-                setHideOpen(false);
-              }}
+              busy={hideBusy}
+              disabled={hideBusy}
+              onPress={submitUnhide}
             />
           </>
         ) : (
@@ -558,23 +756,19 @@ export function ConversationScreen({
               placeholder="Secret"
               placeholderTextColor={t.faint}
               secureTextEntry
+              editable={!hideBusy}
               autoFocus
             />
             <SheetItem
               label="Hide this chat"
               theme={t}
-              onPress={() => {
-                const secret = hideSecret.trim();
-                if (secret.length > 0) {
-                  onHideChat?.(secret);
-                }
-                setHideSecret('');
-                setHideOpen(false);
-              }}
+              busy={hideBusy}
+              disabled={hideBusy || hideSecret.trim().length === 0}
+              onPress={submitHide}
             />
           </>
         )}
-        <SheetItem label="Cancel" theme={t} onPress={() => { setHideOpen(false); setHideSecret(''); }} />
+        <SheetItem label="Cancel" theme={t} disabled={hideBusy} onPress={closeHide} />
       </SheetModal>
 
       {/* View-once reveal (Req 4.3): the message is already purged; this shows its captured text once. */}
@@ -588,72 +782,62 @@ export function ConversationScreen({
         </Text>
         <SheetItem label="Close" theme={t} onPress={() => setReveal(null)} />
       </SheetModal>
+
+      {/* Contact/Profile overlay (Req 3.2, 3.4): opened by tapping the header avatar/name. It is
+          presentational and routes each action back through openAction → the EXISTING sheets above,
+          so no callback or sheet logic is duplicated. */}
+      <Modal
+        visible={profileOpen}
+        animationType="slide"
+        onRequestClose={() => setProfileOpen(false)}
+        presentationStyle="fullScreen"
+      >
+        <ContactProfileScreen
+          peerName={peerName}
+          peerOnline={peerOnline}
+          peerLastSeen={peerLastSeen}
+          verification={verification}
+          disappearingTtlMs={state.disappearingTtlMs}
+          isHidden={isHidden}
+          onBack={() => setProfileOpen(false)}
+          onSelectAction={openAction}
+        />
+      </Modal>
     </View>
   );
 }
 
 /** A bottom-sheet-style modal used by every action panel. */
-function SheetModal({
-  visible,
-  onClose,
-  theme: t,
-  children,
-}: {
-  visible: boolean;
-  onClose: () => void;
-  theme: Theme;
-  children: React.ReactNode;
-}): React.JSX.Element {
-  return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose} accessibilityLabel="Dismiss">
-        <Pressable style={[styles.sheet, { backgroundColor: t.surface }]} onPress={() => undefined}>
-          <ScrollView>{children}</ScrollView>
-        </Pressable>
-      </Pressable>
-    </Modal>
-  );
-}
-
-/** A single tappable row inside a {@link SheetModal}. */
-function SheetItem({
-  label,
-  onPress,
-  theme: t,
-  destructive,
-}: {
-  label: string;
-  onPress: () => void;
-  theme: Theme;
-  destructive?: boolean;
-}): React.JSX.Element {
-  return (
-    <Pressable
-      style={[styles.sheetItem, { borderTopColor: t.divider }]}
-      onPress={onPress}
-      accessibilityRole="button"
-    >
-      <Text style={[styles.sheetItemText, { color: destructive === true ? t.danger : t.brandSoft }]}>
-        {label}
-      </Text>
-    </Pressable>
-  );
-}
-
 function Bubble({
   message,
   theme: t,
+  time,
+  isHead = true,
+  isTail = true,
   onLongPress,
   onReveal,
 }: {
   message: RenderableMessage;
   theme: Theme;
+  /** `HH:mm` label shown in the bubble footer (Req 3.7); empty when no timestamp. */
+  time?: string;
+  /** First message of a same-direction group: extra top spacing (Req 3.8). */
+  isHead?: boolean;
+  /** Last message of a same-direction group: the single tail / asymmetric corner (Req 3.8). */
+  isTail?: boolean;
   onLongPress: () => void;
   onReveal: () => void;
 }): React.JSX.Element {
   const outbound = message.direction === 'out';
   const isError = message.status === 'delivery-error' || message.status === 'failed';
   const statusLabel = STATUS_LABEL[message.status];
+  // Status clock/checks become vector icons (Req 3.9); failed/delivery-error keep a short text label.
+  const showStatusIcon =
+    message.status === 'sending' || message.status === 'sent' || message.status === 'failed';
+  const statusIconName =
+    message.status === 'sending' ? 'status-sending' : message.status === 'sent' ? 'status-sent' : 'status-failed';
+  const statusIconColor = message.status === 'sent' ? (outbound ? t.onBrand : t.faint) : isError ? t.danger : t.faint;
+  const timeText = time ?? '';
   // A received view-once message is gated behind "tap to view" until opened (Req 4.3).
   const gated = message.viewOnce === true && !outbound && message.deleted !== true && message.text !== null;
   const body =
@@ -667,7 +851,10 @@ function Bubble({
   const muted = message.deleted === true || message.text === null;
   return (
     <Pressable
-      style={[styles.bubbleWrap, { alignSelf: outbound ? 'flex-end' : 'flex-start' }]}
+      style={[
+        styles.bubbleWrap,
+        { alignSelf: outbound ? 'flex-end' : 'flex-start', marginTop: isHead ? 8 : 2 },
+      ]}
       onPress={gated ? onReveal : undefined}
       onLongPress={message.deleted === true || gated ? undefined : onLongPress}
       delayLongPress={250}
@@ -680,6 +867,8 @@ function Bubble({
           outbound
             ? { backgroundColor: t.brand, opacity: message.status === 'sending' ? 0.55 : 1 }
             : { backgroundColor: t.bubbleIn, borderWidth: 1, borderColor: t.divider },
+          // Single tail: only the last bubble of a group carries the asymmetric corner (Req 3.8).
+          isTail && (outbound ? styles.tailOut : styles.tailIn),
           gated && { borderStyle: 'dashed', borderWidth: 1, borderColor: t.brandSoft },
         ]}
       >
@@ -708,11 +897,20 @@ function Bubble({
           ))}
         </View>
       )}
-      {statusLabel.length > 0 && (
-        <Text style={[styles.status, { color: isError ? t.danger : t.faint }]}>
-          {statusLabel}
-          {message.error !== undefined ? ` · ${message.error}` : ''}
-        </Text>
+      {/* Footer: per-message time label (Req 3.7) alongside the status icon/label (Req 3.9). */}
+      {(timeText.length > 0 || showStatusIcon || statusLabel.length > 0) && (
+        <View style={[styles.footer, { alignSelf: outbound ? 'flex-end' : 'flex-start' }]}>
+          {timeText.length > 0 && <Text style={[styles.timeLabel, { color: t.faint }]}>{timeText}</Text>}
+          {showStatusIcon && (
+            <Icon name={statusIconName} size={13} color={statusIconColor} accessibilityLabel={message.status} />
+          )}
+          {statusLabel.length > 0 && (
+            <Text style={[styles.status, { color: isError ? t.danger : t.faint }]}>
+              {statusLabel}
+              {message.error !== undefined ? ` · ${message.error}` : ''}
+            </Text>
+          )}
+        </View>
       )}
     </Pressable>
   );
@@ -726,30 +924,65 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: 1,
-    gap: 10,
+    gap: 8,
   },
-  back: { fontSize: 26, fontWeight: '600', paddingRight: 2 },
+  headerBack: { paddingRight: 2 },
+  headerIdentity: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 },
   avatar: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
   avatarText: { color: '#fff', fontSize: 14, fontWeight: '700' },
   headerBody: { flex: 1 },
-  peerName: { fontSize: 16, fontWeight: '700' },
+  nameRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  peerName: { fontSize: 16, fontWeight: '700', flexShrink: 1 },
   headerStatus: { fontSize: 11, marginTop: 2 },
-  headerAction: { paddingHorizontal: 4, paddingVertical: 2 },
-  headerActionIcon: { fontSize: 18 },
+  verifyBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 999,
+  },
+  verifyBadgeText: { fontSize: 10, fontWeight: '600' },
+  overflowBtn: { padding: 4 },
+  overflowScrim: { position: 'absolute', top: 0, left: 0, right: 0, bottom: -2000, zIndex: 5 },
+  overflowMenu: {
+    position: 'absolute',
+    top: 54,
+    right: 12,
+    minWidth: 210,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingVertical: 4,
+    zIndex: 10,
+    elevation: 6,
+    shadowColor: '#000',
+    shadowOpacity: 0.12,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+  },
+  overflowItem: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 13 },
+  overflowText: { fontSize: 15 },
   list: { flex: 1 },
   listContent: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8 },
   notice: { fontSize: 11, textAlign: 'center', marginBottom: 8, marginTop: 4 },
   gap: { flexDirection: 'row', alignItems: 'center', gap: 8, marginVertical: 8 },
   gapLine: { flex: 1, height: 1 },
   gapText: { fontSize: 10, fontWeight: '600' },
+  daySeparator: { alignItems: 'center', marginVertical: 10 },
+  dayPill: { borderRadius: 999, paddingHorizontal: 12, paddingVertical: 4 },
+  dayPillText: { fontSize: 11, fontWeight: '600' },
   bubbleWrap: { maxWidth: '80%', marginVertical: 3 },
   bubble: { borderRadius: 18, paddingHorizontal: 14, paddingVertical: 9 },
+  tailOut: { borderBottomRightRadius: 5 },
+  tailIn: { borderBottomLeftRadius: 5 },
   bubbleText: { fontSize: 15 },
   bubbleTextMissing: { fontStyle: 'italic' },
   editedTag: { fontSize: 9, marginTop: 2, opacity: 0.8 },
   reactionsBar: { flexDirection: 'row', gap: 4, marginTop: 3 },
   reactionChip: { borderRadius: 10, borderWidth: 1, paddingHorizontal: 6, paddingVertical: 1 },
   reactionChipText: { fontSize: 12 },
+  footer: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 },
+  timeLabel: { fontSize: 10 },
   status: { fontSize: 10, marginTop: 2, alignSelf: 'flex-end' },
   composer: { flexDirection: 'row', alignItems: 'center', padding: 12, borderTopWidth: 1, gap: 8 },
   viewOnceToggle: {
@@ -765,20 +998,8 @@ const styles = StyleSheet.create({
   input: { flex: 1, borderRadius: 20, paddingHorizontal: 16, paddingVertical: 10, fontSize: 15 },
   sendButton: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
   sendDisabled: { opacity: 0.4 },
-  sendText: { fontSize: 16 },
-  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
-  sheet: {
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 28,
-    maxHeight: '70%',
-  },
   sheetTitle: { fontSize: 16, fontWeight: '700', marginBottom: 6 },
   sheetHint: { fontSize: 12, marginBottom: 12, lineHeight: 17 },
-  sheetItem: { paddingVertical: 14, borderTopWidth: 1 },
-  sheetItemText: { fontSize: 15, fontWeight: '600', textAlign: 'center' },
   reactionRow: { flexDirection: 'row', justifyContent: 'space-around', paddingVertical: 8 },
   reactionPick: { padding: 6 },
   reactionPickText: { fontSize: 26 },

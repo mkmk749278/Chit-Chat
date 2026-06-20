@@ -11,16 +11,17 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { Icon, type IconName } from './icons';
 import { useTheme } from './theme';
 
 export type Tab = 'chats' | 'calls' | 'settings';
 
 // UX directive navigation: Chats / Calls / Settings (max 4 tabs; new chat is an action on
-// the Chats screen, not a destination).
-const TABS: ReadonlyArray<{ key: Tab; icon: string; label: string }> = [
-  { key: 'chats', icon: '💬', label: 'Chats' },
-  { key: 'calls', icon: '📞', label: 'Calls' },
-  { key: 'settings', icon: '⚙️', label: 'Settings' },
+// the Chats screen, not a destination). Icons use the shared vector-icon set (Req 3.9).
+const TABS: ReadonlyArray<{ key: Tab; icon: IconName; label: string }> = [
+  { key: 'chats', icon: 'chats', label: 'Chats' },
+  { key: 'calls', icon: 'calls', label: 'Calls' },
+  { key: 'settings', icon: 'settings', label: 'Settings' },
 ];
 
 export function TabBar({
@@ -43,7 +44,9 @@ export function TabBar({
             accessibilityRole="tab"
             accessibilityState={{ selected }}
           >
-            <Text style={[styles.icon, !selected && styles.iconInactive]}>{tab.icon}</Text>
+            <View style={[styles.icon, !selected && styles.iconInactive]}>
+              <Icon name={tab.icon} size={22} color={selected ? t.brandSoft : t.faint} />
+            </View>
             <Text
               style={[
                 styles.label,
@@ -67,7 +70,7 @@ const styles = StyleSheet.create({
     paddingBottom: 20,
   },
   item: { flex: 1, alignItems: 'center', gap: 2 },
-  icon: { fontSize: 20 },
-  iconInactive: { opacity: 0.45 },
+  icon: { height: 24, alignItems: 'center', justifyContent: 'center' },
+  iconInactive: { opacity: 0.55 },
   label: { fontSize: 11 },
 });

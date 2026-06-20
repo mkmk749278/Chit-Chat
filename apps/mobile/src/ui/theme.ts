@@ -5,6 +5,48 @@
  */
 
 import { useColorScheme } from 'react-native';
+import type { TextStyle } from 'react-native';
+
+/**
+ * Spacing scale (logical px) — P3 visual system (design Component 9, Requirement 3.10).
+ * A single 4-based ramp every screen reaches for via `useTheme().spacing` (or the
+ * standalone `spacing` export) so padding/margins are consistent and calm.
+ */
+export const spacing = {
+  xs: 4,
+  sm: 8,
+  md: 12,
+  lg: 16,
+  xl: 24,
+  xxl: 32,
+} as const;
+
+/**
+ * Corner-radius scale (Requirement 3.10). `lg` is the message-bubble radius; `pill`
+ * is for fully rounded chips/avatars/FAB.
+ */
+export const radius = {
+  sm: 8,
+  md: 12,
+  lg: 18,
+  pill: 999,
+} as const;
+
+/**
+ * Typography scale (Requirement 3.10). `fontWeight` values are cast `as const` so they
+ * satisfy React Native's `TextStyle['fontWeight']` when spread into a style.
+ */
+export const type = {
+  title: { fontSize: 28, fontWeight: '800' as const, lineHeight: 34 },
+  heading: { fontSize: 17, fontWeight: '700' as const, lineHeight: 22 },
+  body: { fontSize: 15, fontWeight: '400' as const, lineHeight: 21 },
+  meta: { fontSize: 12, fontWeight: '500' as const, lineHeight: 16 },
+  caption: { fontSize: 11, fontWeight: '500' as const, lineHeight: 14 },
+} as const;
+
+export type SpacingScale = typeof spacing;
+export type RadiusScale = typeof radius;
+export type TypographyScale = { readonly [K in keyof typeof type]: TextStyle };
 
 export interface Theme {
   scheme: 'light' | 'dark';
@@ -41,6 +83,12 @@ export interface Theme {
   noticeFill: string;
   /** Brand-tinted strip fill (e.g. "chats are encrypted"). */
   brandFill: string;
+  /** Spacing scale (Requirement 3.10) — consumed via `useTheme().spacing`. */
+  spacing: SpacingScale;
+  /** Corner-radius scale (Requirement 3.10) — consumed via `useTheme().radius`. */
+  radius: RadiusScale;
+  /** Typography scale (Requirement 3.10) — consumed via `useTheme().type`. */
+  type: TypographyScale;
 }
 
 // UX directive palette: Near White / Charcoal / Slate / Deep Blue / soft accent.
@@ -64,6 +112,9 @@ const light: Theme = {
   noticeText: '#5C6470',
   noticeFill: '#F1F2F4',
   brandFill: '#EDF2FD',
+  spacing,
+  radius,
+  type,
 };
 
 const dark: Theme = {
@@ -85,6 +136,9 @@ const dark: Theme = {
   noticeText: '#9AA2AD',
   noticeFill: '#21242B',
   brandFill: '#1D2433',
+  spacing,
+  radius,
+  type,
 };
 
 /** Resolve the active theme from the system color scheme. */

@@ -449,6 +449,7 @@ export class DefaultMessaging implements Messaging {
         direction: 'out',
         text: plaintext,
         status: 'sending',
+        createdAt: row.createdAt,
         ...(viewOnce ? { viewOnce: true } : {}),
       },
       remoteUid: recipientUid,
@@ -523,7 +524,13 @@ export class DefaultMessaging implements Messaging {
         createdAt: this.now(),
       };
       await this.store.appendMessage(errorRow);
-      this.emitUpdate({ type: 'inbound-delivery-error', id, seq: envelope.seq, remoteUid: envelope.senderUid });
+      this.emitUpdate({
+        type: 'inbound-delivery-error',
+        id,
+        seq: envelope.seq,
+        remoteUid: envelope.senderUid,
+        createdAt: errorRow.createdAt,
+      });
       return;
     }
 
@@ -555,6 +562,7 @@ export class DefaultMessaging implements Messaging {
             direction: 'in',
             text: payload.body,
             status: 'received',
+            createdAt: row.createdAt,
             ...(viewOnce ? { viewOnce: true } : {}),
           },
           remoteUid,

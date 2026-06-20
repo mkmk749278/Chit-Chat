@@ -113,6 +113,14 @@ jobs:
       # project. `--no-install` keeps the npm workspace install authoritative.
       # The GitHub ubuntu runner ships the Android SDK, so Gradle finds it via
       # ANDROID_HOME without an explicit SDK install step.
+      #
+      # P1 freeze fix (ui-modernization-and-setup-fix): `react-native-quick-crypto`
+      # (+ its `react-native-quick-base64` JSI peer) is a native module. Expo
+      # autolinking picks it up here during prebuild and the Gradle build below
+      # compiles its C/C++ (JSI) sources into the same app module, so the off-thread
+      # PBKDF2 provider is present in the shipped binary. The Android Gradle Plugin
+      # auto-provisions the required NDK/CMake on the runner. No wire/envelope/ack/
+      # codec change is involved — this only adds a native crypto primitive.
       - name: Generate native Android project (expo prebuild)
         working-directory: apps/mobile
         run: npx expo prebuild --platform android --no-install
@@ -129,7 +137,10 @@ jobs:
       #   - assembleRelease -> a release .apk for sideloading / device testing
       #   - bundleRelease   -> the .aab for Play Store upload
       # Signing credentials are passed to Gradle as project properties sourced
-      # from env (masked), never inlined or logged (Req 10.3, 10.4).
+      # from env (masked), never inlined or logged (Req 10.3, 10.4). The native
+      # react-native-quick-crypto module compiled during this build is packaged
+      # into the same APK/AAB and re-signed with the existing release key here —
+      # adding the off-thread KDF requires no signing-key or credential change.
       - name: Build signed APK + AAB (gradlew assembleRelease bundleRelease)
         working-directory: apps/mobile/android
         run: |

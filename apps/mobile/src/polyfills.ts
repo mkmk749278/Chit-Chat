@@ -95,3 +95,26 @@ setWebCrypto({
 if (nativeCrypto !== undefined && (nativeCrypto as { subtle?: SubtleCrypto }).subtle === undefined) {
   Object.defineProperty(nativeCrypto, 'subtle', { value: subtle, configurable: true, writable: false });
 }
+
+// 5. Off-thread PBKDF2 (P1 freeze fix — ui-modernization-and-setup-fix, Requirements 1.2, 1.5, 4.8).
+// The shared `secret-hash` core derives a password verifier with PBKDF2-HMAC-SHA256 at 210k
+// iterations. Left on the msrcrypto `subtle` wired above, that derivation runs synchronously on
+// Hermes' single JS thread and freezes the UI during every PIN / decoy / hide-chat / unlock /
+// reveal operation. Bind the core's injected Pbkdf2Provider to the native, JSI-backed adapter so the
+// derivation runs on a background thread instead. Only the encrypted vault's small AES-CBC/HMAC work
+// stays on msrcrypto.
+//
+// If the native module is missing at runtime (e.g. Expo Go without a dev-client), keep the secure
+// WebCrypto default: it still derives at the FULL 210000 iterations (no parameter is ever lowered) —
+// only speed degrades, and the async busy-UI keeps the screens responsive while it resolves.
+try {
+  // Imported lazily and guarded so a missing native module degrades gracefully rather than crashing
+  // app boot before the WebCrypto fallback can take over.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { setPbkdf2Provider } = require('@chat-app/crypto') as typeof import('@chat-app/crypto');
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { nativePbkdf2Provider } = require('./crypto/pbkdf2-native') as typeof import('./crypto/pbkdf2-native');
+  setPbkdf2Provider(nativePbkdf2Provider);
+} catch {
+  // Native module unavailable: retain the WebCrypto default at 210000 iterations (never weakened).
+}
