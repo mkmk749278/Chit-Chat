@@ -184,6 +184,13 @@ interface VaultDoc {
    * location (Req 9.5). Absent until the feature is provisioned in real-PIN mode.
    */
   shadowSecrets?: ShadowSecretsSection;
+  /**
+   * Shadow Chat Invites device-local row→thread association (Req 14): maps a shadow `threadId` to the
+   * persisted message-row ids belonging to it, so "Clear / Revoke shadow chat" can purge exactly that
+   * thread's history. Additive and device-local only — it adds no wire/envelope/codec field and never
+   * touches the `MessageRow` wire shape or the frozen backend. Absent ⇒ no shadow rows tagged yet.
+   */
+  shadowRowThreads?: Record<string, string[]>;
 }
 
 const emptyDoc = (): VaultDoc => ({
