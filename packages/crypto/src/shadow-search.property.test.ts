@@ -3,9 +3,15 @@ import { test } from 'node:test';
 
 import fc from 'fast-check';
 
+import { DefaultConversationRegistry } from './conversation-registry';
 import { hashAlias, normalizeAlias, type AliasEntry } from './shadow-chat';
 import type { ShadowContext, ShadowThreadRef } from './shadow-secret-store';
-import { resolveSearchInput, type ShadowSearchStore } from './shadow-search';
+import {
+  createShadowSearchHandler,
+  resolveSearchInput,
+  type SearchResolution,
+  type ShadowSearchStore,
+} from './shadow-search';
 import type { AppMode } from './app-lock';
 
 /**
@@ -117,5 +123,108 @@ test('Property 4: a correctly-bound alias always resolves to its own thread in r
       assert.deepEqual(result, { kind: 'shadow', threadId, peerUid });
     }),
     { numRuns: 150 },
+  );
+});
+
+
+/**
+ * Feature: shadow-chat, Correctness Property 11 (per-chat PIN gating) — task 14.2.
+ *
+ * For an arbitrary matched shadow `ref` and an arbitrary verification outcome, the shared
+ * `createShadowSearchHandler` opens the thread IFF the thread has no per-chat `pinVerifier`, OR it
+ * has one AND the injected off-thread verification seam resolves `true`. In every other case (wrong
+ * PIN, thrown verifier error, or — for a PIN-protected thread — a missing seam) the handler returns
+ * the GENERIC `{ kind: 'denied' }` carrying no shadow-identifying field and opens nothing. A
+ * no-PIN thread never invokes the seam. Each property runs >=100 randomised iterations.
+ */
+
+/** Arbitrary optional hash-only PIN verifier (a present non-empty string, or absent). */
+const pinVerifierArb = fc.option(fc.string({ minLength: 1, maxLength: 32 }), { nil: undefined });
+
+test('Property 11: a no-PIN thread opens directly and never prompts; a PIN thread opens iff verify is true', async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      aliasBodyArb,
+      fc.hexaString({ minLength: 64, maxLength: 64 }),
+      fc.string({ minLength: 1, maxLength: 12 }),
+      pinVerifierArb,
+      fc.boolean(),
+      async (body, threadId, peerUid, pinVerifier, verifyOutcome) => {
+        const aliasHash = await hashAlias(`/${body}`, ALIAS_KEY);
+        assert.ok(aliasHash !== null);
+        const ref: ShadowThreadRef =
+          pinVerifier === undefined
+            ? { peerUid, threadId }
+            : { peerUid, threadId, pinVerifier };
+        const entries: AliasEntry<ShadowThreadRef>[] = [{ aliasHash, ref }];
+
+        const registry = new DefaultConversationRegistry();
+        const opened: ShadowThreadRef[] = [];
+        const verifyCalls: ShadowThreadRef[] = [];
+        const handler = createShadowSearchHandler({
+          store: storeWith(entries),
+          registry,
+          getMode: () => 'real',
+          onOpenShadowThread: (r) => opened.push(r),
+          onOrdinarySearch: () => undefined,
+          requestPinAndVerify: async (r) => {
+            verifyCalls.push(r);
+            return verifyOutcome;
+          },
+        });
+
+        const result = await handler(`/${body}`);
+
+        const shouldOpen = pinVerifier === undefined || verifyOutcome;
+        if (shouldOpen) {
+          assert.equal((result as Extract<SearchResolution, { kind: 'shadow' }>).kind, 'shadow');
+          assert.deepEqual(opened, [ref]);
+        } else {
+          assert.deepEqual(result, { kind: 'denied' });
+          assert.deepEqual(opened, []);
+          // A denial creates no shadow thread in the registry.
+          assert.deepEqual(registry.listSurfaceConversations(), []);
+        }
+        // The off-thread seam is consulted exactly when (and only when) a PIN is set, and always
+        // receives the full matched ref including its pinVerifier.
+        if (pinVerifier === undefined) {
+          assert.deepEqual(verifyCalls, []);
+        } else {
+          assert.deepEqual(verifyCalls, [ref]);
+        }
+      },
+    ),
+    { numRuns: 150 },
+  );
+});
+
+test('Property 11: a PIN-protected thread with a missing verification seam always fails closed', async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      aliasBodyArb,
+      fc.hexaString({ minLength: 64, maxLength: 64 }),
+      fc.string({ minLength: 1, maxLength: 12 }),
+      fc.string({ minLength: 1, maxLength: 32 }),
+      async (body, threadId, peerUid, pinVerifier) => {
+        const aliasHash = await hashAlias(`/${body}`, ALIAS_KEY);
+        assert.ok(aliasHash !== null);
+        const ref: ShadowThreadRef = { peerUid, threadId, pinVerifier };
+        const registry = new DefaultConversationRegistry();
+        const opened: ShadowThreadRef[] = [];
+        const handler = createShadowSearchHandler({
+          store: storeWith([{ aliasHash, ref }]),
+          registry,
+          getMode: () => 'real',
+          onOpenShadowThread: (r) => opened.push(r),
+          onOrdinarySearch: () => undefined,
+          // requestPinAndVerify omitted: cannot verify => must deny.
+        });
+
+        const result = await handler(`/${body}`);
+        assert.deepEqual(result, { kind: 'denied' });
+        assert.deepEqual(opened, []);
+      },
+    ),
+    { numRuns: 100 },
   );
 });

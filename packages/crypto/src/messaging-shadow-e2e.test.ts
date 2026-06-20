@@ -25,7 +25,12 @@ import { createMessaging, type MessagingRealtime, type MessagingStore } from './
 import type { KeyStore, MessageRow, SignalProtocolStore } from './ports';
 import { createSessionManager } from './session-manager';
 import type { SequenceAllocator } from './sequence-allocator';
-import { deriveShadowThreadId } from './shadow-chat';
+import { deriveShadowThreadId, matchAlias, type AliasEntry } from './shadow-chat';
+import {
+  ShadowSecretStore,
+  type ShadowSecretPersistence,
+  type ShadowThreadRef,
+} from './shadow-secret-store';
 import { SHADOW_SEQ_OFFSET, ShadowSequenceAllocator } from './shadow-sequence-allocator';
 
 /**
@@ -250,6 +255,7 @@ interface Client {
   registry: ConversationRegistry;
   surfaceState: () => ConversationState;
   shadowState: () => ConversationState;
+  shadowStateFor: (threadId: string) => ConversationState;
   dispose: () => void;
 }
 
@@ -259,12 +265,17 @@ function makeClient(
   hub: Hub,
   peerUid: string,
   threadId: string,
+  extraThreadIds: string[] = [],
 ): Client {
   const store = makeStore();
   const shadowKeyStore = makeShadowKeyStore();
   const registry = createConversationRegistry({ platform: 'mobile' });
   // Pre-open the shadow thread so inbound shadow events are accepted (the UI opens it via /alias).
   registry.openShadowThread(threadId, peerUid);
+  // Additional alias-discriminated shadow threads of the SAME contact pair (one per distinct alias).
+  for (const extra of extraThreadIds) {
+    registry.openShadowThread(extra, peerUid);
+  }
   let counter = 0;
 
   const messaging = createMessaging(
@@ -299,6 +310,7 @@ function makeClient(
     registry,
     surfaceState: () => registry.getState(surfaceKey),
     shadowState: () => registry.getState(shadowKey),
+    shadowStateFor: (tid: string) => registry.getState({ kind: 'shadow', threadId: tid, peerUid }),
     dispose: () => messaging.dispose(),
   };
 }
@@ -475,6 +487,239 @@ test('SHADOW E2E GATE: surface and shadow stay fully separated across two real c
   const surfaceKeys = Object.keys(surfaceEnvelope);
   const shadowKeys = Object.keys(shadowEnvelope);
   // Identical field-name set + identical field count + identical ORDERING.
+  assert.deepEqual(shadowKeys, surfaceKeys, 'shadow + surface envelopes differ in field names/order/count');
+  // Identical field TYPES.
+  const surfaceRec = surfaceEnvelope as unknown as Record<string, unknown>;
+  const shadowRec = shadowEnvelope as unknown as Record<string, unknown>;
+  for (const key of surfaceKeys) {
+    assert.equal(
+      typeof shadowRec[key],
+      typeof surfaceRec[key],
+      `envelope field "${key}" differs in type between shadow and surface`,
+    );
+  }
+
+  A.dispose();
+  B.dispose();
+});
+
+
+/**
+ * A DURABLE in-memory {@link ShadowSecretPersistence}: secrets and alias entries live in closure
+ * state that OUTLIVES any single {@link ShadowSecretStore}, so constructing a fresh store over the
+ * same object models a device restart (the encrypted vault survived; the store is rebuilt). Writes
+ * are atomic — an entry with the same `aliasHash` is replaced in place rather than duplicated.
+ */
+function makeDurablePersistence(): ShadowSecretPersistence {
+  let master: Uint8Array | null = null;
+  let aliasKey: Uint8Array | null = null;
+  const entries: AliasEntry<ShadowThreadRef>[] = [];
+  return {
+    async loadMasterSecret() {
+      return master;
+    },
+    async saveMasterSecret(secret) {
+      master = secret;
+    },
+    async loadAliasKey() {
+      return aliasKey;
+    },
+    async saveAliasKey(key) {
+      aliasKey = key;
+    },
+    async loadAliasEntries() {
+      return entries.map((e) => ({ aliasHash: e.aliasHash, ref: { ...e.ref } }));
+    },
+    async saveAliasEntry(entry) {
+      const idx = entries.findIndex((e) => e.aliasHash === entry.aliasHash);
+      const copy: AliasEntry<ShadowThreadRef> = { aliasHash: entry.aliasHash, ref: { ...entry.ref } };
+      if (idx >= 0) entries[idx] = copy;
+      else entries.push(copy);
+    },
+  };
+}
+
+/** A device-local alias-HMAC key (never on the wire); paired with {@link SHADOW_MASTER_SECRET}. */
+const SHADOW_ALIAS_KEY = Uint8Array.from({ length: 32 }, (_v, i) => (i * 31 + 5) & 0xff);
+
+test('SHADOW E2E: an alias-bound thread resolves to the SAME thread after a simulated restart (Property 12)', async () => {
+  const myUid = 'alice-uid';
+  const peerUid = 'bob-uid';
+  const alias = '/journal';
+
+  // Provision the durable encrypted vault (master + alias key) once.
+  const durable = makeDurablePersistence();
+  await durable.saveMasterSecret(SHADOW_MASTER_SECRET);
+  await durable.saveAliasKey(SHADOW_ALIAS_KEY);
+
+  // ---- Bind the alias through the FIRST store (alias-discriminated derivation) -----------------
+  const store1 = new ShadowSecretStore(durable);
+  const ref = await store1.bindAlias('real', alias, peerUid, myUid);
+  assert.ok(ref, 'bindAlias must produce a ref in real mode');
+
+  // The bound threadId is exactly the alias-discriminated derivation for the pair.
+  const expectedThreadId = await deriveShadowThreadId(SHADOW_MASTER_SECRET, myUid, peerUid, alias);
+  assert.equal(ref?.threadId, expectedThreadId);
+
+  // Resolve the alias BEFORE restart via the same hash-only matching the UI uses.
+  const ctx1 = await store1.getShadowContext('real');
+  assert.ok(ctx1);
+  const resolvedBefore = await matchAlias(alias, await store1.listAliasEntries('real'), ctx1!.aliasKey);
+  assert.deepEqual(resolvedBefore, ref, 'alias must resolve to the bound ref before restart');
+
+  // ---- SIMULATED RESTART: a FRESH store over the SAME durable persistence ----------------------
+  const store2 = new ShadowSecretStore(durable);
+  const ctx2 = await store2.getShadowContext('real');
+  assert.ok(ctx2, 'a fresh store must recover the master/alias secrets from durable persistence');
+  const entriesAfter = await store2.listAliasEntries('real');
+  const resolvedAfter = await matchAlias(alias, entriesAfter, ctx2!.aliasKey);
+
+  // Identical threadId AND identical ref survive the restart (Property 12).
+  assert.ok(resolvedAfter, 'alias must still resolve after restart');
+  assert.equal(resolvedAfter?.threadId, ref?.threadId, 'threadId must be identical after restart');
+  assert.equal(resolvedAfter?.peerUid, ref?.peerUid, 'peerUid must be identical after restart');
+  assert.deepEqual(resolvedAfter, ref, 'the fully-resolved ref must be identical after restart');
+  assert.equal(resolvedAfter?.threadId, expectedThreadId, 'still the alias-discriminated thread id');
+});
+
+
+test('SHADOW E2E: two alias-discriminated threads of the SAME contact pair stay isolated from each other and from surface (Property 8)', async () => {
+  const alice = await newParty('alice-uid', 'alice-dev');
+  const bob = await newParty('bob-uid', 'bob-dev');
+  const aliasX = '/alpha';
+  const aliasY = '/beta';
+
+  // Two DISTINCT aliases for the SAME pair derive two DISTINCT thread ids (Component 1 discriminator),
+  // each symmetric across the pair (no handshake) (Property 1 / Property 8 setup).
+  const tidX = await deriveShadowThreadId(SHADOW_MASTER_SECRET, alice.uid, bob.uid, aliasX);
+  const tidY = await deriveShadowThreadId(SHADOW_MASTER_SECRET, alice.uid, bob.uid, aliasY);
+  assert.notEqual(tidX, tidY, 'distinct aliases must yield distinct shadow threads for one pair');
+  assert.equal(tidX, await deriveShadowThreadId(SHADOW_MASTER_SECRET, bob.uid, alice.uid, aliasX));
+  assert.equal(tidY, await deriveShadowThreadId(SHADOW_MASTER_SECRET, bob.uid, alice.uid, aliasY));
+
+  const hub = makeHub();
+  const A = makeClient(alice, { [bob.uid]: bob.bundle }, hub, bob.uid, tidX, [tidY]);
+  const B = makeClient(bob, { [alice.uid]: alice.bundle }, hub, alice.uid, tidX, [tidY]);
+
+  // Exchange messages on surface, thread X, and thread Y — in BOTH directions.
+  await A.send(bob.uid, 'surface-1');
+  await flush();
+  await B.send(alice.uid, 'surface-2');
+  await flush();
+  await A.send(bob.uid, 'x-A-1', tidX);
+  await flush();
+  const firstOutSeqX = hub.lastFrame()!.envelope.seq;
+  await B.send(alice.uid, 'x-B-1', tidX);
+  await flush();
+  await A.send(bob.uid, 'y-A-1', tidY);
+  await flush();
+  await B.send(alice.uid, 'y-B-1', tidY);
+  await flush();
+
+  // ---- Property 8: each thread holds ONLY its own messages; nothing bleeds across -------------
+  for (const C of [A, B]) {
+    const surface = C.surfaceState();
+    const x = C.shadowStateFor(tidX);
+    const y = C.shadowStateFor(tidY);
+    assert.equal(surface.messages.length, 2, 'surface holds only its 2 messages');
+    assert.equal(x.messages.length, 2, 'thread X holds only its 2 messages');
+    assert.equal(y.messages.length, 2, 'thread Y holds only its 2 messages');
+    const xText = x.messages.map((m) => m.text ?? '').join('|');
+    const yText = y.messages.map((m) => m.text ?? '').join('|');
+    const sText = surface.messages.map((m) => m.text ?? '').join('|');
+    assert.ok(!xText.includes('y-') && !xText.includes('surface-'), 'thread X leaked another thread');
+    assert.ok(!yText.includes('x-') && !yText.includes('surface-'), 'thread Y leaked another thread');
+    assert.ok(!sText.includes('x-') && !sText.includes('y-'), 'surface leaked a shadow thread');
+    // Both shadow threads live in the shadow seq space; surface stays below the offset.
+    assert.ok(x.messages.every((m) => m.seq >= SHADOW_SEQ_OFFSET), 'thread X seqs must be >= 1e9');
+    assert.ok(y.messages.every((m) => m.seq >= SHADOW_SEQ_OFFSET), 'thread Y seqs must be >= 1e9');
+    assert.ok(surface.messages.every((m) => m.seq < SHADOW_SEQ_OFFSET), 'surface seqs must be < 1e9');
+  }
+
+  // ---- Property 8: a reaction + timer in thread X never touch thread Y or surface --------------
+  await A.react(bob.uid, { direction: 'out', seq: firstOutSeqX }, '🔥', tidX);
+  await flush();
+  await A.setTimer(bob.uid, 1_800_000, tidX);
+  await flush();
+
+  // Thread X carries the reaction + timer.
+  const xReacted = A.shadowStateFor(tidX).messages.find((m) => m.seq === firstOutSeqX && m.direction === 'out');
+  assert.deepEqual(xReacted?.reactions, ['🔥'], 'thread X must carry its own reaction');
+  assert.equal(A.shadowStateFor(tidX).disappearingTtlMs, 1_800_000, 'thread X must carry its own timer');
+  // Thread Y is untouched: no reaction anywhere, timer still default.
+  assert.ok(
+    A.shadowStateFor(tidY).messages.every((m) => m.reactions === undefined),
+    'a thread-X reaction bled into thread Y',
+  );
+  assert.equal(A.shadowStateFor(tidY).disappearingTtlMs, 0, 'a thread-X timer bled into thread Y');
+  // Surface is untouched too.
+  assert.ok(
+    A.surfaceState().messages.every((m) => m.reactions === undefined),
+    'a thread-X reaction bled into surface',
+  );
+  assert.equal(A.surfaceState().disappearingTtlMs, 0, 'a thread-X timer bled into surface');
+  // The reaction reached B's thread X only, never B's thread Y.
+  assert.ok(
+    B.shadowStateFor(tidX).messages.some((m) => (m.reactions ?? []).includes('🔥')),
+    "B's thread X should have received the reaction",
+  );
+  assert.ok(
+    B.shadowStateFor(tidY).messages.every((m) => m.reactions === undefined),
+    "a thread-X reaction bled into B's thread Y",
+  );
+
+  A.dispose();
+  B.dispose();
+});
+
+
+test('SHADOW E2E: an alias-discriminated thread stays wire-blind — no threadId/plaintext on the wire, envelope shape identical to surface (Property 5, C1)', async () => {
+  const alice = await newParty('alice-uid', 'alice-dev');
+  const bob = await newParty('bob-uid', 'bob-dev');
+  const alias = '/ledger';
+
+  // An alias-DISCRIMINATED thread (the alias is mixed into the derivation, Component 1).
+  const threadId = await deriveShadowThreadId(SHADOW_MASTER_SECRET, alice.uid, bob.uid, alias);
+
+  const hub = makeHub();
+  const A = makeClient(alice, { [bob.uid]: bob.bundle }, hub, bob.uid, threadId);
+  const B = makeClient(bob, { [alice.uid]: alice.bundle }, hub, alice.uid, threadId);
+
+  // Exchange surface + alias-discriminated shadow traffic in both directions, plus a shadow
+  // reaction (so a react frame is also captured and screened).
+  await A.send(bob.uid, 'surface-hello');
+  await flush();
+  await B.send(alice.uid, 'surface-reply');
+  await flush();
+  await A.send(bob.uid, 'shadow-secret-1', threadId);
+  await flush();
+  const shadowOutSeq = hub.lastFrame()!.envelope.seq;
+  await B.send(alice.uid, 'shadow-secret-2', threadId);
+  await flush();
+  await A.react(bob.uid, { direction: 'out', seq: shadowOutSeq }, '🤫', threadId);
+  await flush();
+
+  // ---- Property 5 + C1: nothing sensitive on the wire --------------------------------------------
+  const frames = hub.frames();
+  assert.ok(frames.length > 0, 'frames were captured');
+  for (const frame of frames) {
+    const serialized = JSON.stringify(frame);
+    // The alias-discriminated threadId NEVER appears on the wire.
+    assert.ok(!serialized.includes(threadId), 'the alias-discriminated threadId leaked onto the wire');
+    // No plaintext (surface or shadow) and no alias text ever appears on the wire.
+    for (const needle of ['surface-', 'shadow-', 'secret', 'ledger']) {
+      assert.ok(!serialized.includes(needle), `plaintext "${needle}" leaked onto the wire`);
+    }
+    assert.ok(!Object.prototype.hasOwnProperty.call(frame.envelope, 'threadId'));
+    assert.ok(!Object.prototype.hasOwnProperty.call(frame.envelope, 'plaintext'));
+  }
+
+  // ---- Property 5 + C1: a shadow envelope is field-shape-IDENTICAL to a surface envelope --------
+  const surfaceEnvelope = frames.find((f) => f.envelope.seq < SHADOW_SEQ_OFFSET)!.envelope;
+  const shadowEnvelope = frames.find((f) => f.envelope.seq >= SHADOW_SEQ_OFFSET)!.envelope;
+  const surfaceKeys = Object.keys(surfaceEnvelope);
+  const shadowKeys = Object.keys(shadowEnvelope);
+  // Identical field names + count + ORDERING.
   assert.deepEqual(shadowKeys, surfaceKeys, 'shadow + surface envelopes differ in field names/order/count');
   // Identical field TYPES.
   const surfaceRec = surfaceEnvelope as unknown as Record<string, unknown>;

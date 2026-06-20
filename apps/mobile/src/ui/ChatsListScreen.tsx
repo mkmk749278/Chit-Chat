@@ -33,6 +33,7 @@ export function ChatsListScreen({
   onNewChat,
   onSearchSubmit,
   revealing: revealingProp = false,
+  onLongPressRow,
 }: {
   chats: ChatSummary[];
   onOpenChat: (id: string) => void;
@@ -48,6 +49,12 @@ export function ChatsListScreen({
   onSearchSubmit?: (text: string) => void | Promise<void>;
   /** True while a hidden-chat reveal is in flight, when the container drives the state itself. */
   revealing?: boolean;
+  /**
+   * Press-and-hold on a chat row (Shadow Chat, Requirement 11.1): opens the row's long-press overlay
+   * menu in the container (which offers "Shadow chat" in real mode). `id` is the peer id, `name` the
+   * display name. Optional so the screen stays presentational.
+   */
+  onLongPressRow?: (id: string, name: string) => void;
 }): React.JSX.Element {
   const t = useTheme();
   const [query, setQuery] = useState('');
@@ -117,6 +124,7 @@ export function ChatsListScreen({
           <Pressable
             style={styles.row}
             onPress={() => onOpenChat(item.id)}
+            onLongPress={onLongPressRow !== undefined ? () => onLongPressRow(item.id, item.name) : undefined}
             accessibilityRole="button"
           >
             <View style={[styles.avatar, { backgroundColor: avatarColor(item.id) }]}>

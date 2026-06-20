@@ -12,4 +12,9 @@ export default defineConfig({
     environment: 'jsdom',
     include: ['app/**/*.test.{ts,tsx}'],
   },
+  // Component tests (.tsx) render real components whose JSX relies on React's automatic runtime
+  // (the same runtime Next.js uses); classic-runtime transforms would need `React` in scope.
+  esbuild: {
+    jsx: 'automatic',
+  },
 });

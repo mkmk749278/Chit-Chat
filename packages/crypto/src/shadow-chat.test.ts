@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
 import { test } from 'node:test';
 
 import {
@@ -46,6 +47,60 @@ test('an empty or missing uid is rejected (refined §9.4 / Req 2.5)', async () =
 
 test('two identical uids are rejected — a shadow chat is with a different contact (Req 2.5)', async () => {
   await assert.rejects(() => deriveShadowThreadId(master, 'alice', 'alice'), /distinct/);
+});
+
+/**
+ * Alias-discriminated derivation (full-vision evolution; design Component 1, Req 1.7, 2.7–2.12).
+ * The expected ids below are computed INDEPENDENTLY with Node's `createHmac`, so they pin the exact
+ * HMAC inputs: the legacy input `canonicalSortUids(a,b) + "shadow"` and the discriminated input
+ * `canonicalSortUids(a,b) + "shadow" + 0x1f + normalizeAlias(alias)`.
+ */
+const US = '\u001f';
+
+/** Reference HMAC-SHA256 hex over a UTF-8 string, using the same key bytes the SUT uses. */
+function refThreadId(key: Uint8Array, data: string): string {
+  return createHmac('sha256', Buffer.from(key)).update(Buffer.from(data, 'utf8')).digest('hex');
+}
+
+test('discriminated id equals the expected HMAC over `…"shadow" + 0x1f + alias` (Req 2.7)', async () => {
+  const expected = refThreadId(master, `${canonicalSortUids('alice', 'bob')}shadow${US}/work`);
+  const actual = await deriveShadowThreadId(master, 'alice', 'bob', '/Work'); // case-insensitive normalise
+  assert.equal(actual, expected);
+  assert.match(actual, /^[0-9a-f]{64}$/);
+});
+
+test('omitted/empty alias reproduces the byte-for-byte legacy id constant (Req 2.9)', async () => {
+  const legacyConstant = refThreadId(master, `${canonicalSortUids('alice', 'bob')}shadow`);
+  assert.equal(await deriveShadowThreadId(master, 'alice', 'bob'), legacyConstant);
+  assert.equal(await deriveShadowThreadId(master, 'alice', 'bob', undefined), legacyConstant);
+  assert.equal(await deriveShadowThreadId(master, 'alice', 'bob', ''), legacyConstant);
+});
+
+test('a discriminated id is never equal to the legacy id (disjoint id-spaces, Req 2.10)', async () => {
+  const legacy = await deriveShadowThreadId(master, 'alice', 'bob');
+  const discriminated = await deriveShadowThreadId(master, 'alice', 'bob', '/work');
+  assert.notEqual(discriminated, legacy);
+});
+
+test('distinct aliases for the same pair yield distinct ids (Req 2.8)', async () => {
+  assert.notEqual(
+    await deriveShadowThreadId(master, 'alice', 'bob', '/work'),
+    await deriveShadowThreadId(master, 'alice', 'bob', '/journal'),
+  );
+});
+
+test('discriminated derivation is symmetric and deterministic with the alias present (Req 2.11)', async () => {
+  const ab1 = await deriveShadowThreadId(master, 'alice', 'bob', '/notes');
+  const ab2 = await deriveShadowThreadId(master, 'alice', 'bob', '/notes');
+  const ba = await deriveShadowThreadId(master, 'bob', 'alice', '/notes');
+  assert.equal(ab1, ab2);
+  assert.equal(ab1, ba);
+});
+
+test('an invalid alias discriminator is rejected (Req 2.12)', async () => {
+  await assert.rejects(() => deriveShadowThreadId(master, 'alice', 'bob', '/two words'), /not a grammatically valid alias/);
+  await assert.rejects(() => deriveShadowThreadId(master, 'alice', 'bob', '/has-dash'), /not a grammatically valid alias/);
+  await assert.rejects(() => deriveShadowThreadId(master, 'alice', 'bob', 'nodash'), /not a grammatically valid alias/);
 });
 
 test('isAliasInput detects the `/` prefix (interception trigger, §9.3)', () => {

@@ -14,8 +14,8 @@
  * the edit draft) lives here; conversation state stays in the shared reducer.
  */
 
-import React, { useMemo, useState } from 'react';
-import { FlatList, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import React, { useMemo, useRef, useState } from 'react';
+import { Dimensions, FlatList, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import type {
   ConversationState,
@@ -26,10 +26,12 @@ import type {
 
 import { SheetItem, SheetModal } from './action-sheet';
 import { runBusy } from './async-submit';
-import { CONVERSATION_ACTIONS, type ConversationActionKey } from './conversation-actions';
+import { type ConversationActionKey } from './conversation-actions';
 import { ContactProfileScreen } from './ContactProfileScreen';
+import { ConversationOverflowMenu, type OverflowMenuAnchor } from './ConversationOverflowMenu';
 import { TIMER_PRESETS, timerLabel } from './disappearing';
 import { Icon } from './icons';
+import { ShadowPinSettingsSheet } from './ShadowPinSettingsSheet';
 import { avatarColor, initials, useTheme, type Theme } from './theme';
 
 export interface ConversationScreenProps {
@@ -73,6 +75,14 @@ export interface ConversationScreenProps {
   onHideChat?: (secret: string) => void | Promise<void>;
   /** Remove this chat's hidden status (§3.3). May resolve asynchronously (Requirement 1.3). */
   onUnhideChat?: () => void | Promise<void>;
+  /**
+   * Add / change / remove the open SHADOW thread's optional per-chat PIN (Shadow Chat, task 16.1,
+   * Req 12.5/12.8). The container backs this with `ShadowSecretStore.setThreadPin('real', threadId,
+   * newPin | null)` and passes it ONLY for an open shadow thread in App_Mode `real` — its presence is
+   * what surfaces the "Shadow chat PIN" overflow action. A non-empty string sets/changes the PIN;
+   * `null` removes it. The PBKDF2 work runs off the UI thread; rejecting surfaces a generic failure.
+   */
+  onSetThreadPin?: (newPin: string | null) => Promise<void>;
 }
 
 const STATUS_LABEL: Record<RenderableMessage['status'], string> = {
@@ -246,6 +256,7 @@ export function ConversationScreen({
   isHidden = false,
   onHideChat,
   onUnhideChat,
+  onSetThreadPin,
 }: ConversationScreenProps): React.JSX.Element {
   const t = useTheme();
   const connected = state.connection === 'connected';
@@ -287,7 +298,29 @@ export function ConversationScreen({
   // P3 header redesign: the overflow (⋮) menu and the Contact/Profile overlay are local UI only —
   // they re-route the EXISTING action callbacks, so ConversationScreenProps is unchanged (Req 3.1–3.4).
   const [overflowOpen, setOverflowOpen] = useState(false);
+  // Screen-space position of the ⋮ button, measured on open so the portal menu lines up under it.
+  const [overflowAnchor, setOverflowAnchor] = useState<OverflowMenuAnchor | null>(null);
+  const overflowBtnRef = useRef<View>(null);
   const [profileOpen, setProfileOpen] = useState(false);
+  // Shadow-chat per-chat PIN settings sheet (task 16.1). Only ever opened when `onSetThreadPin` is
+  // provided (open shadow thread, real mode), so it is inert for surface chats / non-real mode.
+  const [pinSettingsOpen, setPinSettingsOpen] = useState(false);
+
+  // Measure the ⋮ button in window space, then open the portal menu anchored under it. The menu is
+  // rendered through a top-level Modal (see ConversationOverflowMenu) so it draws ABOVE the message
+  // list instead of behind message bubbles (task 17.2).
+  const openOverflow = (): void => {
+    const node = overflowBtnRef.current;
+    if (node !== null) {
+      node.measureInWindow((x, y, width, height) => {
+        const screenWidth = Dimensions.get('window').width;
+        setOverflowAnchor({ top: y + height + 4, right: Math.max(8, screenWidth - (x + width)) });
+        setOverflowOpen(true);
+      });
+    } else {
+      setOverflowOpen(true);
+    }
+  };
 
   const closeHide = (): void => {
     if (hideBusy) {
@@ -352,14 +385,7 @@ export function ConversationScreen({
     }
   };
 
-  /** Semantic icon for each overflow menu row. */
-  const overflowIcon: Record<ConversationActionKey, 'timer' | 'verified' | 'shield' | 'hide'> = {
-    disappearing: 'timer',
-    verify: 'verified',
-    safety: 'shield',
-    hide: 'hide',
-  };
-
+  /** Apply the edit draft to the targeted message (Req 3.2). */
   const submitEdit = (): void => {
     if (editDraft === null) {
       return;
@@ -437,7 +463,8 @@ export function ConversationScreen({
 
         {/* The single header action: an overflow (⋮) menu holding the four moved actions (Req 3.3). */}
         <Pressable
-          onPress={() => setOverflowOpen((v) => !v)}
+          ref={overflowBtnRef}
+          onPress={openOverflow}
           accessibilityRole="button"
           accessibilityLabel="More options"
           hitSlop={12}
@@ -445,38 +472,6 @@ export function ConversationScreen({
         >
           <Icon name="more-vert" size={22} color={t.subtext} />
         </Pressable>
-
-        {overflowOpen && (
-          <>
-            <Pressable
-              style={styles.overflowScrim}
-              onPress={() => setOverflowOpen(false)}
-              accessibilityLabel="Dismiss menu"
-            />
-            <View style={[styles.overflowMenu, { backgroundColor: t.surface, borderColor: t.divider }]}>
-              {CONVERSATION_ACTIONS.map((action, idx) => {
-                const destructive = action.key === 'hide';
-                return (
-                  <Pressable
-                    key={action.key}
-                    onPress={() => openAction(action.key)}
-                    style={[
-                      styles.overflowItem,
-                      idx > 0 && { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: t.divider },
-                    ]}
-                    accessibilityRole="button"
-                    accessibilityLabel={action.label}
-                  >
-                    <Icon name={overflowIcon[action.key]} size={18} color={destructive ? t.danger : t.subtext} />
-                    <Text style={[styles.overflowText, { color: destructive ? t.danger : t.text }]}>
-                      {destructive && isHidden ? 'Unhide chat' : action.label}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-          </>
-        )}
       </View>
 
       <FlatList
@@ -783,6 +778,38 @@ export function ConversationScreen({
         <SheetItem label="Close" theme={t} onPress={() => setReveal(null)} />
       </SheetModal>
 
+      {/* Overflow (⋮) menu, rendered through a top-level Modal portal so it draws ABOVE the message
+          list instead of behind message bubbles (task 17.2). Routes each row back through openAction
+          → the EXISTING action sheets, so no callback or sheet logic is duplicated. */}
+      <ConversationOverflowMenu
+        visible={overflowOpen}
+        onClose={() => setOverflowOpen(false)}
+        onSelect={openAction}
+        theme={t}
+        isHidden={isHidden}
+        anchor={overflowAnchor}
+        onShadowPinSettings={
+          onSetThreadPin !== undefined
+            ? () => {
+                setOverflowOpen(false);
+                setPinSettingsOpen(true);
+              }
+            : undefined
+        }
+      />
+
+      {/* Shadow-chat per-chat PIN settings (task 16.1, Req 12.5/12.7/12.8): add / change / remove the
+          open shadow thread's optional PIN. Rendered (and reachable) ONLY when `onSetThreadPin` is
+          provided — an open shadow thread in real mode. The PBKDF2 work runs off the UI thread behind
+          the sheet's own busy spinner, so the UI never freezes. */}
+      {onSetThreadPin !== undefined && (
+        <ShadowPinSettingsSheet
+          visible={pinSettingsOpen}
+          onClose={() => setPinSettingsOpen(false)}
+          onSubmit={onSetThreadPin}
+        />
+      )}
+
       {/* Contact/Profile overlay (Req 3.2, 3.4): opened by tapping the header avatar/name. It is
           presentational and routes each action back through openAction → the EXISTING sheets above,
           so no callback or sheet logic is duplicated. */}
@@ -944,24 +971,6 @@ const styles = StyleSheet.create({
   },
   verifyBadgeText: { fontSize: 10, fontWeight: '600' },
   overflowBtn: { padding: 4 },
-  overflowScrim: { position: 'absolute', top: 0, left: 0, right: 0, bottom: -2000, zIndex: 5 },
-  overflowMenu: {
-    position: 'absolute',
-    top: 54,
-    right: 12,
-    minWidth: 210,
-    borderRadius: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingVertical: 4,
-    zIndex: 10,
-    elevation: 6,
-    shadowColor: '#000',
-    shadowOpacity: 0.12,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 4 },
-  },
-  overflowItem: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 13 },
-  overflowText: { fontSize: 15 },
   list: { flex: 1 },
   listContent: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8 },
   notice: { fontSize: 11, textAlign: 'center', marginBottom: 8, marginTop: 4 },
