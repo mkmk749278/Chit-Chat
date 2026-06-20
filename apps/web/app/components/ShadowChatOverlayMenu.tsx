@@ -32,6 +32,12 @@ export interface ShadowChatOverlayMenuProps {
   onClose: () => void;
   /** Invoked when the user taps the (real-mode-only) "Shadow chat" action. */
   onShadowChat: () => void;
+  /**
+   * Invoked when the user taps the (real-mode-only) "Send shadow invite" action (Shadow Chat Invites,
+   * Req 1.1): sends a consent-based invite to the contact, who receives an Accept/Decline card.
+   * Optional, so existing call sites are unaffected; shown under the same real-mode gate.
+   */
+  onShadowInvite?: () => void;
 }
 
 /**
@@ -48,6 +54,7 @@ export function ShadowChatOverlayMenu({
   contextLabel,
   onClose,
   onShadowChat,
+  onShadowInvite,
 }: ShadowChatOverlayMenuProps): JSX.Element {
   const showShadow = isShadowActionVisible(mode);
   return (
@@ -75,6 +82,17 @@ export function ShadowChatOverlayMenu({
                 onClick={onShadowChat}
               >
                 Shadow chat
+              </button>
+            </li>
+          )}
+          {showShadow && onShadowInvite !== undefined && (
+            <li>
+              <button
+                type="button"
+                style={{ ...styles.action, ...styles.shadowAction }}
+                onClick={onShadowInvite}
+              >
+                Send shadow invite
               </button>
             </li>
           )}
