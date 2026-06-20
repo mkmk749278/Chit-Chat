@@ -68,6 +68,16 @@ export interface ConversationOverflowMenuProps {
    * gating); it is absent (no row) for a shadow thread and in any non-real mode.
    */
   onClearChat?: (() => void) | null;
+  /**
+   * "Clear shadow chat" — purge THIS shadow thread's local history while keeping it working (Shadow
+   * Chat Invites, Req 6). Rendered only for an open shadow thread in real mode; absent otherwise.
+   */
+  onClearShadowChat?: (() => void) | null;
+  /**
+   * "Revoke shadow chat" — delete the shared key + history on BOTH sides and close the thread (Req
+   * 7). Irreversible. Rendered only for an open shadow thread in real mode; absent otherwise.
+   */
+  onRevokeShadowChat?: (() => void) | null;
 }
 
 /**
@@ -85,6 +95,8 @@ export function ConversationOverflowMenu({
   anchor,
   onShadowPinSettings,
   onClearChat,
+  onClearShadowChat,
+  onRevokeShadowChat,
 }: ConversationOverflowMenuProps): React.JSX.Element {
   const pos = anchor ?? DEFAULT_ANCHOR;
   return (
@@ -148,6 +160,30 @@ export function ConversationOverflowMenu({
             >
               <Icon name="clear" size={18} color={t.danger} />
               <Text style={[styles.text, { color: t.danger }]}>{CLEAR_CHAT_ACTION.label}</Text>
+            </Pressable>
+          )}
+          {/* Shadow Chat Invites: Clear (local, keep key) and Revoke (delete key + both sides). Only
+              for an open shadow thread in real mode; absent otherwise (Req 6.6, 7.7). */}
+          {onClearShadowChat != null && (
+            <Pressable
+              onPress={onClearShadowChat}
+              style={[styles.item, { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: t.divider }]}
+              accessibilityRole="button"
+              accessibilityLabel="Clear shadow chat"
+            >
+              <Icon name="clear" size={18} color={t.danger} />
+              <Text style={[styles.text, { color: t.danger }]}>Clear shadow chat</Text>
+            </Pressable>
+          )}
+          {onRevokeShadowChat != null && (
+            <Pressable
+              onPress={onRevokeShadowChat}
+              style={[styles.item, { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: t.divider }]}
+              accessibilityRole="button"
+              accessibilityLabel="Revoke shadow chat"
+            >
+              <Icon name="clear" size={18} color={t.danger} />
+              <Text style={[styles.text, { color: t.danger }]}>Revoke shadow chat</Text>
             </Pressable>
           )}
         </Pressable>
