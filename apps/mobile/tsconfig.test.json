@@ -28,7 +28,8 @@
     "src/app/clear-chat.ts",
     "src/app/clear-chat.test.ts",
     "src/data/shadow-secret-persistence.ts",
-    "src/data/shadow-secret-persistence.test.ts"
+    "src/data/shadow-secret-persistence.test.ts",
+    "src/data/shadow-create-e2e.test.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }

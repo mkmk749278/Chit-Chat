@@ -86,9 +86,20 @@ export function ShadowChatCreateSheet({
         try {
           await onCreate(alias.trim(), trimmedPin.length > 0 ? trimmedPin : undefined);
           reset();
-        } catch {
-          // Generic failure — never reveal anything shadow-specific (Req 8.1 family).
-          setError('Could not create the shadow chat. Please try again.');
+        } catch (err) {
+          // Preserve the REAL failure reason instead of swallowing every throw into one opaque
+          // string — that masking is what hid an on-device WebCrypto/derivation failure behind a
+          // generic "try again" and made the defect undiagnosable. The controller/crypto-core
+          // messages never contain the alias plaintext, the PIN, or any secret, so logging the
+          // message is privacy-safe; we deliberately never log `alias` or `pin`.
+          const reason = err instanceof Error ? err.message : String(err);
+          // eslint-disable-next-line no-console
+          console.error('[shadow-chat] create failed:', reason);
+          // Surface the specific, actionable reason (e.g. "Secure storage is still setting up…")
+          // when we have one; fall back to the generic message only when it is empty.
+          setError(
+            reason.length > 0 ? reason : 'Could not create the shadow chat. Please try again.',
+          );
         }
       },
     });
