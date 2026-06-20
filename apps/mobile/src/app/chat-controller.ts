@@ -35,6 +35,7 @@
 import {
   AuthService,
   BackoffPolicy,
+  createConversationRegistry,
   createEnvelopeCodec,
   createMessaging,
   createPureTsLibsignalEngine,
@@ -48,14 +49,19 @@ import {
   RealtimeClient,
   ShadowSecretStore,
   ShadowSequenceAllocator,
+  type AppMode,
   type ConversationEvent,
   type ConversationState,
   type KeyStore,
   type MessageTarget,
   type Messaging,
+  type RecipientRouting,
   type RegistrationResult,
+  type RowThreadAssociation,
   type SafetyNumber,
   type SessionManager,
+  type ShadowInviteCoordinator,
+  type ShadowInviteEvent,
   type ShadowSecretPersistence,
   type VerificationEvent,
   type VerificationResponseKind,
@@ -69,6 +75,8 @@ import { clearConversationHistory } from './clear-chat';
 import { createNativeVault, probeNativeCrypto } from '../crypto/native-vault';
 import { createSecureGate, type RevealResult, type SecureGate, type UnlockResult } from './secure-gate';
 import { createVaultShadowSecretPersistence } from '../data/shadow-secret-persistence';
+import { createVaultRowThreadAssociation } from '../data/row-thread-association';
+import { buildShadowInviteCoordinator } from './shadow-invite-wiring';
 import {
   createPersistentKeyStore,
   createPersistentSignalProtocolStore,
@@ -248,6 +256,45 @@ export interface ChatController {
    * release-gated behind real mode by {@link ShadowSecretStore}).
    */
   provisionShadowContext(): Promise<boolean>;
+  /**
+   * Shadow Chat Invites (design Component A). Create + send a shadow-chat invite to `peerUid` over the
+   * existing E2E channel; returns the new (already-converged) `threadId` + `inviteId`, or `null` in
+   * decoy/locked mode (release nothing, send nothing). `alias` is an optional local handle; `pin` an
+   * optional per-chat PIN. Never disturbs the inviter's surface chat.
+   */
+  createShadowInvite(
+    peerUid: string,
+    alias?: string,
+    pin?: string,
+  ): Promise<{ inviteId: string; threadId: string } | null>;
+  /**
+   * Accept an inbound shadow invite with a routing choice — `'hidden'` (default: a hidden shadow
+   * thread) or `'merge'` (surface it in the main chat, view-only). Returns true on success, false in
+   * decoy/locked mode or for an unknown invite. The routing choice stays local to this device.
+   */
+  acceptShadowInvite(
+    inviteId: string,
+    routing: RecipientRouting,
+    alias?: string,
+    pin?: string,
+  ): Promise<boolean>;
+  /** Decline an inbound shadow invite; persists no shadow data and auto-removes the request card. */
+  declineShadowInvite(inviteId: string): Promise<void>;
+  /**
+   * Revoke a shadow chat: purge its local history, delete the shared key + record, close the thread,
+   * and instruct the peer to do the same. Real-mode only; fail-closed local-first. Unrecoverable.
+   */
+  revokeShadowChat(threadId: string): Promise<void>;
+  /**
+   * Clear a shadow chat's LOCAL history while keeping the shared key, so the chat keeps working. Real
+   * mode only; no wire traffic (the peer's history is untouched — that is what Revoke is for).
+   */
+  clearShadowChat(threadId: string): Promise<void>;
+  /**
+   * Subscribe to {@link ShadowInviteEvent}s — `invite-received` (render the Accept/Decline card),
+   * `invite-accepted` / `invite-resolved` (dismiss it), `thread-revoked` (remove the thread).
+   */
+  onShadowInvite(listener: (event: ShadowInviteEvent) => void): () => void;
   subscribe(listener: (event: ControllerEvent) => void): () => void;
   /**
    * Subscribe to sign-in state. Fires with the signed-in UID when Firebase restores a
@@ -334,10 +381,24 @@ export function createMobileController(): ChatController {
   };
   let trustedContactUid: string | null = null;
 
+  // Shadow Chat Invites (design Component A): invite/accept/decline/revoke lifecycle events, surfaced
+  // separately so the UI renders the Accept/Decline request card and the revoke/clear effects.
+  const inviteListeners = new Set<(event: ShadowInviteEvent) => void>();
+  const emitInvite = (event: ShadowInviteEvent): void => {
+    for (const listener of inviteListeners) {
+      listener(event);
+    }
+  };
+
   // Live messaging stack, created on sign-in and torn down on sign-out.
   let vault: PersistentVault | null = null;
   let gate: SecureGate | null = null;
   let shadowSecretStore: ShadowSecretStore | null = null;
+  /** Shadow Chat Invites coordinator + its lifecycle registry / row→thread association (real-mode gated). */
+  let shadowInviteCoordinator: ShadowInviteCoordinator | null = null;
+  let shadowRowThreads: RowThreadAssociation | null = null;
+  /** The current App-Lock mode (set on a successful unlock); gates all shadow-invite actions. */
+  let currentAppMode: AppMode | null = null;
   // The narrow durable persistence the shadow store reads/writes through. Retained so the long-press
   // creation flow can provision the Master_Secret / Alias_Key once (Req 11.6) without widening the
   // store's port; the secrets live ONLY in the encrypted vault and never reach the network.
@@ -430,6 +491,24 @@ export function createMobileController(): ChatController {
       },
     });
 
+    // Shadow Chat Invites (design Component A): a lifecycle registry for opened invited threads, the
+    // durable row→thread association for per-thread history purge (Req 14), and the coordinator that
+    // owns invite/accept/decline/revoke. The coordinator is bound to Messaging below (shadowInvites)
+    // and resolves the live instance lazily, so the construction cycle is broken cleanly. All actions
+    // are real-mode gated through `currentAppMode`.
+    const shadowInviteRegistry = createConversationRegistry({ platform: 'mobile' });
+    shadowRowThreads = createVaultRowThreadAssociation(vault);
+    shadowInviteCoordinator = buildShadowInviteCoordinator({
+      messaging: () => messaging,
+      store: shadowSecretStore,
+      registry: shadowInviteRegistry,
+      rowThreads: shadowRowThreads,
+      keyStore: store,
+      resolveMode: () => currentAppMode,
+      myUid: () => authService.getCurrentUid(),
+    });
+    shadowInviteCoordinator.onInvite(emitInvite);
+
     const identityManager = new DefaultIdentityManager(store, createPureTsLibsignalKeyGen());
     await identityManager.ensureIdentity(uid);
 
@@ -477,6 +556,10 @@ export function createMobileController(): ChatController {
         // keyed `shadow:${threadId}`, so its seq is offset by +1e9 and stays disjoint from surface
         // seqs in the shared ack/reducer key space. Reuses the existing KeyStore — no port change.
         shadowSequence: (threadId: string) => new ShadowSequenceAllocator(store, threadId),
+        // Shadow Chat Invites: intercept the four control payloads before conversation routing, and
+        // tag persisted shadow rows with their threadId so Clear/Revoke can purge per-thread (Req 14).
+        shadowInvites: shadowInviteCoordinator,
+        recordRow: (rowId: string, threadId: string) => shadowRowThreads?.record(rowId, threadId),
         codec: createEnvelopeCodec(),
         keyClaimer: createPreKeyClaimClient(httpClient, () => authService.getCurrentToken(), API_BASE_URL),
         sender: {
@@ -526,6 +609,9 @@ export function createMobileController(): ChatController {
     gate = null;
     shadowSecretStore = null;
     shadowSecretPersistence = null;
+    shadowInviteCoordinator = null;
+    shadowRowThreads = null;
+    currentAppMode = null;
     activeRecipient = null;
   }
 
@@ -766,7 +852,13 @@ export function createMobileController(): ChatController {
       await gate?.clearPin(kind);
     },
     async unlockApp(pin: string): Promise<UnlockResult> {
-      return gate !== null ? gate.unlock(pin) : { invalid: true };
+      const result: UnlockResult = gate !== null ? await gate.unlock(pin) : { invalid: true };
+      // Track the resolved App-Lock mode so Shadow Chat Invites actions are gated to real mode only
+      // (decoy/null reveal nothing and act on nothing — design Correctness Properties 6, 16).
+      if ('mode' in result) {
+        currentAppMode = result.mode;
+      }
+      return result;
     },
     async hideChat(peerUid: string, secret: string): Promise<void> {
       await gate?.hideChat(peerUid, secret);
@@ -881,6 +973,42 @@ export function createMobileController(): ChatController {
         await persistence.saveAliasKey(crypto.getRandomValues(new Uint8Array(32)));
       }
       return true;
+    },
+
+    async createShadowInvite(
+      peerUid: string,
+      alias?: string,
+      pin?: string,
+    ): Promise<{ inviteId: string; threadId: string } | null> {
+      const pending = await shadowInviteCoordinator?.createInvite(peerUid, alias, pin);
+      return pending != null ? { inviteId: pending.inviteId, threadId: pending.threadId } : null;
+    },
+
+    async acceptShadowInvite(
+      inviteId: string,
+      routing: RecipientRouting,
+      alias?: string,
+      pin?: string,
+    ): Promise<boolean> {
+      const ref = await shadowInviteCoordinator?.acceptInvite(inviteId, routing, alias, pin);
+      return ref != null;
+    },
+
+    async declineShadowInvite(inviteId: string): Promise<void> {
+      await shadowInviteCoordinator?.declineInvite(inviteId);
+    },
+
+    async revokeShadowChat(threadId: string): Promise<void> {
+      await shadowInviteCoordinator?.revokeShadowThread(threadId);
+    },
+
+    async clearShadowChat(threadId: string): Promise<void> {
+      await shadowInviteCoordinator?.clearShadowThread(threadId);
+    },
+
+    onShadowInvite(listener: (event: ShadowInviteEvent) => void): () => void {
+      inviteListeners.add(listener);
+      return () => inviteListeners.delete(listener);
     },
 
     onAuthStateChanged(listener: (uid: string | null) => void): () => void {
@@ -1070,6 +1198,25 @@ export function createDemoController(): ChatController {
     async provisionShadowContext(): Promise<boolean> {
       // No encrypted vault in the demo controller, so there is nothing to provision.
       return false;
+    },
+    // Shadow Chat Invites: no messaging/coordinator in the demo controller, so these are inert.
+    async createShadowInvite(): Promise<{ inviteId: string; threadId: string } | null> {
+      return null;
+    },
+    async acceptShadowInvite(): Promise<boolean> {
+      return false;
+    },
+    async declineShadowInvite(): Promise<void> {
+      // no-op
+    },
+    async revokeShadowChat(): Promise<void> {
+      // no-op
+    },
+    async clearShadowChat(): Promise<void> {
+      // no-op
+    },
+    onShadowInvite(): () => void {
+      return () => undefined;
     },
     onAuthStateChanged(): () => void {
       return () => undefined;

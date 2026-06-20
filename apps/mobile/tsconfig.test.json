@@ -23,12 +23,18 @@
     "src/ui/overflow-menu-zorder.test.ts",
     "src/ui/shadow-creation-ui.test.ts",
     "src/ui/shadow-pin-settings-ui.test.ts",
+    "src/ui/shadow-invite-actions.ts",
+    "src/ui/shadow-invite-actions.test.ts",
     "src/app/shadow-search.ts",
     "src/app/shadow-search.test.ts",
+    "src/app/shadow-invite-wiring.ts",
+    "src/app/shadow-invite-wiring.test.ts",
     "src/app/clear-chat.ts",
     "src/app/clear-chat.test.ts",
     "src/data/shadow-secret-persistence.ts",
     "src/data/shadow-secret-persistence.test.ts",
+    "src/data/row-thread-association.ts",
+    "src/data/row-thread-association.test.ts",
     "src/data/shadow-create-e2e.test.ts"
   ],
   "exclude": ["node_modules", "dist"]
