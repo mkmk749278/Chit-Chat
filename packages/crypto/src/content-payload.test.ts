@@ -168,6 +168,124 @@ test('duress-alert round-trips and rejects an empty peerUid', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Shadow Chat Invites: shadow-invite / -accept / -decline / -revoke control payloads
+// (design "Component B"; Req 9, 11.3, 12). Decoding stays total; malformed → `unsupported`.
+// ---------------------------------------------------------------------------
+
+/** A canonical base64 string that decodes to exactly `n` bytes (a valid shadow-key shape for n=32). */
+const b64OfBytes = (n: number): string => Buffer.alloc(n, 7).toString('base64');
+
+test('shadow-invite round-trips with a 32-byte base64 key (no label) (Req 9.1)', () => {
+  const p: ContentPayload = { type: 'shadow-invite', inviteId: 'inv-1', key: b64OfBytes(32) };
+  assert.deepEqual(roundTrip(p), p);
+});
+
+test('shadow-invite round-trips with an optional label', () => {
+  const p: ContentPayload = { type: 'shadow-invite', inviteId: 'inv-2', key: b64OfBytes(32), label: 'Project X' };
+  assert.deepEqual(roundTrip(p), p);
+});
+
+test('shadow-invite omits the label field when absent (not label: undefined)', () => {
+  const decoded = decodeContentPayload(
+    encodeContentPayload({ type: 'shadow-invite', inviteId: 'inv-3', key: b64OfBytes(32) }),
+  ).payload;
+  assert.deepEqual(decoded, { type: 'shadow-invite', inviteId: 'inv-3', key: b64OfBytes(32) });
+  assert.ok(!('label' in decoded));
+});
+
+test('shadow-invite with a key shorter than 32 bytes is unsupported (Req 12)', () => {
+  const bad = JSON.stringify({ v: 1, type: 'shadow-invite', inviteId: 'inv', key: b64OfBytes(31) });
+  assert.deepEqual(decodeContentPayload(bad).payload, { type: 'unsupported' });
+});
+
+test('shadow-invite with a key longer than 32 bytes is unsupported (Req 12)', () => {
+  const bad = JSON.stringify({ v: 1, type: 'shadow-invite', inviteId: 'inv', key: b64OfBytes(33) });
+  assert.deepEqual(decodeContentPayload(bad).payload, { type: 'unsupported' });
+});
+
+test('shadow-invite with a non-base64 key is unsupported (no lenient decode) (Req 12)', () => {
+  // 44 chars (the length of a 32-byte base64 string) but containing non-alphabet characters.
+  const bad = JSON.stringify({ v: 1, type: 'shadow-invite', inviteId: 'inv', key: '!'.repeat(44) });
+  assert.deepEqual(decodeContentPayload(bad).payload, { type: 'unsupported' });
+});
+
+test('shadow-invite with an empty inviteId is unsupported', () => {
+  const bad = JSON.stringify({ v: 1, type: 'shadow-invite', inviteId: '', key: b64OfBytes(32) });
+  assert.deepEqual(decodeContentPayload(bad).payload, { type: 'unsupported' });
+});
+
+test('shadow-invite with a non-string label is unsupported', () => {
+  const bad = JSON.stringify({ v: 1, type: 'shadow-invite', inviteId: 'inv', key: b64OfBytes(32), label: 5 });
+  assert.deepEqual(decodeContentPayload(bad).payload, { type: 'unsupported' });
+});
+
+test('shadow-accept round-trips and rejects a missing/empty inviteId', () => {
+  const p: ContentPayload = { type: 'shadow-accept', inviteId: 'inv-1' };
+  assert.deepEqual(roundTrip(p), p);
+  assert.deepEqual(decodeContentPayload(JSON.stringify({ v: 1, type: 'shadow-accept' })).payload, {
+    type: 'unsupported',
+  });
+  assert.deepEqual(decodeContentPayload(JSON.stringify({ v: 1, type: 'shadow-accept', inviteId: '' })).payload, {
+    type: 'unsupported',
+  });
+});
+
+test('shadow-decline round-trips and rejects a missing/empty inviteId', () => {
+  const p: ContentPayload = { type: 'shadow-decline', inviteId: 'inv-1' };
+  assert.deepEqual(roundTrip(p), p);
+  assert.deepEqual(decodeContentPayload(JSON.stringify({ v: 1, type: 'shadow-decline' })).payload, {
+    type: 'unsupported',
+  });
+  assert.deepEqual(decodeContentPayload(JSON.stringify({ v: 1, type: 'shadow-decline', inviteId: '' })).payload, {
+    type: 'unsupported',
+  });
+});
+
+test('shadow-revoke round-trips with a valid inviteId + threadId', () => {
+  const p: ContentPayload = { type: 'shadow-revoke', inviteId: 'inv-1', threadId: 'thread-xyz' };
+  assert.deepEqual(roundTrip(p), p);
+});
+
+test('shadow-revoke with a missing inviteId is unsupported', () => {
+  // The thread reference rides under the dedicated `revokeThreadId` wire key (never the routing
+  // `threadId`); here a valid reference is present so only the absent inviteId triggers unsupported.
+  const bad = JSON.stringify({ v: 1, type: 'shadow-revoke', revokeThreadId: 'thread-1' });
+  assert.deepEqual(decodeContentPayload(bad).payload, { type: 'unsupported' });
+});
+
+test('shadow-revoke with a threadId of length 0 is unsupported', () => {
+  const bad = JSON.stringify({ v: 1, type: 'shadow-revoke', inviteId: 'inv', revokeThreadId: '' });
+  assert.deepEqual(decodeContentPayload(bad).payload, { type: 'unsupported' });
+});
+
+test('shadow-revoke with a threadId longer than 255 chars is unsupported (boundary)', () => {
+  const at = JSON.stringify({ v: 1, type: 'shadow-revoke', inviteId: 'inv', revokeThreadId: 'a'.repeat(255) });
+  assert.deepEqual(decodeContentPayload(at).payload, {
+    type: 'shadow-revoke',
+    inviteId: 'inv',
+    threadId: 'a'.repeat(255),
+  });
+  const over = JSON.stringify({ v: 1, type: 'shadow-revoke', inviteId: 'inv', revokeThreadId: 'a'.repeat(256) });
+  assert.deepEqual(decodeContentPayload(over).payload, { type: 'unsupported' });
+});
+
+test('a shadow-revoke whose thread reference is mis-placed under the routing `threadId` is unsupported', () => {
+  // Defends the key separation: a thread ref under the reserved routing key must NOT satisfy revoke.
+  const bad = JSON.stringify({ v: 1, type: 'shadow-revoke', inviteId: 'inv', threadId: 'thread-1' });
+  assert.deepEqual(decodeContentPayload(bad).payload, { type: 'unsupported' });
+});
+
+test('an existing variant (text/reaction) still decodes byte-for-byte after the shadow additions', () => {
+  // Guards against any regression to the pre-existing decode paths from the additive shadow cases.
+  assert.deepEqual(decodeContentPayload(encodeContentPayload({ type: 'text', body: 'hello 🔐' })).payload, {
+    type: 'text',
+    body: 'hello 🔐',
+  });
+  const reaction: ContentPayload = { type: 'reaction', targetSeq: 7, targetOutbound: true, emoji: '👍' };
+  assert.deepEqual(decodeContentPayload(encodeContentPayload(reaction)).payload, reaction);
+});
+
+// ---------------------------------------------------------------------------
 // Shadow Chat: optional, backward-compatible `threadId` (Req 5.1, 5.3, 6.1–6.5).
 // ---------------------------------------------------------------------------
 
@@ -201,11 +319,23 @@ const representativePayloads: ContentPayload[] = [
   { type: 'verify-response', code: '123456' },
   { type: 'verify-result', ok: true },
   { type: 'duress-alert', peerUid: 'bob' },
+  { type: 'shadow-invite', inviteId: 'inv-1', key: Buffer.alloc(32, 7).toString('base64') },
+  { type: 'shadow-invite', inviteId: 'inv-2', key: Buffer.alloc(32, 7).toString('base64'), label: 'Project X' },
+  { type: 'shadow-accept', inviteId: 'inv-1' },
+  { type: 'shadow-decline', inviteId: 'inv-1' },
+  { type: 'shadow-revoke', inviteId: 'inv-1', threadId: 'thread-xyz' },
   { type: 'unsupported' },
 ];
 
 test('encode with no threadId is byte-for-byte identical to the legacy encoder, for every type (Req 5.1)', () => {
+  // Backward-compatibility is about payload types that existed BEFORE shadow. The four shadow-*
+  // control types are new (no pre-shadow form), and `shadow-revoke` deliberately serializes its
+  // thread reference under `revokeThreadId` rather than the reserved routing `threadId`, so they are
+  // excluded from the verbatim-legacy comparison and covered by the round-trip test below instead.
   for (const p of representativePayloads) {
+    if (p.type.startsWith('shadow-')) {
+      continue;
+    }
     assert.equal(
       encodeContentPayload(p),
       legacyEncode(p),

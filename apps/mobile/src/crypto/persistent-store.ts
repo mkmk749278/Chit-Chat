@@ -30,6 +30,7 @@
 import {
   encodePreKeyRecord,
   type IdentityRecord,
+  type InvitedThreadRef,
   type KeyStore,
   type MessageRow,
   type OneTimePreKeyRecord,
@@ -120,6 +121,19 @@ interface SerializedAliasEntry {
 }
 
 /**
+ * Device-local Shadow Chat Invites record (design "Data Models → InvitedThreadRecord"). The shared
+ * 32-byte `threadKey` is base64-encoded so the JSON document is text-safe before AES encryption; the
+ * rest of the {@link InvitedThreadRef} (peerUid, threadId, routing, state, inviteId, optional alias /
+ * pinVerifier) is stored verbatim. Encrypted at rest like every other vault field; never on the wire.
+ */
+interface SerializedInvitedThread {
+  /** base64-encoded shared 32-byte per-thread key (the HMAC key for this thread's id). */
+  threadKey: string;
+  /** Every other field of the {@link InvitedThreadRef} except the raw-bytes `threadKey`. */
+  ref: Omit<InvitedThreadRef, 'threadKey'>;
+}
+
+/**
  * Device-local Shadow Chat secrets and alias mappings (Shadow Chat, design Component 6 /
  * Requirements 9.1, 9.5, 9.7, 9.8, 9.9). The master secret and alias-HMAC key are base64-encoded
  * byte strings; the alias entries are hash-only mappings. Living inside this AES-encrypted vault
@@ -134,6 +148,8 @@ interface ShadowSecretsSection {
   aliasKey?: string;
   /** Hash-only alias→thread mappings; `[]`/absent ⇒ none bound. */
   aliasEntries?: SerializedAliasEntry[];
+  /** Shadow Chat Invites: invited-thread records incl. the shared `threadKey`; `[]`/absent ⇒ none. */
+  invitedThreads?: SerializedInvitedThread[];
 }
 
 interface VaultDoc {

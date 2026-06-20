@@ -161,6 +161,32 @@ export interface MessagingDeps {
    * surface conversation.
    */
   shadowSequence?: (threadId: string) => SequenceAllocator;
+  /**
+   * OPTIONAL inbound interceptor for Shadow Chat Invites control payloads (Shadow Chat Invites,
+   * design Component E). When present, an inbound `shadow-invite` / `shadow-accept` / `shadow-decline`
+   * / `shadow-revoke` payload is handed to it BEFORE conversation routing and never becomes a
+   * conversation row — exactly mirroring the verification-control seam. Bound by the platform adapter
+   * to its `ShadowInviteCoordinator`; absent in surface-only constructions, in which case those four
+   * control types are simply ignored (forward-compatible, like any other unknown control).
+   */
+  shadowInvites?: InboundShadowControlHandler;
+  /**
+   * OPTIONAL device-local hook invoked whenever a SHADOW message row (one carrying a `threadId`) is
+   * persisted, on both the send and receive paths (Shadow Chat Invites, Req 14). The platform adapter
+   * binds it to its `RowThreadAssociation.record` so "Clear shadow chat" / "Revoke shadow chat" can
+   * resolve every row id belonging to a `threadId` for `KeyStore.purgeMessages`. It is additive and
+   * device-local only — it adds no wire/envelope/codec field and never touches a surface row.
+   */
+  recordRow?: (rowId: string, threadId: string) => void | Promise<void>;
+}
+
+/**
+ * The narrow inbound seam `Messaging` uses to delegate Shadow Chat Invites control payloads, so the
+ * orchestrator never imports the coordinator directly (the coordinator depends on Messaging for its
+ * transport, not the reverse). Returns true when the payload was consumed as shadow control.
+ */
+export interface InboundShadowControlHandler {
+  handleInbound(peerUid: string, payload: ContentPayload): Promise<boolean>;
 }
 
 /** Tuning knobs + injected determinism seams for {@link DefaultMessaging}. */
@@ -296,6 +322,15 @@ export interface Messaging {
    */
   onTyping(listener: (fromUid: string) => void): Unsubscribe;
   /**
+   * Send a Shadow Chat Invites control payload (`shadow-invite` / `shadow-accept` / `shadow-decline`
+   * / `shadow-revoke`) to `recipientUid` over the existing E2E channel (Shadow Chat Invites, design
+   * Component E). The payload rides inside an ordinary `CiphertextEnvelope` between the two surface
+   * UIDs — no `threadId`, key, or plaintext on the wire — exactly like the verification controls. The
+   * platform binds its `ShadowInviteCoordinator`'s transport to this method. Offline sends ride the
+   * existing pending-send flush-on-reconnect path.
+   */
+  sendShadowControl(recipientUid: string, payload: ContentPayload): Promise<void>;
+  /**
    * Begin an in-chat identity verification with `recipientUid` (§4). Generates a fresh session
    * seed, shares it over the E2E channel, and emits `verify-requested`. Both peers then derive the
    * same rotating code; the recipient answers via {@link respondVerification} (§4.2, §4.3).
@@ -361,6 +396,13 @@ interface PendingSend {
    * the shadow conversation rather than the surface one.
    */
   threadId?: string;
+  /**
+   * When set, the ack→`sent` / timeout→`failed` transition emits NO `status-updated` conversation
+   * event (Shadow Chat Invites). The invite/accept/decline/revoke control payloads carry no visible
+   * row and must never materialise or mutate a surface `ConversationState`, preserving the inviter's
+   * no-surface-disturbance invariant (Req 1.6, 10.4, Correctness Property 8).
+   */
+  silentAck?: boolean;
 }
 
 /** Default {@link Scheduler} bound to the host timer functions. */
@@ -435,6 +477,10 @@ export class DefaultMessaging implements Messaging {
    * shadow code paths are never reached.
    */
   private readonly shadowSequence?: (threadId: string) => SequenceAllocator;
+  /** Inbound interceptor for Shadow Chat Invites control payloads (design Component E). */
+  private readonly shadowInvites?: InboundShadowControlHandler;
+  /** Device-local row→thread recorder for shadow rows (Shadow Chat Invites, Req 14). */
+  private readonly recordRow?: (rowId: string, threadId: string) => void | Promise<void>;
 
   private readonly generateId: () => string;
   private readonly now: () => number;
@@ -483,6 +529,8 @@ export class DefaultMessaging implements Messaging {
     this.sender = deps.sender;
     this.store = deps.store;
     this.shadowSequence = deps.shadowSequence;
+    this.shadowInvites = deps.shadowInvites;
+    this.recordRow = deps.recordRow;
 
     this.generateId = options.generateId;
     this.now = options.now ?? Date.now;
@@ -553,6 +601,9 @@ export class DefaultMessaging implements Messaging {
       this.stampExpiry(row);
     }
     await this.store.appendMessage(row);
+    if (threadId !== undefined) {
+      await this.recordRow?.(id, threadId); // device-local row→thread tag for per-thread purge (Req 14)
+    }
     this.emitUpdate({
       type: 'message-appended',
       message: {
@@ -702,6 +753,9 @@ export class DefaultMessaging implements Messaging {
           this.stampExpiry(row);
         }
         await this.store.appendMessage(row);
+        if (threadId !== undefined) {
+          await this.recordRow?.(id, threadId); // device-local row→thread tag for per-thread purge (Req 14)
+        }
         this.emitUpdate({
           type: 'message-appended',
           message: {
@@ -807,6 +861,17 @@ export class DefaultMessaging implements Messaging {
       case 'duress-alert':
         // We are a configured trusted contact: surface the silent duress alert discreetly (§4.3).
         this.emitVerification({ type: 'duress-alert-received', peerUid: payload.peerUid });
+        return;
+      case 'shadow-invite':
+      case 'shadow-accept':
+      case 'shadow-decline':
+      case 'shadow-revoke':
+        // Shadow Chat Invites control payloads (design Component E). Intercepted BEFORE conversation
+        // routing and handled entirely by the ShadowInviteCoordinator (open/close thread, purge
+        // history, emit lifecycle events) — they NEVER become a conversation row and never reach the
+        // ConversationRegistry as a message. When no coordinator is wired they are ignored, exactly
+        // like any other control an older surface-only build does not consume (forward-compat).
+        await this.shadowInvites?.handleInbound(remoteUid, payload);
         return;
       case 'unsupported':
         // A payload type this client version does not understand; ignore (forward-compat).
@@ -942,6 +1007,15 @@ export class DefaultMessaging implements Messaging {
     return () => {
       this.typingListeners.delete(listener);
     };
+  }
+
+  /** @inheritdoc */
+  async sendShadowControl(recipientUid: string, payload: ContentPayload): Promise<void> {
+    // Surface-addressed control frame (no threadId): the shadow-* control rides inside the existing
+    // E2E ciphertext between the two real UIDs, identical in shape to a verification control. The
+    // ack is SILENT (no status-updated event) so the inviter's surface chat stays byte-for-byte
+    // untouched (Req 1.6, 10.4, Property 8).
+    await this.sendControl(recipientUid, payload, undefined, undefined, true);
   }
 
   /** @inheritdoc */
@@ -1183,6 +1257,11 @@ export class DefaultMessaging implements Messaging {
     this.clearAckTimer(entry);
     this.pending.delete(key);
     await this.store.updateMessageStatus(entry.id, 'sent');
+    if (entry.silentAck === true) {
+      // A shadow-invite/accept/decline/revoke control: carries no visible row, so emit NO conversation
+      // status event — the inviter's surface ConversationState must stay byte-for-byte untouched.
+      return;
+    }
     // `nodes` (diagnostic): how many recipient nodes the server fanned the envelope to.
     // 0 ⇒ the recipient had no live presence entry, so the server queued it for
     // store-and-forward and will deliver it when they next connect.
@@ -1215,7 +1294,13 @@ export class DefaultMessaging implements Messaging {
       return;
     }
     this.pending.delete(key);
-    void this.markFailed(entry.id, entry.recipientUid, 'no server ack (timeout)', entry.threadId);
+    void this.markFailed(
+      entry.id,
+      entry.recipientUid,
+      'no server ack (timeout)',
+      entry.threadId,
+      entry.silentAck === true,
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -1233,6 +1318,7 @@ export class DefaultMessaging implements Messaging {
     payload: ContentPayload,
     optimistic?: ConversationEvent,
     threadId?: string,
+    silentAck = false,
   ): Promise<void> {
     // Optimistically apply locally so the sender sees their own reaction/edit/delete at once.
     // Verification/duress control frames carry no visible row, so they pass no optimistic event.
@@ -1280,6 +1366,7 @@ export class DefaultMessaging implements Messaging {
       state: 'queued',
       ackTimer: null,
       ...(threadId !== undefined ? { threadId } : {}),
+      ...(silentAck ? { silentAck: true } : {}),
     };
     this.pending.set(pendingKey(recipientUid, seq), entry);
     if (this.realtime.getStatus() === 'connected') {
@@ -1293,8 +1380,13 @@ export class DefaultMessaging implements Messaging {
     remoteUid: string,
     reason?: string,
     threadId?: string,
+    silent = false,
   ): Promise<void> {
     await this.store.updateMessageStatus(id, 'failed');
+    if (silent) {
+      // Shadow control message (no visible row): never emit a surface/shadow status event.
+      return;
+    }
     this.emitUpdate({
       type: 'status-updated',
       id,
