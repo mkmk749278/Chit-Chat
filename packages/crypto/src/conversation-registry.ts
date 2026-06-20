@@ -132,10 +132,47 @@ export interface ConversationRegistry {
   apply(event: ConversationEvent): void;
   /** Current immutable snapshot for one conversation, creating an empty one on first access. */
   getState(key: ConversationKey): ConversationState;
-  /** Chat-list entries for the DEFAULT (surface) view ONLY — shadow threads are never included. */
+  /**
+   * Chat-list entries for the DEFAULT (surface) view. Shadow threads are excluded by default; the
+   * sole exception is a thread the RECIPIENT has marked surface-visible via {@link markSurfaceVisible}
+   * (the `merge into main` routing choice), which is composed in under its `peerUid`.
+   */
   listSurfaceConversations(): SurfaceListEntry[];
-  /** Whether a notification/preview may be shown for an event — `false` for any shadow event. */
+  /**
+   * Whether a notification/preview may be shown for an event — `false` for a shadow event, unless its
+   * thread has been marked surface-visible via {@link markSurfaceVisible} (the recipient's `merge`
+   * choice), in which case it is notifiable like an ordinary surface event.
+   */
   isNotifiable(event: ConversationEvent): boolean;
+  /**
+   * RECIPIENT-ONLY view-level routing override (the `merge into main` choice). Mark an OPEN shadow
+   * thread as surface-VISIBLE so it appears in {@link listSurfaceConversations} under its `peerUid`
+   * and {@link isNotifiable} returns `true` for its events — WITHOUT touching the pure {@link reduce}
+   * and WITHOUT merging sequence spaces. The thread keeps its OWN isolated {@link ConversationState}
+   * (its own `+1e9` seqs, its own gap detection); only the chat-list VIEW and notification policy
+   * treat it as an ordinary conversation. Idempotent. A safe no-op when the thread is unknown (e.g.
+   * the inviter, who never opens a thread as merged, or a not-yet-opened thread) — nothing is created.
+   */
+  markSurfaceVisible(threadId: string): void;
+  /**
+   * "CLEAR SHADOW CHAT": reset a single shadow thread's {@link ConversationState} to empty — drop all
+   * messages, reactions, edits, deletes, gap markers, and the disappearing-message timer — while
+   * KEEPING the thread OPEN and routable. Uses the SAME no-tombstone row-removal effect as the
+   * reducer's existing `messages-expired` path (no tombstone, no trace), scoped to `shadow:${threadId}`
+   * ONLY: no surface conversation and no other shadow thread is touched. A new event for the thread
+   * after clearing routes back to `shadow:${threadId}` and is accepted. Idempotent; a no-op when the
+   * thread is unknown/closed. Pairs with `KeyStore.purgeMessages` for the durable history purge.
+   */
+  clearThread(threadId: string): void;
+  /**
+   * "REVOKE SHADOW CHAT": remove a shadow thread's {@link ConversationState} ENTIRELY and stop routing
+   * to it — subsequent events for the thread behave as an UNKNOWN thread again (an inbound event is
+   * rejected with {@link UnknownShadowThreadError}, exactly as before the thread was opened). Scoped to
+   * `shadow:${threadId}`; never touches the surface chat or any other thread. Also clears any
+   * surface-visible override set by {@link markSurfaceVisible} for the thread. Idempotent (closing an
+   * unknown/already-closed thread is a no-op).
+   */
+  closeThread(threadId: string): void;
 }
 
 /** An entry held in the registry's map: the conversation's key plus its current render state. */
@@ -180,6 +217,13 @@ function isLocalShadowThreadCreation(event: ConversationEvent): boolean {
  */
 export class DefaultConversationRegistry implements ConversationRegistry {
   private readonly conversations = new Map<string, RegistryEntry>();
+  /**
+   * Thread ids the recipient marked surface-VISIBLE (the `merge into main` choice). Holding this as
+   * registry-level VIEW state — rather than a flag inside {@link ConversationState} — keeps the pure
+   * reducer and the thread's isolated state (its own `+1e9` seqs, its own gap detection) entirely
+   * untouched: only {@link listSurfaceConversations} and {@link isNotifiable} consult this Set.
+   */
+  private readonly surfaceVisibleThreads = new Set<string>();
   private readonly platform: 'mobile' | 'web';
 
   constructor(options: ConversationRegistryOptions = {}) {
@@ -263,7 +307,13 @@ export class DefaultConversationRegistry implements ConversationRegistry {
     const entries: SurfaceListEntry[] = [];
     for (const entry of this.conversations.values()) {
       if (entry.key.kind === 'surface') {
+        // Ordinary surface conversation.
         entries.push({ remoteUid: entry.key.remoteUid, state: entry.state });
+      } else if (this.surfaceVisibleThreads.has(entry.key.threadId)) {
+        // A shadow thread the recipient chose to `merge into main`: compose it into the surface list
+        // under its peerUid. Its underlying ConversationState is the thread's OWN isolated state
+        // (own +1e9 seqs, own gap detection) — only the VIEW surfaces it (design Component D).
+        entries.push({ remoteUid: entry.key.peerUid, state: entry.state });
       }
     }
     return entries;
@@ -271,7 +321,51 @@ export class DefaultConversationRegistry implements ConversationRegistry {
 
   /** @inheritdoc */
   isNotifiable(event: ConversationEvent): boolean {
-    return eventThreadId(event) === undefined;
+    const threadId = eventThreadId(event);
+    if (threadId === undefined) {
+      return true; // a surface event is always notifiable.
+    }
+    // A shadow event is notifiable ONLY when its thread was marked surface-visible (`merge`).
+    return this.surfaceVisibleThreads.has(threadId);
+  }
+
+  /** @inheritdoc */
+  markSurfaceVisible(threadId: string): void {
+    // Only an OPEN shadow thread can be surfaced; for an unknown/not-yet-opened thread (and for the
+    // inviter, who never opens a thread as merged) this is a safe no-op that creates nothing — so it
+    // can never conjure a phantom surface entry (the entry is composed from the thread's real state).
+    if (!this.conversations.has(`shadow:${threadId}`)) {
+      return;
+    }
+    this.surfaceVisibleThreads.add(threadId); // idempotent (Set membership).
+  }
+
+  /** @inheritdoc */
+  clearThread(threadId: string): void {
+    const entry = this.conversations.get(`shadow:${threadId}`);
+    if (entry === undefined) {
+      return; // idempotent no-op for an unknown/closed thread.
+    }
+    // Reuse the reducer's EXISTING `messages-expired` row-removal effect (no tombstone, no trace) by
+    // expiring every current message id, then clear the disappearing-message timer — leaving an empty,
+    // still-OPEN, still-routable thread. The reducer recomputes `missingBefore`, so gap markers drop
+    // too. Scoped to this entry only; no surface or other shadow state is referenced.
+    const ids = entry.state.messages.map((m) => m.id);
+    if (ids.length > 0) {
+      entry.state = reduce(entry.state, { type: 'messages-expired', ids });
+    }
+    if (entry.state.disappearingTtlMs !== 0) {
+      entry.state = reduce(entry.state, { type: 'timer-changed', ttlMs: 0 });
+    }
+  }
+
+  /** @inheritdoc */
+  closeThread(threadId: string): void {
+    // Remove the thread's state entirely so apply() once again rejects events for it (unknown thread),
+    // and drop any surface-visible override. Scoped to `shadow:${threadId}`; idempotent (Map/Set
+    // delete on an absent key is a no-op). Surface and other shadow threads are never referenced.
+    this.conversations.delete(`shadow:${threadId}`);
+    this.surfaceVisibleThreads.delete(threadId);
   }
 }
 

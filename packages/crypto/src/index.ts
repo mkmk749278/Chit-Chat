@@ -297,6 +297,18 @@ export * from './shadow-secret-store';
 
 
 /**
+ * Shadow Chat Invites (`.kiro/specs/shadow-chat-invites`). `ShadowInviteCoordinator` owns the
+ * two-party invite / accept / decline / revoke control-message lifecycle keyed by a fresh SHARED
+ * per-thread key (so both peers converge on an identical `threadId`), plus pre-accept queueing,
+ * invite-control auto-cleanup, and two-sided revoke. `RowThreadAssociation` is the additive,
+ * device-local row→thread map that lets Clear/Revoke purge one thread's history by `threadId`
+ * without any wire/envelope change. Both ride inside the existing ciphertext (frozen backend).
+ */
+export * from './row-thread-association';
+export * from './shadow-invite-coordinator';
+
+
+/**
  * `ConversationRegistry` — per-thread conversation state for Shadow Chat (design Component 5).
  * Holds one `ConversationState` per conversation, keyed `surface:${remoteUid}` / `shadow:${threadId}`,
  * and routes each `ConversationEvent` to the right thread through the EXISTING unchanged pure

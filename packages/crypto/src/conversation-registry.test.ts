@@ -243,3 +243,146 @@ test('a web-platform registry starts conversations gated behind the ephemerality
   const mobile = new DefaultConversationRegistry({ platform: 'mobile' });
   assert.equal(mobile.getState(surfaceKey('bob')).webWarningAcknowledged, true);
 });
+
+// --- Task 4: recipient routing override (markSurfaceVisible) + clearThread + closeThread ---
+
+test('markSurfaceVisible surfaces a merged shadow thread under its peerUid and makes it notifiable, without touching its own state/seqs (3.2, 4.4)', () => {
+  const reg = new DefaultConversationRegistry();
+  reg.openShadowThread(THREAD_A, 'bob');
+  reg.apply(appended('bob', outMsg(1_000_000_001, 'merged hi'), THREAD_A));
+
+  // Capture the thread's own (isolated) state BEFORE the view override.
+  const before = reg.getState(shadowKey(THREAD_A, 'bob'));
+  // Before merge: excluded from the surface list and non-notifiable.
+  assert.deepEqual(reg.listSurfaceConversations(), []);
+  assert.equal(reg.isNotifiable(appended('bob', inMsg(1_000_000_002, 'x'), THREAD_A)), false);
+
+  reg.markSurfaceVisible(THREAD_A);
+
+  // Now present in the surface list under peerUid, and notifiable — purely a VIEW change.
+  const list = reg.listSurfaceConversations();
+  assert.deepEqual(list.map((e) => e.remoteUid), ['bob']);
+  assert.deepEqual(list[0]?.state.messages.map((m) => m.text), ['merged hi']);
+  assert.equal(reg.isNotifiable(appended('bob', inMsg(1_000_000_002, 'x'), THREAD_A)), true);
+
+  // The thread's own ConversationState instance and its +1e9 seqs are byte-for-byte unchanged.
+  assert.strictEqual(reg.getState(shadowKey(THREAD_A, 'bob')), before);
+  assert.deepEqual(before.messages.map((m) => m.seq), [1_000_000_001]);
+});
+
+test('markSurfaceVisible is idempotent and does not duplicate the surface entry (3.2)', () => {
+  const reg = new DefaultConversationRegistry();
+  reg.openShadowThread(THREAD_A, 'bob');
+  reg.apply(appended('bob', outMsg(1_000_000_001, 'hi'), THREAD_A));
+  reg.markSurfaceVisible(THREAD_A);
+  reg.markSurfaceVisible(THREAD_A); // second call must be a no-op.
+  assert.equal(reg.listSurfaceConversations().length, 1);
+});
+
+test('markSurfaceVisible is a safe no-op for the inviter / an unopened thread (never surfaces it) (3.2)', () => {
+  const reg = new DefaultConversationRegistry();
+  // The inviter never calls markSurfaceVisible after opening as merged; here the thread is unknown.
+  reg.markSurfaceVisible(THREAD_A);
+  assert.deepEqual(reg.listSurfaceConversations(), []);
+  // It also did not conjure a thread: an inbound event for it is still rejected as unknown.
+  assert.throws(
+    () => reg.apply(appended('bob', inMsg(1_000_000_001, 'x'), THREAD_A)),
+    UnknownShadowThreadError,
+  );
+});
+
+test('clearThread empties one shadow thread, leaves other shadow threads and surface intact, thread stays routable (6.3, 6.4, 7.4)', () => {
+  const reg = new DefaultConversationRegistry();
+  reg.openShadowThread(THREAD_A, 'bob');
+  reg.openShadowThread(THREAD_B, 'carol');
+
+  reg.apply(appended('bob', outMsg(1, 'surface bob')));
+  reg.apply(appended('bob', outMsg(1_000_000_001, 'shadow a1'), THREAD_A));
+  reg.apply({ type: 'timer-changed', ttlMs: 60_000, remoteUid: 'bob', threadId: THREAD_A });
+  reg.apply(appended('carol', outMsg(1_000_000_001, 'shadow b1'), THREAD_B));
+
+  reg.clearThread(THREAD_A);
+
+  // Thread A is emptied — no messages, no gap markers, timer reset.
+  const clearedA = reg.getState(shadowKey(THREAD_A, 'bob'));
+  assert.deepEqual(clearedA.messages, []);
+  assert.deepEqual(clearedA.missingBefore, []);
+  assert.equal(clearedA.disappearingTtlMs, 0);
+
+  // Other shadow thread and the surface chat are untouched.
+  assert.deepEqual(
+    reg.getState(shadowKey(THREAD_B, 'carol')).messages.map((m) => m.text),
+    ['shadow b1'],
+  );
+  assert.deepEqual(reg.getState(surfaceKey('bob')).messages.map((m) => m.text), ['surface bob']);
+
+  // Still routable: a new event on the same threadId is accepted (no UnknownShadowThreadError).
+  assert.doesNotThrow(() =>
+    reg.apply(appended('bob', outMsg(1_000_000_002, 'after clear'), THREAD_A)),
+  );
+  assert.deepEqual(
+    reg.getState(shadowKey(THREAD_A, 'bob')).messages.map((m) => m.text),
+    ['after clear'],
+  );
+});
+
+test('clearThread is idempotent and a no-op for an unknown/closed thread (6.3)', () => {
+  const reg = new DefaultConversationRegistry();
+  reg.openShadowThread(THREAD_A, 'bob');
+  reg.apply(appended('bob', outMsg(1_000_000_001, 'hi'), THREAD_A));
+  reg.clearThread(THREAD_A);
+  reg.clearThread(THREAD_A); // second clear on an already-empty thread: no-op.
+  assert.deepEqual(reg.getState(shadowKey(THREAD_A, 'bob')).messages, []);
+  // Unknown thread: no throw, no surface side effects.
+  assert.doesNotThrow(() => reg.clearThread(THREAD_B));
+});
+
+test('closeThread removes the thread; a later event for it throws UnknownShadowThreadError (6.4, 7.4)', () => {
+  const reg = new DefaultConversationRegistry();
+  reg.openShadowThread(THREAD_A, 'bob');
+  reg.apply(appended('bob', outMsg(1_000_000_001, 'hi'), THREAD_A));
+
+  reg.closeThread(THREAD_A);
+
+  // A subsequent INBOUND event for the now-closed thread is rejected exactly as an unknown thread.
+  assert.throws(
+    () => reg.apply(appended('bob', inMsg(1_000_000_002, 'after close'), THREAD_A)),
+    UnknownShadowThreadError,
+  );
+});
+
+test('closeThread is scoped — other shadow threads and the surface chat are intact (6.4)', () => {
+  const reg = new DefaultConversationRegistry();
+  reg.openShadowThread(THREAD_A, 'bob');
+  reg.openShadowThread(THREAD_B, 'carol');
+  reg.apply(appended('bob', outMsg(1, 'surface bob')));
+  reg.apply(appended('bob', outMsg(1_000_000_001, 'a1'), THREAD_A));
+  reg.apply(appended('carol', outMsg(1_000_000_001, 'b1'), THREAD_B));
+
+  reg.closeThread(THREAD_A);
+
+  assert.deepEqual(
+    reg.getState(shadowKey(THREAD_B, 'carol')).messages.map((m) => m.text),
+    ['b1'],
+  );
+  assert.deepEqual(reg.getState(surfaceKey('bob')).messages.map((m) => m.text), ['surface bob']);
+});
+
+test('closeThread also clears any surface-visible override and is idempotent (6.4)', () => {
+  const reg = new DefaultConversationRegistry();
+  reg.openShadowThread(THREAD_A, 'bob');
+  reg.apply(appended('bob', outMsg(1_000_000_001, 'merged'), THREAD_A));
+  reg.markSurfaceVisible(THREAD_A);
+  assert.equal(reg.listSurfaceConversations().length, 1);
+
+  reg.closeThread(THREAD_A);
+  // Override dropped with the thread → no surface entry remains.
+  assert.deepEqual(reg.listSurfaceConversations(), []);
+  // Closing again (unknown/closed) is a no-op.
+  assert.doesNotThrow(() => reg.closeThread(THREAD_A));
+
+  // Re-opening as merged does NOT inherit the stale override automatically: it must be re-marked.
+  reg.openShadowThread(THREAD_A, 'bob');
+  reg.apply(appended('bob', outMsg(1_000_000_005, 'fresh'), THREAD_A));
+  assert.deepEqual(reg.listSurfaceConversations(), []);
+});

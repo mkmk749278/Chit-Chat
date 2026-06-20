@@ -69,6 +69,31 @@ export type ContentPayload =
    * was used (§4.2, §4.3). Carries only the uid of the peer who ran the verification; no content.
    */
   | { type: 'duress-alert'; peerUid: string }
+  /**
+   * Shadow Chat invite control payloads (Shadow Chat Invites, design "Component B"; Req 9, 12).
+   * They ride inside the existing E2E ciphertext exactly like the verify-* / duress-alert controls, so
+   * the (frozen, server-blind) backend never learns an invite is happening. They are intercepted by
+   * Messaging BEFORE conversation routing — none of them ever becomes a conversation row — and an
+   * older peer that predates this feature decodes any of them to `{ type: 'unsupported' }` and
+   * harmlessly ignores it (totality of {@link decodeContentPayload}).
+   */
+  /**
+   * Inviter → recipient: open a two-party shadow thread. Carries the SHARED 32-byte thread key as a
+   * base64 string (Req 9.1; key strategy B). `inviteId` correlates Accept/Decline back to this
+   * invite; the optional `label` is a human-readable thread name shown on the request card.
+   */
+  | { type: 'shadow-invite'; inviteId: string; key: string; label?: string }
+  /** Recipient → inviter: the invite was accepted (the recipient's display routing stays LOCAL). */
+  | { type: 'shadow-accept'; inviteId: string }
+  /** Recipient → inviter: the invite was declined; no shadow state is created on either side. */
+  | { type: 'shadow-decline'; inviteId: string }
+  /**
+   * EITHER peer → the other: revoke (tear down) an established shadow thread. Instructs the
+   * recipient's device to delete the shared thread key + that thread's local history and close the
+   * thread. Carries the `inviteId`/`threadId` reference so the peer can locate the exact thread; it
+   * carries NO key and NO content. Same E2E / server-blind pattern as the other shadow-* controls.
+   */
+  | { type: 'shadow-revoke'; inviteId: string; threadId: string }
   /** A `{v:1}` payload whose `type` (or shape) this client version does not understand. */
   | { type: 'unsupported' };
 
@@ -114,14 +139,54 @@ function isThreadId(value: unknown): value is string {
  * @param threadId - optional shadow thread id; included only when a non-empty 1..255-char string.
  */
 export function encodeContentPayload(payload: ContentPayload, threadId?: string): string {
+  // A `shadow-revoke` carries its thread reference under a DEDICATED `revokeThreadId` key so it never
+  // collides with the envelope's reserved routing `threadId` (see decode + design Component B). All
+  // other payloads serialize their fields verbatim.
+  const body: Record<string, unknown> =
+    payload.type === 'shadow-revoke'
+      ? { type: 'shadow-revoke', inviteId: payload.inviteId, revokeThreadId: payload.threadId }
+      : { ...payload };
   return isThreadId(threadId)
-    ? JSON.stringify({ v: CONTENT_PAYLOAD_VERSION, ...payload, threadId })
-    : JSON.stringify({ v: CONTENT_PAYLOAD_VERSION, ...payload });
+    ? JSON.stringify({ v: CONTENT_PAYLOAD_VERSION, ...body, threadId })
+    : JSON.stringify({ v: CONTENT_PAYLOAD_VERSION, ...body });
 }
 
 /** Type guard: a finite, safe-integer sequence number. */
 function isSeq(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+/** The exact byte length of a shadow thread key (a 256-bit / 32-byte CSPRNG secret, Req 9.1). */
+const SHADOW_THREAD_KEY_BYTES = 32;
+
+/**
+ * Canonical base64 (RFC 4648, optionally padded). Matched strictly so a malformed `shadow-invite`
+ * key cannot slip through `Buffer.from(.., 'base64')`'s lenient decoding (which silently drops
+ * non-alphabet characters). Capturing the optional `=` padding lets {@link strictBase64ByteLength}
+ * reject inputs whose length is not a valid base64 quantum.
+ */
+const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+/**
+ * Decode the byte length of a strictly-canonical base64 string, total (never throws): returns the
+ * number of bytes `value` decodes to, or `null` if `value` is not a `string` or not canonical
+ * base64. Used to enforce the exact 32-byte shadow-key invariant without trusting the platform
+ * base64 decoder, so an arbitrary attacker-supplied `key` can only ever validate or be rejected.
+ */
+function strictBase64ByteLength(value: unknown): number | null {
+  if (typeof value !== 'string' || value.length % 4 !== 0 || !CANONICAL_BASE64.test(value)) {
+    return null;
+  }
+  if (value.length === 0) {
+    return 0;
+  }
+  const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0;
+  return (value.length / 4) * 3 - padding;
+}
+
+/** Whether `value` is a non-empty string (the shape of every shadow control's `inviteId`). */
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
 }
 
 /**
@@ -233,6 +298,36 @@ function decodeEnvelopePayload(env: Record<string, unknown>): ContentPayload {
     case 'duress-alert':
       return typeof env.peerUid === 'string' && env.peerUid.length > 0
         ? { type: 'duress-alert', peerUid: env.peerUid }
+        : { type: 'unsupported' };
+    case 'shadow-invite':
+      // `key` must be canonical base64 decoding to EXACTLY 32 bytes (the shared thread key, Req 9.1);
+      // `label` is optional. A non-32-byte / non-base64 key ⇒ unsupported (ignored, no thread).
+      return isNonEmptyString(env.inviteId) &&
+        strictBase64ByteLength(env.key) === SHADOW_THREAD_KEY_BYTES &&
+        (env.label === undefined || typeof env.label === 'string')
+        ? {
+            type: 'shadow-invite',
+            inviteId: env.inviteId,
+            key: env.key as string,
+            ...(typeof env.label === 'string' ? { label: env.label } : {}),
+          }
+        : { type: 'unsupported' };
+    case 'shadow-accept':
+      return isNonEmptyString(env.inviteId)
+        ? { type: 'shadow-accept', inviteId: env.inviteId }
+        : { type: 'unsupported' };
+    case 'shadow-decline':
+      return isNonEmptyString(env.inviteId)
+        ? { type: 'shadow-decline', inviteId: env.inviteId }
+        : { type: 'unsupported' };
+    case 'shadow-revoke':
+      // The thread-to-tear-down reference is carried under a DEDICATED `revokeThreadId` key, NOT the
+      // envelope's reserved routing `threadId` (which the codec surfaces as DecodedContentPayload
+      // .threadId for conversation routing). Keeping them distinct means a `shadow-revoke` is never
+      // mis-read as a routable shadow message — it stays a control payload intercepted before routing
+      // (design Component B/E) — while still validating the reference to the same 1..255-char bound.
+      return isNonEmptyString(env.inviteId) && isThreadId(env.revokeThreadId)
+        ? { type: 'shadow-revoke', inviteId: env.inviteId, threadId: env.revokeThreadId }
         : { type: 'unsupported' };
     default:
       // A type a newer client introduced; ignore rather than misrender (forward-compat).

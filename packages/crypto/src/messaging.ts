@@ -161,6 +161,24 @@ export interface MessagingDeps {
    * surface conversation.
    */
   shadowSequence?: (threadId: string) => SequenceAllocator;
+  /**
+   * OPTIONAL inbound interceptor for Shadow Chat Invites control payloads (Shadow Chat Invites,
+   * design Component E). When present, an inbound `shadow-invite` / `shadow-accept` / `shadow-decline`
+   * / `shadow-revoke` payload is handed to it BEFORE conversation routing and never becomes a
+   * conversation row — exactly mirroring the verification-control seam. Bound by the platform adapter
+   * to its `ShadowInviteCoordinator`; absent in surface-only constructions, in which case those four
+   * control types are simply ignored (forward-compatible, like any other unknown control).
+   */
+  shadowInvites?: InboundShadowControlHandler;
+}
+
+/**
+ * The narrow inbound seam `Messaging` uses to delegate Shadow Chat Invites control payloads, so the
+ * orchestrator never imports the coordinator directly (the coordinator depends on Messaging for its
+ * transport, not the reverse). Returns true when the payload was consumed as shadow control.
+ */
+export interface InboundShadowControlHandler {
+  handleInbound(peerUid: string, payload: ContentPayload): Promise<boolean>;
 }
 
 /** Tuning knobs + injected determinism seams for {@link DefaultMessaging}. */
@@ -435,6 +453,8 @@ export class DefaultMessaging implements Messaging {
    * shadow code paths are never reached.
    */
   private readonly shadowSequence?: (threadId: string) => SequenceAllocator;
+  /** Inbound interceptor for Shadow Chat Invites control payloads (design Component E). */
+  private readonly shadowInvites?: InboundShadowControlHandler;
 
   private readonly generateId: () => string;
   private readonly now: () => number;
@@ -483,6 +503,7 @@ export class DefaultMessaging implements Messaging {
     this.sender = deps.sender;
     this.store = deps.store;
     this.shadowSequence = deps.shadowSequence;
+    this.shadowInvites = deps.shadowInvites;
 
     this.generateId = options.generateId;
     this.now = options.now ?? Date.now;
@@ -807,6 +828,17 @@ export class DefaultMessaging implements Messaging {
       case 'duress-alert':
         // We are a configured trusted contact: surface the silent duress alert discreetly (§4.3).
         this.emitVerification({ type: 'duress-alert-received', peerUid: payload.peerUid });
+        return;
+      case 'shadow-invite':
+      case 'shadow-accept':
+      case 'shadow-decline':
+      case 'shadow-revoke':
+        // Shadow Chat Invites control payloads (design Component E). Intercepted BEFORE conversation
+        // routing and handled entirely by the ShadowInviteCoordinator (open/close thread, purge
+        // history, emit lifecycle events) — they NEVER become a conversation row and never reach the
+        // ConversationRegistry as a message. When no coordinator is wired they are ignored, exactly
+        // like any other control an older surface-only build does not consume (forward-compat).
+        await this.shadowInvites?.handleInbound(remoteUid, payload);
         return;
       case 'unsupported':
         // A payload type this client version does not understand; ignore (forward-compat).

@@ -28,6 +28,7 @@ import type { SequenceAllocator } from './sequence-allocator';
 import { deriveShadowThreadId, matchAlias, type AliasEntry } from './shadow-chat';
 import {
   ShadowSecretStore,
+  type InvitedThreadRef,
   type ShadowSecretPersistence,
   type ShadowThreadRef,
 } from './shadow-secret-store';
@@ -514,9 +515,26 @@ function makeDurablePersistence(): ShadowSecretPersistence {
   let master: Uint8Array | null = null;
   let aliasKey: Uint8Array | null = null;
   const entries: AliasEntry<ShadowThreadRef>[] = [];
+  const invited: InvitedThreadRef[] = [];
   return {
     async loadMasterSecret() {
       return master;
+    },
+    async saveInvitedThread(record) {
+      const idx = invited.findIndex((r) => r.threadId === record.threadId);
+      const copy: InvitedThreadRef = { ...record, threadKey: record.threadKey.slice() };
+      if (idx >= 0) invited[idx] = copy;
+      else invited.push(copy);
+    },
+    async loadInvitedThreads() {
+      return invited.map((r) => ({ ...r, threadKey: r.threadKey.slice() }));
+    },
+    async deleteInvitedThread(threadId) {
+      const idx = invited.findIndex((r) => r.threadId === threadId);
+      if (idx >= 0) invited.splice(idx, 1);
+      for (let i = entries.length - 1; i >= 0; i -= 1) {
+        if (entries[i].ref.threadId === threadId) entries.splice(i, 1);
+      }
     },
     async saveMasterSecret(secret) {
       master = secret;

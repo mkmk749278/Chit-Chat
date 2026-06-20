@@ -46,6 +46,14 @@ import {
 } from './secret-hash';
 import { deriveShadowThreadId, hashAlias, type AliasEntry } from './shadow-chat';
 
+/**
+ * The recipient's routing decision for an invited shadow thread (Shadow Chat Invites, design
+ * Component A / Component C). `'hidden'` keeps the thread a hidden shadow thread (the inviter is
+ * ALWAYS `'hidden'`); `'merge'` is the recipient-only choice to surface the thread under the contact
+ * in their main chat list while the underlying `ConversationState` stays an isolated shadow thread.
+ */
+export type RecipientRouting = 'hidden' | 'merge';
+
 /** A device-local reference from an alias to the contact's shadow thread. */
 export interface ShadowThreadRef {
   /** The contact's Firebase UID this shadow thread is with. */
@@ -61,6 +69,35 @@ export interface ShadowThreadRef {
    * at re-entry; it is independent of the App_Lock PIN and never transmitted off the device.
    */
   pinVerifier?: string;
+}
+
+/**
+ * A device-local **invited** shadow thread — the shared-key rendezvous record introduced by Shadow
+ * Chat Invites (design "Component C: ShadowSecretStore" and "Data Models → InvitedThreadRecord";
+ * Requirements 2, 5, 6, 7, 8, 11, 15). Unlike a legacy alias-only {@link ShadowThreadRef} (whose
+ * `threadId` is derived from the DEVICE-LOCAL `masterSecret` + alias), an invited thread's `threadId`
+ * is derived from a **shared** per-thread `threadKey` that both peers hold, so the two sides converge
+ * on the identical `threadId` with no handshake (design Correctness Property 1; the convergence fix).
+ *
+ * The shared `threadKey` is the only genuinely new secret at rest. It is wrapped by the same encrypted
+ * vault that already holds the `masterSecret`/`aliasKey`, released ONLY in real mode, and NEVER
+ * re-transmitted after Accept. The optional `alias` here is a purely LOCAL handle that maps to the
+ * already-agreed `threadId`; it NEVER participates in the derivation for invited threads (design "Why
+ * no alias discriminator in the derivation").
+ */
+export interface InvitedThreadRef extends ShadowThreadRef {
+  /**
+   * The SHARED 32-byte per-thread key (wrapped at rest by the vault). Seeds
+   * {@link deriveShadowThreadId} for this invited thread and is NEVER re-transmitted after Accept.
+   * Deleting it (via {@link ShadowSecretStore.revokeShadowThread}) makes `threadId` non-re-derivable.
+   */
+  threadKey: Uint8Array;
+  /** Recipient-only routing decision; `'hidden'` (default; the inviter is always hidden) or `'merge'`. */
+  routing: RecipientRouting;
+  /** Lifecycle: `'awaiting-accept'` (inviter, pre-accept) → `'active'`, or `'declined'`. */
+  state: 'awaiting-accept' | 'active' | 'declined';
+  /** Correlates an accept/decline/revoke control message back to its invite (uuid v4). */
+  inviteId: string;
 }
 
 /** The pair of device-local secrets released only in real-PIN mode. */
@@ -81,6 +118,14 @@ export interface ShadowContext {
  * Adapters MUST persist each `saveAliasEntry` atomically (all-or-nothing) so an aborted write leaves
  * no partial or plaintext mapping behind (Requirement 9.7). A load returns `null` when the secret
  * has not been provisioned; `loadAliasEntries` returns `[]` when none are stored.
+ *
+ * **Invited-thread records (Shadow Chat Invites, ADDITIVE).** The port additionally stores the
+ * shared-key {@link InvitedThreadRef} records (the `InvitedThreadRecord` data model). These methods
+ * are device-local only — they add NO wire/envelope/codec field and the `KeyStore` port shape stays
+ * unchanged (the adapter backs them with the existing encrypted store). Adapters MUST persist each
+ * `saveInvitedThread` and `deleteInvitedThread` atomically (all-or-nothing), mirroring the
+ * `saveAliasEntry` contract, so an aborted invited-thread write leaves nothing partial behind and a
+ * revoke never strands a record without its key (or vice-versa) (Requirements 7, 15).
  */
 export interface ShadowSecretPersistence {
   /** Load the stored shadow master secret, or `null` when not provisioned. */
@@ -95,6 +140,25 @@ export interface ShadowSecretPersistence {
   loadAliasEntries(): Promise<ReadonlyArray<AliasEntry<ShadowThreadRef>>>;
   /** Persist one alias entry (hash + ref) atomically; the plaintext alias is never passed here. */
   saveAliasEntry(entry: AliasEntry<ShadowThreadRef>): Promise<void>;
+  /**
+   * Persist one invited-thread record (its shared `threadKey`, routing, state, inviteId, …) atomically
+   * (Shadow Chat Invites). Upserts by `record.threadId`: a record with the same `threadId` is
+   * replaced, never duplicated, so `markInvitedThreadActive` rewrites in place. The plaintext PIN is
+   * never passed here — only the hash-only `pinVerifier` on the ref. Atomic per the port contract, so
+   * an aborted write leaves the prior record unchanged.
+   */
+  saveInvitedThread(record: InvitedThreadRef): Promise<void>;
+  /** Load every stored invited-thread record; `[]` when none. */
+  loadInvitedThreads(): Promise<ReadonlyArray<InvitedThreadRef>>;
+  /**
+   * Atomic, LOCAL-ONLY delete (Shadow Chat Invites "Revoke", Requirements 7, 15). Removes the
+   * {@link InvitedThreadRef} record for `threadId`, its shared `threadKey`, AND any {@link AliasEntry}
+   * whose `ref.threadId === threadId`, in ONE all-or-nothing write. On any failure it MUST abort by
+   * propagating, leaving nothing partial — never a keyless-record strand, and never an alias pointing
+   * at a deleted thread. Deleting an absent record is a no-op (idempotent). Device-local only; no wire
+   * change and the `KeyStore` port stays unchanged.
+   */
+  deleteInvitedThread(threadId: string): Promise<void>;
 }
 
 /** The persistence operations whose failure is reported through {@link ShadowSecretStoreOptions}. */
@@ -326,6 +390,223 @@ export class ShadowSecretStore {
     // so an abort here leaves the prior verifier unchanged (Req 9.7).
     await this.persistence.saveAliasEntry({ aliasHash: entry.aliasHash, ref: updatedRef });
     return updatedRef;
+  }
+
+  /**
+   * Bind an **invited** shadow thread from a SHARED `threadKey` (Shadow Chat Invites, design
+   * "Component C: ShadowSecretStore" → `bindInvitedThread`; Requirements 2, 5, 8, 11). Returns the
+   * resulting {@link InvitedThreadRef} in real-PIN mode, or `null` (persisting nothing) in any
+   * non-real mode (Req 8). Unlike {@link bindAlias} — which derives an alias-DISCRIMINATED `threadId`
+   * from the device-local `masterSecret` — this derives the CONVERGED `threadId` via
+   * `deriveShadowThreadId(threadKey, myUid, peerUid)` with **NO alias discriminator**, so both peers
+   * (who share `threadKey`) compute the identical id with no handshake (design Correctness Property 1).
+   *
+   * The transmitted thread id is never trusted: the id is **recomputed** here from the shared key + UID
+   * pair (the id is never on the wire — only the key is; design "Data Models → validation rules"). The
+   * `alias`, when supplied, is persisted ONLY as a hash-only {@link AliasEntry} so `/alias` can re-open
+   * the thread; it is purely a LOCAL handle and is NEVER mixed into the derivation. When a non-empty
+   * `pin` is supplied it is hashed via the off-UI-thread {@link hashPin} path into a hash-only
+   * `pinVerifier` — the plaintext PIN is never persisted.
+   *
+   * **32-byte key validation (fail-closed).** A `threadKey` that is not EXACTLY 32 bytes binds nothing
+   * and returns `null`, persisting no record (the malformed-key case the design rejects up front).
+   *
+   * **Fails closed by ABORTING (Requirements 7, 8, 15).** Any persistence-port error (saving the
+   * record or the alias entry) propagates to the caller, leaving nothing partial: the threadId,
+   * aliasHash, and any pinVerifier are computed purely in memory and the writes are atomic per the
+   * port contract. To keep an aborted bind from stranding a record without its alias (or vice-versa),
+   * the alias entry is written FIRST and the invited-thread record SECOND — both are needed for a
+   * usable bind, and either write failing aborts before the second, so no usable thread is left
+   * half-bound.
+   *
+   * @param mode - the resolved {@link AppMode}, or `null` when no PIN matched. Only `real` binds.
+   * @param threadKey - the SHARED 32-byte per-thread key; validated to be exactly 32 bytes.
+   * @param peerUid - the contact's UID the invited thread is with.
+   * @param myUid - this device's own UID; the pair seeds the symmetric, alias-free thread-id derivation.
+   * @param options - `alias?` (local handle ⇒ an {@link AliasEntry}), `pin?` (hash-only `pinVerifier`),
+   *   `routing` (recipient choice; the inviter passes `'hidden'`), `inviteId`, and the lifecycle `state`.
+   */
+  async bindInvitedThread(
+    mode: AppMode | null,
+    threadKey: Uint8Array,
+    peerUid: string,
+    myUid: string,
+    options: {
+      alias?: string;
+      pin?: string;
+      routing: RecipientRouting;
+      inviteId: string;
+      state: InvitedThreadRef['state'];
+    },
+  ): Promise<InvitedThreadRef | null> {
+    if (mode !== 'real') {
+      return null; // non-real mode binds nothing and persists nothing (Req 8)
+    }
+    // Validate the shared key is EXACTLY 32 bytes BEFORE any derivation or write (fail-closed): a
+    // malformed key binds nothing and persists no record (design "Data Models → validation rules").
+    if (threadKey.length !== 32) {
+      return null;
+    }
+    // Converged derivation: NO alias discriminator, so both peers compute the identical threadId from
+    // the shared key + UID pair (design Correctness Property 1). RECOMPUTE rather than trust any id.
+    const threadId = await deriveShadowThreadId(threadKey, myUid, peerUid);
+    const ref: InvitedThreadRef = {
+      peerUid,
+      threadId,
+      threadKey,
+      routing: options.routing,
+      state: options.state,
+      inviteId: options.inviteId,
+    };
+    // Optional per-chat PIN: store ONLY the hash-only verifier, derived off the UI thread; an
+    // omitted/empty PIN leaves the chat with no per-chat lock (the default). Computed in memory
+    // BEFORE any write so an abort leaves nothing partial.
+    if (options.pin !== undefined && options.pin !== '') {
+      ref.pinVerifier = await this.hashPin(options.pin);
+    }
+    // Optional LOCAL alias handle ⇒ a hash-only AliasEntry so `/alias` re-opens the thread. The
+    // plaintext/normalised alias is NEVER persisted; only the opaque HMAC hash + ref. The hash is
+    // computed in memory; an invalid alias fails closed (throws) BEFORE any write.
+    let aliasEntry: AliasEntry<ShadowThreadRef> | null = null;
+    if (options.alias !== undefined && options.alias !== '') {
+      const context = await this.loadContext();
+      if (context === null) {
+        return null; // secrets not provisioned: cannot hash the alias handle, so bind nothing
+      }
+      const aliasHash = await hashAlias(options.alias, context.aliasKey);
+      if (aliasHash === null) {
+        throw new Error('shadow-secret-store: cannot bind a grammatically invalid alias');
+      }
+      aliasEntry = { aliasHash, ref };
+    }
+    // Writes (atomic per the port contract): alias entry FIRST (when present), then the record, so an
+    // abort never leaves a usable thread half-bound. Each write failing propagates (Req 7, 8, 15).
+    if (aliasEntry !== null) {
+      await this.persistence.saveAliasEntry(aliasEntry);
+    }
+    await this.persistence.saveInvitedThread(ref);
+    return ref;
+  }
+
+  /**
+   * Promote a pending invited thread from `'awaiting-accept'` to `'active'` on `shadow-accept` (Shadow
+   * Chat Invites, design "Component C" → `markInvitedThreadActive`; Requirements 5). Real-mode only
+   * (decoy/null → `null`, revealing nothing). Locates the record by `inviteId`; returns `null` when no
+   * such record exists. **Idempotent:** an already-`'active'` (or `'declined'`) record is returned
+   * unchanged with no write, so a duplicate accept is a harmless no-op. Fails closed by ABORTING: any
+   * persistence error propagates, leaving the prior record unchanged.
+   *
+   * @param mode - the resolved {@link AppMode}, or `null` when no PIN matched. Only `real` acts.
+   * @param inviteId - correlates the inbound `shadow-accept` to its pending record.
+   */
+  async markInvitedThreadActive(
+    mode: AppMode | null,
+    inviteId: string,
+  ): Promise<InvitedThreadRef | null> {
+    if (mode !== 'real') {
+      return null; // non-real mode is inert: change nothing, persist nothing (Req 8)
+    }
+    const records = await this.persistence.loadInvitedThreads();
+    const record = records.find((candidate) => candidate.inviteId === inviteId);
+    if (record === undefined) {
+      return null; // no pending record for this invite: persist nothing
+    }
+    if (record.state === 'active') {
+      return record; // idempotent: already promoted ⇒ no write
+    }
+    const promoted: InvitedThreadRef = { ...record, state: 'active' };
+    // The ONLY write: upsert the same threadId with state='active'. Atomic per the port contract.
+    await this.persistence.saveInvitedThread(promoted);
+    return promoted;
+  }
+
+  /**
+   * Discard a PENDING invited thread (its record + shared `threadKey`) on `shadow-decline` or
+   * invite-expiry (Shadow Chat Invites, design "Component C" → `discardInvitedThread`; Requirements 5,
+   * 8). Real-mode only — a no-op in decoy/null (reveals nothing). Locates the record by `inviteId` and
+   * removes it (and any alias entry pointing at its thread) via the atomic
+   * {@link ShadowSecretPersistence.deleteInvitedThread}, so nothing partial remains. **Idempotent:** a
+   * missing record is a silent no-op. Fails closed by ABORTING: a persistence error propagates,
+   * leaving the record intact (no partial delete).
+   *
+   * @param mode - the resolved {@link AppMode}, or `null` when no PIN matched. Only `real` acts.
+   * @param inviteId - correlates the decline/expiry to its pending record.
+   */
+  async discardInvitedThread(mode: AppMode | null, inviteId: string): Promise<void> {
+    if (mode !== 'real') {
+      return; // non-real mode is inert: delete nothing (Req 8)
+    }
+    const records = await this.persistence.loadInvitedThreads();
+    const record = records.find((candidate) => candidate.inviteId === inviteId);
+    if (record === undefined) {
+      return; // idempotent: nothing to discard
+    }
+    // Atomic local delete of record + key + any alias entry; propagates on failure (nothing partial).
+    await this.persistence.deleteInvitedThread(record.threadId);
+  }
+
+  /**
+   * "CLEAR SHADOW CHAT" — validate (real mode) that an invited-thread record for `threadId` exists and
+   * return its {@link InvitedThreadRef} so the caller can purge the thread's MESSAGE history, while
+   * KEEPING the record and its shared `threadKey` untouched so the chat keeps working afterwards
+   * (Shadow Chat Invites, design "Component C" → `clearShadowThread`; Requirements 6). The store holds
+   * secrets/mappings, NOT messages, so this touches no stored secret and performs no write — the
+   * history purge runs through the message store + `KeyStore.purgeMessages` elsewhere. Real-mode only
+   * (decoy/null → `null`, revealing nothing); idempotent; returns `null` when no record matches.
+   *
+   * @param mode - the resolved {@link AppMode}, or `null` when no PIN matched. Only `real` acts.
+   * @param threadId - the converged shadow thread id whose record is validated.
+   */
+  async clearShadowThread(
+    mode: AppMode | null,
+    threadId: string,
+  ): Promise<InvitedThreadRef | null> {
+    if (mode !== 'real') {
+      return null; // decoy/null: no-op, reveal nothing (Req 6)
+    }
+    const records = await this.persistence.loadInvitedThreads();
+    const record = records.find((candidate) => candidate.threadId === threadId);
+    if (record === undefined) {
+      return null; // no such thread: nothing to clear
+    }
+    // KEEP the record + shared threadKey untouched (the chat keeps working). No write happens here.
+    return record;
+  }
+
+  /**
+   * "REVOKE SHADOW CHAT" — atomically DELETE the shared `threadKey`, the invited-thread record, and any
+   * alias entry pointing at `threadId`, then return the `{ peerUid, inviteId }` the caller needs to
+   * address the peer (Shadow Chat Invites, design "Component C" → `revokeShadowThread`; Requirements 7,
+   * 15). After success the `threadId` is UNRECOVERABLE from this vault: its only HMAC key is gone, so
+   * it cannot be re-derived or reopened (design Correctness Property 17).
+   *
+   * **Fails closed by ABORTING (Requirements 7, 15).** A persistence failure propagates, leaving the
+   * record + key intact so a retry is safe — NEVER a partial delete that strands a keyless record. The
+   * delete is a single atomic {@link ShadowSecretPersistence.deleteInvitedThread} write.
+   *
+   * **Idempotent.** A second revoke of an already-revoked (absent) thread returns `null` and changes
+   * nothing. Real-mode only; decoy/null → `null` (reveals nothing, deletes nothing).
+   *
+   * @param mode - the resolved {@link AppMode}, or `null` when no PIN matched. Only `real` acts.
+   * @param threadId - the converged shadow thread id to tear down.
+   */
+  async revokeShadowThread(
+    mode: AppMode | null,
+    threadId: string,
+  ): Promise<{ peerUid: string; inviteId: string } | null> {
+    if (mode !== 'real') {
+      return null; // decoy/null: no-op, reveal nothing, delete nothing (Req 7)
+    }
+    const records = await this.persistence.loadInvitedThreads();
+    const record = records.find((candidate) => candidate.threadId === threadId);
+    if (record === undefined) {
+      return null; // idempotent: already revoked / unknown ⇒ nothing to delete
+    }
+    // Capture the addressing info BEFORE the delete so a successful teardown still returns it. The
+    // atomic delete propagates on failure, leaving the record + key intact (no keyless strand).
+    const { peerUid, inviteId } = record;
+    await this.persistence.deleteInvitedThread(threadId);
+    return { peerUid, inviteId };
   }
 
   /**

@@ -7,6 +7,7 @@ import { getPbkdf2Provider, verifySecret, type Pbkdf2Provider } from './secret-h
 import { hashAlias, matchAlias, normalizeAlias, type AliasEntry } from './shadow-chat';
 import {
   ShadowSecretStore,
+  type InvitedThreadRef,
   type ShadowSecretPersistence,
   type ShadowThreadRef,
 } from './shadow-secret-store';
@@ -76,6 +77,11 @@ function persistenceOf(
       return entries.slice();
     },
     async saveAliasEntry() {},
+    async saveInvitedThread() {},
+    async loadInvitedThreads() {
+      return [];
+    },
+    async deleteInvitedThread() {},
   };
 }
 
@@ -130,6 +136,7 @@ function durableFake(): DurableFake {
   let master: Uint8Array | null = null;
   let aliasKey: Uint8Array | null = null;
   const entries: AliasEntry<ShadowThreadRef>[] = [];
+  const invited: InvitedThreadRef[] = [];
   const cloneRef = (ref: ShadowThreadRef): ShadowThreadRef => ({ ...(ref as RefWithPin) });
   return {
     failSaves: false,
@@ -162,6 +169,36 @@ function durableFake(): DurableFake {
         entries[at] = next;
       } else {
         entries.push(next);
+      }
+    },
+    async saveInvitedThread(record) {
+      // Atomic abort BEFORE mutating, mirroring saveAliasEntry's fail-closed contract.
+      if (this.failSaves) {
+        throw new Error('durable-fake: saveInvitedThread failed mid-write');
+      }
+      const copy: InvitedThreadRef = { ...record, threadKey: record.threadKey.slice() };
+      const at = invited.findIndex((r) => r.threadId === record.threadId);
+      if (at >= 0) {
+        invited[at] = copy;
+      } else {
+        invited.push(copy);
+      }
+    },
+    async loadInvitedThreads() {
+      return invited.map((r) => ({ ...r, threadKey: r.threadKey.slice() }));
+    },
+    async deleteInvitedThread(threadId) {
+      if (this.failSaves) {
+        throw new Error('durable-fake: deleteInvitedThread failed mid-write');
+      }
+      const at = invited.findIndex((r) => r.threadId === threadId);
+      if (at >= 0) {
+        invited.splice(at, 1);
+      }
+      for (let i = entries.length - 1; i >= 0; i -= 1) {
+        if (entries[i].ref.threadId === threadId) {
+          entries.splice(i, 1);
+        }
       }
     },
   };
