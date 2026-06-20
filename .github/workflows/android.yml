@@ -197,6 +197,21 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Move the `android-latest` rolling tag to THIS build's commit before publishing.
+      # softprops/action-gh-release does not move an existing tag, so without this the
+      # tag (its date and the auto-generated "Source code" archives) stays frozen at the
+      # commit where android-latest was first created, even though the APK/AAB assets are
+      # replaced on every build. Force-pushing the tag here keeps the whole release
+      # consistent with the built code. The default GITHUB_TOKEN (contents: write on this
+      # job) is configured by checkout and may update the tag ref.
+      - name: Move android-latest tag to this commit
+        run: |
+          set -euo pipefail
+          git push -f origin "${GITHUB_SHA}:refs/tags/android-latest"
+
       - name: Download APK artifact
         uses: actions/download-artifact@v4
         with:
@@ -213,6 +228,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: android-latest
+          target_commitish: ${{ github.sha }}
           name: Lumin Chat (Android) — latest build
           prerelease: true
           # Don't flag this pre-release as the repo's "Latest release".
