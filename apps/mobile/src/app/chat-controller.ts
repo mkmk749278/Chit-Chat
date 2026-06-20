@@ -65,6 +65,7 @@ import type { PresenceResponse, WhoAmIResponse } from '@chat-app/types';
 import { FirebaseAuthAdapter } from '../auth';
 import { API_BASE_URL, REGISTER_URL, WS_URL } from '../api/api-config';
 import { createDirectoryClient, createPreKeyClaimClient, type DirectoryClient } from '../api/api-clients';
+import { clearConversationHistory } from './clear-chat';
 import { createNativeVault, probeNativeCrypto } from '../crypto/native-vault';
 import { createSecureGate, type RevealResult, type SecureGate, type UnlockResult } from './secure-gate';
 import { createVaultShadowSecretPersistence } from '../data/shadow-secret-persistence';
@@ -147,6 +148,14 @@ export interface ChatController {
    * it cannot be re-opened (Req 4.3). `id` is the message's stable row id.
    */
   markViewed(id: string): Promise<void>;
+  /**
+   * Clear a SURFACE conversation's LOCAL history (the "Clear chat" action): purge every persisted
+   * row belonging to `conversationId` (rows whose `remoteUid === conversationId`) via the store's
+   * best-effort secure erase. Local-only — no network, no wire change — and fail-soft on a store
+   * error. The conversation is NOT deleted; the caller dispatches `conversation-cleared` to reset the
+   * open view to empty. Surface chats only; shadow threads are not cleared here.
+   */
+  clearChatHistory(conversationId: string): Promise<void>;
   /** React to a message in the open conversation with an emoji (Req 3.1). */
   react(target: MessageTarget, emoji: string): Promise<void>;
   /** Edit a message's text in the open conversation (Req 3.2). */
@@ -645,6 +654,17 @@ export function createMobileController(): ChatController {
       emit({ type: 'messages-expired', ids: [id], remoteUid: activeRecipient });
     },
 
+    async clearChatHistory(conversationId: string): Promise<void> {
+      // Local-only Clear chat: purge exactly the persisted rows for this SURFACE conversation
+      // (remoteUid === conversationId) via the store's best-effort secure erase. Fail-soft on a
+      // store error (handled inside clearConversationHistory), mirroring the markViewed purge path.
+      // The container dispatches `conversation-cleared` to reset the open view to empty.
+      if (keyStore === null) {
+        return;
+      }
+      await clearConversationHistory(keyStore, conversationId);
+    },
+
     async react(target: MessageTarget, emoji: string): Promise<void> {
       if (messaging === null || activeRecipient === null) {
         return;
@@ -966,6 +986,9 @@ export function createDemoController(): ChatController {
     },
     async markViewed(): Promise<void> {
       // No store in the demo controller.
+    },
+    async clearChatHistory(): Promise<void> {
+      // No store in the demo controller; nothing to purge.
     },
     async react(): Promise<void> {
       // No transport in the demo controller.

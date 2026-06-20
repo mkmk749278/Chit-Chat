@@ -41,6 +41,18 @@ export function conversationActionKeys(): ConversationActionKey[] {
   return CONVERSATION_ACTIONS.map((a) => a.key);
 }
 
+/**
+ * The local "Clear chat" action (privacy-first, local-only history purge). It is intentionally NOT a
+ * member of {@link CONVERSATION_ACTIONS}: unlike the four moved header actions it is surfaced ONLY in
+ * the overflow menu and ONLY for a SURFACE chat (never a shadow thread, and only in real mode — the
+ * same gating the existing destructive "hide" action uses). Keeping it separate preserves the shared
+ * four-action header/profile model while letting the menu render this row conditionally.
+ */
+export const CLEAR_CHAT_ACTION: { readonly key: 'clear'; readonly label: string } = {
+  key: 'clear',
+  label: 'Clear chat',
+};
+
 /** The elements of the redesigned conversation header, left → right (Req 3.1). */
 export type HeaderElement = 'back' | 'avatar' | 'name' | 'status' | 'overflow';
 

@@ -865,6 +865,25 @@ function AppShell(): React.JSX.Element {
           onSetThreadPin={
             appMode === 'real' && shadowThreadIds.has(openConversation.id) ? onSetThreadPin : undefined
           }
+          onClearChat={
+            appMode === 'real' && !shadowThreadIds.has(openConversation.id)
+              ? () => {
+                  const id = openConversation.id;
+                  // Local-only Clear chat: purge this surface conversation's persisted rows, then
+                  // reset the open view (and its list preview) to empty via `conversation-cleared`.
+                  // The chat stays in the list; this is "clear history", not "delete conversation".
+                  void controller.clearChatHistory(id).then(() => {
+                    setConversations((prev) =>
+                      prev.map((c) =>
+                        c.id === id
+                          ? { ...c, state: reduce(c.state, { type: 'conversation-cleared', remoteUid: id }) }
+                          : c,
+                      ),
+                    );
+                  });
+                }
+              : undefined
+          }
           onBack={() => {
             animateNext();
             setOpenChatId(null);

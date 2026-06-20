@@ -139,6 +139,9 @@ export interface ConversationState {
  * - `reaction-applied`        — attach an emoji reaction to a target message (Req 3.1).
  * - `message-edited`          — supersede a target message's text (Req 3.2).
  * - `message-deleted`         — tombstone a target message's content (Req 3.3).
+ * - `conversation-cleared`    — clear the conversation's local history (Clear chat): reset to
+ *                               empty messages/gap state while preserving connection, composer,
+ *                               disappearing-timer, and the web ephemerality acknowledgment.
  *
  * The reaction/edit/delete events address their target by its LOCAL `(targetDirection,
  * targetSeq)`; the Messaging layer maps the on-wire sender-relative reference onto local
@@ -200,7 +203,26 @@ export type ConversationEvent =
       threadId?: string;
     }
   | { type: 'timer-changed'; ttlMs: number; remoteUid?: string; threadId?: string }
-  | { type: 'messages-expired'; ids: string[]; remoteUid?: string; threadId?: string };
+  | { type: 'messages-expired'; ids: string[]; remoteUid?: string; threadId?: string }
+  | {
+      /**
+       * Clear a conversation's LOCAL history (the "Clear chat" action). Resets the conversation to
+       * empty — no messages and no gap markers — while PRESERVING `connection`, `composer`,
+       * `disappearingTtlMs`, and `webWarningAcknowledged` (the chat stays open, just empty). This is
+       * "clear history", NOT "delete conversation". Like every conversation-scoped event it carries an
+       * OPTIONAL `remoteUid`/`threadId` used only by the `ConversationRegistry` for routing; the pure
+       * {@link reduce} ignores both.
+       */
+      type: 'conversation-cleared';
+      remoteUid?: string;
+      threadId?: string;
+    };
+
+/**
+ * The `conversation-cleared` event ("Clear chat"), exported for callers (platform controllers /
+ * containers) that dispatch it after purging the conversation's persisted rows.
+ */
+export type ConversationClearedEvent = Extract<ConversationEvent, { type: 'conversation-cleared' }>;
 
 /**
  * The reducer contract consumed by the platform UIs (design Component 7).
@@ -461,6 +483,13 @@ export function reduce(
       }
       return { ...state, messages, missingBefore: computeMissingBefore(messages) };
     }
+
+    case 'conversation-cleared':
+      // Clear chat (local-only): reset the conversation to empty history — no messages, no gap
+      // markers — while PRESERVING connection, composer, the disappearing-message timer, and the web
+      // ephemerality acknowledgment. The chat itself stays open (now empty); this is "clear history",
+      // NOT "delete conversation". `remoteUid`/`threadId` are routing tags read only by the registry.
+      return { ...state, messages: [], missingBefore: [] };
 
     default: {
       // Exhaustiveness guard: a new event variant must be handled explicitly.

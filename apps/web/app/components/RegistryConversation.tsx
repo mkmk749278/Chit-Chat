@@ -81,12 +81,24 @@ export function RegistryConversation({ registry, conversationKey, selfLabel }: R
     rerender();
   }, [composerText, conversationKey, registry, rerender]);
 
+  // Local-only Clear chat: reset this SURFACE conversation's in-memory history to empty via
+  // `conversation-cleared`, then re-read the registry. Offered for surface conversations only —
+  // shadow threads are not cleared here (parity with mobile). The thread stays open, now empty.
+  const onClearChat = useCallback((): void => {
+    if (conversationKey.kind !== 'surface') {
+      return;
+    }
+    registry.apply({ type: 'conversation-cleared', remoteUid: conversationKey.remoteUid });
+    rerender();
+  }, [conversationKey, registry, rerender]);
+
   return (
     <ConversationScreen
       state={viewState}
       selfLabel={selfLabel}
       onComposerChange={setComposerText}
       onSend={onSend}
+      onClearChat={conversationKey.kind === 'surface' ? onClearChat : undefined}
     />
   );
 }

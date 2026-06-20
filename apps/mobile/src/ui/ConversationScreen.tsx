@@ -15,7 +15,7 @@
  */
 
 import React, { useMemo, useRef, useState } from 'react';
-import { Dimensions, FlatList, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Dimensions, FlatList, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import type {
   ConversationState,
@@ -83,6 +83,14 @@ export interface ConversationScreenProps {
    * `null` removes it. The PBKDF2 work runs off the UI thread; rejecting surfaces a generic failure.
    */
   onSetThreadPin?: (newPin: string | null) => Promise<void>;
+  /**
+   * Clear this conversation's LOCAL history (the "Clear chat" action, local-only). When provided, a
+   * destructive "Clear chat" row appears in the overflow menu; tapping it shows a confirm and, on
+   * confirm, invokes this callback. The container backs it with `controller.clearChatHistory(id)`
+   * followed by a `conversation-cleared` dispatch. Passed ONLY for an open SURFACE chat in real mode
+   * (matching the existing destructive "hide" gating); absent for a shadow thread / non-real mode.
+   */
+  onClearChat?: () => void;
 }
 
 const STATUS_LABEL: Record<RenderableMessage['status'], string> = {
@@ -257,6 +265,7 @@ export function ConversationScreen({
   onHideChat,
   onUnhideChat,
   onSetThreadPin,
+  onClearChat,
 }: ConversationScreenProps): React.JSX.Element {
   const t = useTheme();
   const connected = state.connection === 'connected';
@@ -383,6 +392,24 @@ export function ConversationScreen({
         setHideOpen(true);
         break;
     }
+  };
+
+  /**
+   * Confirm and clear this conversation's LOCAL history (the "Clear chat" action). Closes the
+   * overflow menu, shows a destructive confirm, and on confirm invokes the container's `onClearChat`
+   * (which purges the persisted rows and dispatches `conversation-cleared`). Local-only; the chat
+   * stays in the list, now empty.
+   */
+  const confirmClearChat = (): void => {
+    setOverflowOpen(false);
+    Alert.alert(
+      'Clear chat?',
+      'This permanently removes this chat’s messages from this device. It can’t be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Clear', style: 'destructive', onPress: () => onClearChat?.() },
+      ],
+    );
   };
 
   /** Apply the edit draft to the targeted message (Req 3.2). */
@@ -796,6 +823,7 @@ export function ConversationScreen({
               }
             : undefined
         }
+        onClearChat={onClearChat !== undefined ? confirmClearChat : undefined}
       />
 
       {/* Shadow-chat per-chat PIN settings (task 16.1, Req 12.5/12.7/12.8): add / change / remove the
