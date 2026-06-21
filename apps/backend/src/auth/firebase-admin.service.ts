@@ -32,8 +32,11 @@ import { UnauthorizedError } from './unauthorized.error';
  * using the unnamed default) lets us detect a pre-existing instance and guarantee the
  * SDK is initialized exactly once (Requirement 8.1), and keeps it isolated from any
  * other Firebase app that might be created in tests.
+ *
+ * Exported so other backend services that need the SAME initialized Admin app (e.g. the FCM push
+ * sender via `firebase-admin/messaging`) can resolve it by name rather than re-initializing it.
  */
-const FIREBASE_APP_NAME = 'chat-backend';
+export const FIREBASE_APP_NAME = 'chat-backend';
 
 @Injectable()
 export class FirebaseAdminService implements OnModuleInit {
