@@ -407,3 +407,47 @@ test('handleInbound silently ignores an inbound invite in decoy mode (no card, n
   assert.ok(!B.events.some((e) => e.type === 'invite-received'), 'decoy reveals no invite');
   assert.equal((await B.persistence.loadInvitedThreads()).length, 0);
 });
+
+test('Accept still creates the secret after the recipient coordinator is REBUILT (durable inbound recovery)', async () => {
+  const { A, B } = makeWorld();
+  const pending = await A.coord.createInvite('bob');
+  assert.ok(pending);
+  const received = B.events.find((e) => e.type === 'invite-received');
+  assert.ok(received && received.type === 'invite-received');
+  // The invite was persisted durably at receive (the shared key survives a coordinator rebuild).
+  assert.equal((await B.persistence.loadInvitedThreads()).length, 1, 'pending invite persisted on receive');
+
+  // Simulate a reconnect / setup re-run: a FRESH recipient coordinator over the SAME vault + registry,
+  // with an EMPTY in-RAM `inbound` map (the previous coordinator's RAM state is gone).
+  let counter = 0;
+  const rebuiltControl: { to: string; payload: ContentPayload }[] = [];
+  const rebuilt = new DefaultShadowInviteCoordinator({
+    store: B.store,
+    registry: B.registry,
+    transport: {
+      async sendControl(to, payload) {
+        rebuiltControl.push({ to, payload });
+      },
+      async sendShadow() {
+        /* no pre-accept queue on the recipient */
+      },
+    },
+    random: makeRandom(4242),
+    rowThreads: B.rowThreads,
+    purgeMessages: async () => undefined,
+    resolveMode: () => 'real',
+    myUid: () => 'bob',
+    now: () => 2000,
+    newInviteId: () => `inv-rebuilt-${(counter += 1)}`,
+  });
+
+  const ref = await rebuilt.acceptInvite(received.inviteId, 'hidden');
+  assert.ok(ref, 'the rebuilt coordinator recovers the persisted key and creates the secret');
+  // Convergence still holds: the recovered threadId equals the inviter's.
+  assert.equal(ref!.threadId, pending!.threadId);
+  // The thread is now active and a shadow-accept was sent to the inviter.
+  const invited = await B.persistence.loadInvitedThreads();
+  assert.equal(invited.length, 1);
+  assert.equal(invited[0].state, 'active');
+  assert.ok(rebuiltControl.some((c) => c.payload.type === 'shadow-accept'));
+});

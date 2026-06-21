@@ -237,12 +237,24 @@ export class DefaultShadowInviteCoordinator implements ShadowInviteCoordinator {
     if (mode !== 'real') {
       return null; // decoy/locked inertness (Req 10.2)
     }
-    const invite = this.inbound.get(inviteId);
-    if (invite === undefined) {
-      return null; // unknown/stale invite — nothing to accept
+    // Recover the shared key + inviter uid from the RAM `inbound` entry, or — if the coordinator was
+    // rebuilt since the invite arrived — from the durable pending record persisted at receive time.
+    let threadKey: Uint8Array;
+    let peerUid: string;
+    const ram = this.inbound.get(inviteId);
+    if (ram !== undefined) {
+      threadKey = ram.threadKey;
+      peerUid = ram.peerUid;
+    } else {
+      const recovered = await this.deps.store.markInvitedThreadActive(mode, inviteId);
+      if (recovered === null) {
+        return null; // unknown/stale invite — nothing to accept
+      }
+      threadKey = recovered.threadKey;
+      peerUid = recovered.peerUid;
     }
     const myUid = this.deps.myUid();
-    const ref = await this.deps.store.bindInvitedThread(mode, invite.threadKey, invite.peerUid, myUid, {
+    const ref = await this.deps.store.bindInvitedThread(mode, threadKey, peerUid, myUid, {
       alias,
       pin,
       routing,
@@ -252,14 +264,14 @@ export class DefaultShadowInviteCoordinator implements ShadowInviteCoordinator {
     if (ref === null) {
       return null;
     }
-    this.deps.registry.openShadowThread(ref.threadId, invite.peerUid);
+    this.deps.registry.openShadowThread(ref.threadId, peerUid);
     if (routing === 'merge') {
       // View-only override: surface-visible in the chat list, yet the thread keeps its OWN isolated
       // ConversationState and +1e9 seqs (Req 3.3, 3.4).
       this.deps.registry.markSurfaceVisible(ref.threadId);
     }
     // The shadow-accept carries NO routing choice — the inviter never learns hidden vs merge (Req 3.5).
-    await this.deps.transport.sendControl(invite.peerUid, { type: 'shadow-accept', inviteId });
+    await this.deps.transport.sendControl(peerUid, { type: 'shadow-accept', inviteId });
     // Auto-cleanup: the inbound invite record + request card are removed (Req 8.1, Property 13).
     this.inbound.delete(inviteId);
     this.emit({ type: 'invite-resolved', inviteId, reason: 'accepted' });
@@ -273,12 +285,15 @@ export class DefaultShadowInviteCoordinator implements ShadowInviteCoordinator {
       return; // decoy/locked inertness
     }
     const invite = this.inbound.get(inviteId);
-    if (invite === undefined) {
-      return;
+    // Notify the inviter when we still know their uid (RAM path). If the coordinator was rebuilt since
+    // receive, the peer notification is skipped (best-effort — the inviter's invite expires on its TTL),
+    // but we ALWAYS drop any durable pending record below so no shadow data is left behind.
+    if (invite !== undefined) {
+      await this.deps.transport.sendControl(invite.peerUid, { type: 'shadow-decline', inviteId });
     }
-    await this.deps.transport.sendControl(invite.peerUid, { type: 'shadow-decline', inviteId });
-    // Persist no shadow data; auto-remove the inbound record + card (Req 8.2, Property 13).
+    // Persist no shadow data: drop the RAM entry AND any durable pending record (Req 8.2, Property 13).
     this.inbound.delete(inviteId);
+    await this.deps.store.discardInvitedThread(mode, inviteId);
     this.emit({ type: 'invite-resolved', inviteId, reason: 'declined' });
   }
 
@@ -412,6 +427,23 @@ export class DefaultShadowInviteCoordinator implements ShadowInviteCoordinator {
       peerUid,
       ...(payload.label !== undefined ? { label: payload.label } : {}),
     });
+    // Durably persist the pending invite (the shared key) so Accept still works if the coordinator is
+    // rebuilt between receive and accept (e.g. a reconnect/setup re-run) — otherwise the RAM-only
+    // `inbound` map would be lost and Accept could not derive/create the thread. Best-effort: a
+    // persistence/derivation failure here must NOT block the visible request card, which can still be
+    // accepted via the RAM path; the recipient consents before this becomes an active thread.
+    const myUid = this.deps.myUid();
+    if (myUid.length > 0 && myUid !== peerUid) {
+      try {
+        await this.deps.store.bindInvitedThread(this.deps.resolveMode(), threadKey, peerUid, myUid, {
+          routing: 'hidden',
+          inviteId: payload.inviteId,
+          state: 'awaiting-accept',
+        });
+      } catch {
+        // Swallow: the RAM `inbound` entry above still allows Accept within this session.
+      }
+    }
     return true;
   }
 
