@@ -27,6 +27,7 @@ import {
   type ConversationRegistry,
   type ConversationState,
   type MessageTarget,
+  type RecipientRouting,
   type ShadowThreadRef,
 } from '@chat-app/crypto';
 
@@ -123,6 +124,11 @@ function AppShell(): React.JSX.Element {
   // Shadow Chat Invites (design Component A): inbound Accept/Decline request cards, keyed by inviteId.
   // Folded from the controller's onShadowInvite stream; a card auto-dismisses on `invite-resolved`.
   const [inviteCards, setInviteCards] = useState<ReadonlyMap<string, ShadowInviteCard>>(new Map());
+  // When the recipient accepts a HIDDEN invite, they set a secret (alias to re-open + optional PIN)
+  // via this sheet before the thread is bound — so a hidden shadow chat can always be re-entered.
+  const [acceptSheet, setAcceptSheet] = useState<
+    { inviteId: string; routing: RecipientRouting; peerUid: string; peerName: string } | null
+  >(null);
   const [pinPrompt, setPinPrompt] = useState<{
     verify: (pin: string) => Promise<boolean>;
     resolve: (opened: boolean) => void;
@@ -426,6 +432,9 @@ function AppShell(): React.JSX.Element {
   // /alias search path and the long-press creation path. Never touches the peer's surface chat.
   const openShadowThreadLocal = useCallback(
     (ref: { threadId: string; peerUid: string }, name?: string) => {
+      // Open the thread in the render registry (idempotent) so inbound messages route to it — covers
+      // accept, the /alias search re-open, and the inviter's invite-accepted path uniformly.
+      shadowRegistryRef.current?.openShadowThread(ref.threadId, ref.peerUid);
       shadowPeerRef.current.set(ref.threadId, ref.peerUid);
       setShadowThreadIds((prev) => {
         const next = new Set(prev);
@@ -450,6 +459,42 @@ function AppShell(): React.JSX.Element {
       setOpenChatId(ref.threadId);
     },
     [controller],
+  );
+
+  // Accept a shadow invite (optionally with a secret: an alias to re-open it + an optional per-chat
+  // PIN), then open the converged thread for rendering. Provisioning ensures the alias-HMAC key
+  // exists so the local re-open handle can be stored. Surfaces the real reason on failure.
+  const acceptInviteWithSecret = useCallback(
+    async (
+      inviteId: string,
+      routing: RecipientRouting,
+      peerUid: string,
+      peerName: string,
+      alias?: string,
+      pin?: string,
+    ): Promise<void> => {
+      try {
+        if (alias !== undefined) {
+          await controller.provisionShadowContext();
+        }
+        const threadId = await controller.acceptShadowInvite(inviteId, routing, alias, pin);
+        if (threadId === null) {
+          throw new Error('The invitation could not be set up — it may have expired.');
+        }
+        shadowRegistryRef.current?.openShadowThread(threadId, peerUid);
+        openShadowThreadLocal({ threadId, peerUid }, peerName);
+        if (alias !== undefined) {
+          Alert.alert('Shadow chat ready', `Re-open it anytime by searching "${alias}" in the search bar.`);
+        }
+      } catch (err) {
+        Alert.alert(
+          'Could not open shadow chat',
+          err instanceof Error ? err.message : 'Something went wrong setting up the shadow chat.',
+        );
+        throw err instanceof Error ? err : new Error('accept failed');
+      }
+    },
+    [controller, openShadowThreadLocal],
   );
 
   // Shadow Chat Invites lifecycle: fold events into the request-card set, and on Accept open the now
@@ -1126,6 +1171,23 @@ function AppShell(): React.JSX.Element {
         contactName={createSheet?.name ?? ''}
         onCreate={onCreateShadowChat}
       />
+      {/* Recipient: set a secret (alias to re-open + optional PIN) when accepting a HIDDEN invite. */}
+      <ShadowChatCreateSheet
+        visible={acceptSheet !== null}
+        onClose={() => setAcceptSheet(null)}
+        contactName={acceptSheet?.peerName ?? ''}
+        title="Set a secret to re-open this shadow chat"
+        hint="This hidden chat won’t appear in your chat list. Choose an alias to re-open it later by searching, and an optional PIN to lock it."
+        submitLabel="Accept shadow chat"
+        onCreate={async (alias, pin) => {
+          const sheet = acceptSheet;
+          if (sheet === null) {
+            return;
+          }
+          await acceptInviteWithSecret(sheet.inviteId, sheet.routing, sheet.peerUid, sheet.peerName, alias, pin);
+          setAcceptSheet(null);
+        }}
+      />
       <ShadowInviteRequestCard
         visible={activeInviteCard !== null}
         theme={theme}
@@ -1133,28 +1195,19 @@ function AppShell(): React.JSX.Element {
         {...(activeInviteCard?.label !== undefined ? { label: activeInviteCard.label } : {})}
         onAccept={(routing) => {
           const card = activeInviteCard;
-          if (card !== null) {
-            setInviteCards((prev) => reduceInviteCards(prev, { type: 'invite-resolved', inviteId: card.inviteId, reason: 'accepted' }));
-            // RECIPIENT side: accept, then open the converged thread for rendering and show it.
-            void controller
-              .acceptShadowInvite(card.inviteId, routing)
-              .then((threadId) => {
-                if (threadId !== null) {
-                  shadowRegistryRef.current?.openShadowThread(threadId, card.peerUid);
-                  openShadowThreadLocal({ threadId, peerUid: card.peerUid }, activeInvitePeerName);
-                } else {
-                  Alert.alert(
-                    'Could not open shadow chat',
-                    'The invitation could not be set up — it may have expired. Ask your contact to invite you again.',
-                  );
-                }
-              })
-              .catch((err: unknown) => {
-                Alert.alert(
-                  'Could not open shadow chat',
-                  err instanceof Error ? err.message : 'Something went wrong setting up the shadow chat.',
-                );
-              });
+          if (card === null) {
+            return;
+          }
+          const peerName = activeInvitePeerName;
+          // Dismiss the request card immediately.
+          setInviteCards((prev) => reduceInviteCards(prev, { type: 'invite-resolved', inviteId: card.inviteId, reason: 'accepted' }));
+          if (routing === 'hidden') {
+            // A HIDDEN chat is excluded from the chat list, so the recipient MUST set a secret (an
+            // alias to re-open via search, plus an optional PIN) or it could never be re-entered.
+            setAcceptSheet({ inviteId: card.inviteId, routing, peerUid: card.peerUid, peerName });
+          } else {
+            // MERGE shows in the main chat list, so no secret is needed to find it again.
+            void acceptInviteWithSecret(card.inviteId, routing, card.peerUid, peerName);
           }
         }}
         onDecline={() => {
