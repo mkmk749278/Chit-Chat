@@ -1136,12 +1136,25 @@ function AppShell(): React.JSX.Element {
           if (card !== null) {
             setInviteCards((prev) => reduceInviteCards(prev, { type: 'invite-resolved', inviteId: card.inviteId, reason: 'accepted' }));
             // RECIPIENT side: accept, then open the converged thread for rendering and show it.
-            void controller.acceptShadowInvite(card.inviteId, routing).then((threadId) => {
-              if (threadId !== null) {
-                shadowRegistryRef.current?.openShadowThread(threadId, card.peerUid);
-                openShadowThreadLocal({ threadId, peerUid: card.peerUid }, activeInvitePeerName);
-              }
-            });
+            void controller
+              .acceptShadowInvite(card.inviteId, routing)
+              .then((threadId) => {
+                if (threadId !== null) {
+                  shadowRegistryRef.current?.openShadowThread(threadId, card.peerUid);
+                  openShadowThreadLocal({ threadId, peerUid: card.peerUid }, activeInvitePeerName);
+                } else {
+                  Alert.alert(
+                    'Could not open shadow chat',
+                    'The invitation could not be set up — it may have expired. Ask your contact to invite you again.',
+                  );
+                }
+              })
+              .catch((err: unknown) => {
+                Alert.alert(
+                  'Could not open shadow chat',
+                  err instanceof Error ? err.message : 'Something went wrong setting up the shadow chat.',
+                );
+              });
           }
         }}
         onDecline={() => {
