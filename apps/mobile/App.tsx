@@ -210,6 +210,20 @@ function AppShell(): React.JSX.Element {
           if (peerUid !== undefined) {
             shadowPeerRef.current.set(tid, peerUid);
           }
+          // Register the thread as SHADOW. `shadowThreadIds` is the single source of truth that both
+          // (a) EXCLUDES the thread from the surface chat list / contacts (`isSurfaceListable`, Req
+          // 7.5/7.6) and (b) gates the shadow-only conversation actions (Clear/Revoke shadow chat,
+          // per-chat PIN). Without this, a thread first surfaced by a LIVE inbound message would be
+          // treated as a surface chat — leaking into the main list and offering the wrong "Clear chat"
+          // instead of "Clear shadow chat". Idempotent (Set membership).
+          setShadowThreadIds((prev) => {
+            if (prev.has(tid)) {
+              return prev;
+            }
+            const next = new Set(prev);
+            next.add(tid);
+            return next;
+          });
           animateNext();
           setConversations((prev) => {
             const base = prev.some((c) => c.id === tid)
