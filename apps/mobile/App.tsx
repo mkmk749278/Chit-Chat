@@ -210,6 +210,20 @@ function AppShell(): React.JSX.Element {
           if (peerUid !== undefined) {
             shadowPeerRef.current.set(tid, peerUid);
           }
+          // Register the thread as SHADOW. `shadowThreadIds` is the single source of truth that both
+          // (a) EXCLUDES the thread from the surface chat list / contacts (`isSurfaceListable`, Req
+          // 7.5/7.6) and (b) gates the shadow-only conversation actions (Clear/Revoke shadow chat,
+          // per-chat PIN). Without this, a thread first surfaced by a LIVE inbound message would be
+          // treated as a surface chat — leaking into the main list and offering the wrong "Clear chat"
+          // instead of "Clear shadow chat". Idempotent (Set membership).
+          setShadowThreadIds((prev) => {
+            if (prev.has(tid)) {
+              return prev;
+            }
+            const next = new Set(prev);
+            next.add(tid);
+            return next;
+          });
           animateNext();
           setConversations((prev) => {
             const base = prev.some((c) => c.id === tid)
@@ -668,6 +682,58 @@ function AppShell(): React.JSX.Element {
       }),
     [controller, ensurePeerName],
   );
+
+  // Rehydrate persisted SHADOW threads once the app is unlocked into REAL mode (Shadow Chat, Req 7 +
+  // 14). Without this, an app restart loses a shadow chat's history AND drops any inbound shadow
+  // message that arrives afterwards — the RAM-only render registry no longer has the thread open, so
+  // `registry.apply` rejects it as an unknown thread (Req 7.8) and nothing renders. Real-mode gated by
+  // the controller (decoy/locked reveal nothing — design Correctness Properties 6, 16); runs once per
+  // unlocked session. Shadow rows are EXCLUDED from the surface rehydration above, so the two paths
+  // never cross-contaminate (Correctness Property 8).
+  const shadowRehydratedRef = useRef(false);
+  useEffect(() => {
+    if (appMode !== 'real' || setup.phase !== 'ready' || shadowRehydratedRef.current) {
+      return;
+    }
+    shadowRehydratedRef.current = true;
+    void controller.loadShadowConversations().then((threads) => {
+      if (threads.length === 0) {
+        return;
+      }
+      for (const t of threads) {
+        // Reopen the thread in the render registry so LIVE inbound shadow messages route to it again
+        // (idempotent); track its peer so outbound sends ride the shadow thread.
+        shadowRegistryRef.current?.openShadowThread(t.threadId, t.peerUid);
+        shadowPeerRef.current.set(t.threadId, t.peerUid);
+      }
+      setShadowThreadIds((prev) => {
+        const next = new Set(prev);
+        for (const t of threads) {
+          next.add(t.threadId);
+        }
+        return next;
+      });
+      setConversations((prev) => {
+        const present = new Set(prev.map((c) => c.id));
+        const added = threads
+          .filter((t) => !present.has(t.threadId))
+          .map((t) => ({ id: t.threadId, name: t.peerUid, state: t.state, lastAt: t.lastAt }));
+        return [...added, ...prev];
+      });
+      // Resolve display names so the rehydrated shadow header shows a name instead of the raw UID
+      // (the shadow entry is keyed by threadId, so patch by threadId while it still shows the peer UID).
+      for (const t of threads) {
+        void controller.resolvePeerName(t.peerUid).then((name) => {
+          if (name === null || name.length === 0) {
+            return;
+          }
+          setConversations((prev) =>
+            prev.map((c) => (c.id === t.threadId && c.name === t.peerUid ? { ...c, name } : c)),
+          );
+        });
+      }
+    });
+  }, [appMode, setup.phase, controller]);
 
   // Restore a persisted sign-in on launch: Firebase remembers the session across an app
   // kill, so this fires with the signed-in uid and we skip the Sign_In_Screen. We then load
