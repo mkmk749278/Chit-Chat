@@ -200,17 +200,31 @@ function AppShell(): React.JSX.Element {
         // `isNotifiable`, so no OS/in-app notification is ever raised for them.
         const tid = (event as { threadId?: unknown }).threadId;
         if (typeof tid === 'string' && tid.length > 0) {
+          const peerUid =
+            'remoteUid' in event && typeof event.remoteUid === 'string' ? event.remoteUid : undefined;
           try {
             shadowRegistryRef.current?.apply(event);
           } catch {
-            return; // unopened shadow thread: drop with no surface effect (Req 7.8).
+            // The thread isn't open in this session's render registry (e.g. after a relaunch /
+            // reconnect / remount). The message already decrypted from a real contact and carries a
+            // valid threadId, so OPEN the thread and render it rather than dropping it — dropping was
+            // the cause of "some shadow messages don't show up". Still scoped to the shadow thread
+            // (never the surface chat).
+            if (peerUid === undefined) {
+              return;
+            }
+            try {
+              shadowRegistryRef.current?.openShadowThread(tid, peerUid);
+              shadowRegistryRef.current?.apply(event);
+            } catch {
+              return;
+            }
           }
-          const peerUid =
-            'remoteUid' in event && typeof event.remoteUid === 'string' ? event.remoteUid : undefined;
           if (peerUid !== undefined) {
             shadowPeerRef.current.set(tid, peerUid);
           }
           animateNext();
+          setShadowThreadIds((prev) => (prev.has(tid) ? prev : new Set(prev).add(tid)));
           setConversations((prev) => {
             const base = prev.some((c) => c.id === tid)
               ? prev
@@ -722,7 +736,12 @@ function AppShell(): React.JSX.Element {
   // Open a conversation: tell the controller which peer subsequent sends target, then show it.
   const openChat = useCallback(
     (id: string) => {
-      controller.openConversation(id);
+      // For a SHADOW thread the list/route id is the threadId, but sends/receives must address the
+      // real PEER. Resolve the peer uid from the shadow map so the controller's active recipient is
+      // correct (for a surface chat `id` already IS the peer uid). Without this, re-opening a shadow
+      // chat from the list set the recipient to the threadId and messages silently failed to deliver.
+      const recipient = shadowPeerRef.current.get(id) ?? id;
+      controller.openConversation(recipient);
       animateNext();
       setOpenChatId(id);
     },
