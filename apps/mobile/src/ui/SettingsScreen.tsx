@@ -41,6 +41,7 @@ export function SettingsScreen({
   onSetAppPin,
   onClearAppPin,
   onLockNow,
+  onManageShadowChats,
 }: {
   displayName: string;
   phone: string;
@@ -62,6 +63,12 @@ export function SettingsScreen({
   onClearAppPin?: (kind: 'real' | 'decoy') => void | Promise<void>;
   /** Lock the app immediately (to test the lock screen); requires a real PIN. */
   onLockNow?: () => void;
+  /**
+   * Open the shadow-chat manager (Clear / Revoke each shadow chat). The container passes this ONLY in
+   * App_Mode `real`; absent in decoy/locked mode so no "Shadow chats" row appears (the manager can
+   * never reveal a shadow chat exists under coercion — Correctness Properties 6, 16).
+   */
+  onManageShadowChats?: () => void;
 }): React.JSX.Element {
   const t = useTheme();
   const [testResult, setTestResult] = useState<string | null>(null);
@@ -203,6 +210,16 @@ export function SettingsScreen({
         />
         <Divider color={t.divider} />
         <Row icon="🧹" label="Wipe data on sign-out" theme={t} toggle toggleValue />
+        {/* Shadow-chat manager (Clear / Revoke). Present ONLY in real mode (the container passes the
+            handler only then), so no affordance that shadow chats exist appears under coercion. */}
+        {onManageShadowChats !== undefined && (
+          <>
+            <Divider color={t.divider} />
+            <Pressable onPress={onManageShadowChats} accessibilityRole="button" accessibilityLabel="Shadow chats">
+              <Row icon="🕶️" label="Shadow chats" theme={t} value="Clear / Revoke" />
+            </Pressable>
+          </>
+        )}
       </View>
 
       <Text style={[styles.section, { color: t.faint }]}>DIAGNOSTICS</Text>
