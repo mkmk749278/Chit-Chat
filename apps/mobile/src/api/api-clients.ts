@@ -12,6 +12,7 @@ import type {
   GetProfileResponse,
   PresenceResponse,
   ResolvePhoneResponse,
+  SetPushTokenRequest,
   WhoAmIResponse,
 } from '@chat-app/types';
 
@@ -46,6 +47,49 @@ export function createPreKeyClaimClient(
       return null;
     },
   };
+}
+
+/**
+ * Build a client for `POST /api/devices/push-token` (Phase 2, Req 6.2/6.4). Registers (or, with an
+ * empty token, revokes) this device's platform push token so the backend can send content-free wake
+ * pushes when the user is offline. The device is selected by its libsignal `registrationId`.
+ */
+export function createPushTokenClient(
+  http: HttpClient,
+  getToken: () => string | null,
+  apiBaseUrl: string,
+): PushTokenClient {
+  return {
+    async setPushToken(registrationId: number, pushToken: string): Promise<boolean> {
+      const token = getToken();
+      if (token === null) {
+        return false;
+      }
+      try {
+        const response = await http.send({
+          method: 'POST',
+          url: `${apiBaseUrl}/api/devices/push-token`,
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ registrationId, pushToken } satisfies SetPushTokenRequest),
+          timeoutMs: REQUEST_TIMEOUT_MS,
+        });
+        return response.status >= 200 && response.status < 300;
+      } catch {
+        // Push registration is best-effort on top of store-and-forward — a failure must never
+        // break bootstrap or sign-out.
+        return false;
+      }
+    },
+  };
+}
+
+/** Registers/revokes this device's push token (Req 6.2/6.4). */
+export interface PushTokenClient {
+  /**
+   * Register `pushToken` for the device identified by `registrationId`, or REVOKE it by passing an
+   * empty string (Req 6.4). Returns true on success; never throws.
+   */
+  setPushToken(registrationId: number, pushToken: string): Promise<boolean>;
 }
 
 /** Resolves an E.164 phone number to a registered user's Firebase UID for contact discovery. */

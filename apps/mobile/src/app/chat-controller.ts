@@ -71,7 +71,18 @@ import type { PresenceResponse, WhoAmIResponse } from '@chat-app/types';
 
 import { FirebaseAuthAdapter } from '../auth';
 import { API_BASE_URL, REGISTER_URL, WS_URL } from '../api/api-config';
-import { createDirectoryClient, createPreKeyClaimClient, type DirectoryClient } from '../api/api-clients';
+import {
+  createDirectoryClient,
+  createPreKeyClaimClient,
+  createPushTokenClient,
+  type DirectoryClient,
+} from '../api/api-clients';
+import { createFirebasePushPlatform } from '../push/firebase-push-platform';
+import {
+  registerPushToken,
+  revokePushToken,
+  type PushRegistrationDeps,
+} from '../push/push-registration';
 import { clearConversationHistory } from './clear-chat';
 import { createNativeVault, probeNativeCrypto } from '../crypto/native-vault';
 import { createSecureGate, type RevealResult, type SecureGate, type UnlockResult } from './secure-gate';
@@ -462,6 +473,10 @@ export function createMobileController(): ChatController {
   let currentUid: string | null = null;
   let currentPhone: string | null = null;
   let deviceId: string | null = null;
+  // Offline-push (FCM) registration state: the detach for the token-refresh listener, plus the
+  // collaborators needed to revoke the token on explicit sign-out (Req 6.2/6.4).
+  let pushUnsub: (() => void) | null = null;
+  let pushRegistration: PushRegistrationDeps | null = null;
 
   // Encryption-setup state, observable by the UI.
   let setup: SetupState = { phase: 'idle' };
@@ -633,6 +648,22 @@ export function createMobileController(): ChatController {
     realtime.onStatus((status) => emit({ type: 'connection-changed', connection: status }));
     realtime.connect();
     setSetup({ phase: 'ready' });
+
+    // Offline push (Req 6.2/6.3): register this device's FCM token so the backend can send a
+    // content-free wake push while the app is offline. Fire-and-forget + best-effort — it must never
+    // delay or fail bootstrap (a denied permission / missing FCM just means no wake pushes; the
+    // store-and-forward queue still drains on the next foreground connect). Remembered so an explicit
+    // sign-out can revoke the token and a re-bootstrap can detach the previous refresh listener.
+    pushUnsub?.();
+    pushUnsub = null;
+    pushRegistration = {
+      client: createPushTokenClient(httpClient, () => authService.getCurrentToken(), API_BASE_URL),
+      registrationId: record.registrationId,
+      platform: createFirebasePushPlatform(),
+    };
+    void registerPushToken(pushRegistration).then((unsub) => {
+      pushUnsub = unsub;
+    });
   }
 
   /** Run {@link bootstrap}, mapping any thrown error onto a visible `failed` setup state. */
@@ -649,6 +680,10 @@ export function createMobileController(): ChatController {
   function teardown(): void {
     messaging?.dispose();
     realtime?.disconnect();
+    // Detach the FCM token-refresh listener (the token itself is retained for relaunch — only an
+    // explicit sign-out revokes it).
+    pushUnsub?.();
+    pushUnsub = null;
     // destroy() releases the store's in-memory state but RETAINS the encrypted blob, so a
     // retry/relaunch reuses the same identity. Explicit sign-out wipes via vault.wipe().
     keyStore?.destroy();
@@ -1167,6 +1202,13 @@ export function createMobileController(): ChatController {
     },
 
     async signOut(): Promise<void> {
+      // Revoke this device's push token BEFORE wiping (Req 6.4) so the backend stops sending wake
+      // pushes to a signed-out device. Best-effort — never blocks sign-out; needs the still-valid
+      // auth token, so it runs before the auth session is cleared below.
+      if (pushRegistration !== null) {
+        await revokePushToken(pushRegistration);
+        pushRegistration = null;
+      }
       // Wipe the encrypted on-device store (identity, sessions, messages) before teardown
       // clears the reference — explicit sign-out forgets this device (Requirement 7.4).
       try {
