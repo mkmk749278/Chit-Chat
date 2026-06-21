@@ -323,6 +323,16 @@ export * from './conversation-registry';
 
 
 /**
+ * Relaunch rehydration core (Phase 2 CC4 + Shadow Chat). `reduceRowsToState` rebuilds one
+ * conversation's render `ConversationState` by replaying persisted `MessageRow`s through the pure
+ * `reduce` (byte-for-byte what a live session produces, Req 6.7); `partitionPersistedRows` splits
+ * persisted rows into SURFACE (seq `< 1e9`) and SHADOW (seq `>= 1e9`) so a restart can never leak a
+ * shadow message into the normal chat (Correctness Property 8).
+ */
+export * from './conversation-rehydration';
+
+
+/**
  * Versioned E2E content payload (Phase 2, Requirement 3). `encodeContentPayload` /
  * `decodeContentPayload` wrap the libsignal plaintext so reactions, edits, deletes (and later
  * timers/attachments) ride inside the existing ciphertext — the server still sees only an

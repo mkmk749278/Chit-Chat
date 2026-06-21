@@ -43,9 +43,10 @@ import {
   createSessionManager,
   DefaultDeviceRegistrar,
   DefaultIdentityManager,
-  initialConversationState,
   KeyStoreSequenceAllocator,
+  partitionPersistedRows,
   reduce,
+  reduceRowsToState,
   RealtimeClient,
   ShadowSecretStore,
   ShadowSequenceAllocator,
@@ -120,6 +121,24 @@ export type ResolveContactResult =
 export interface RehydratedConversation {
   /** The peer's Firebase UID (the conversation key). */
   id: string;
+  /** Newest message timestamp (unix ms) for chat-list ordering. */
+  lastAt: number;
+  /** The reduced render state, ready to hand to the Conversation_Screen. */
+  state: ConversationState;
+}
+
+/**
+ * A SHADOW thread reconstructed from persisted on-device history for relaunch rehydration (Shadow
+ * Chat, Req 7 + 14). Keyed by its server-opaque `threadId` and carrying the resolved `peerUid` so the
+ * UI can reopen the thread in its render registry (restoring inbound routing) and add it under the
+ * right contact — without which a restart loses the thread's history and drops post-restart inbound
+ * shadow messages as "unknown thread" (Req 7.8). Only returned in real mode (decoy/locked reveal none).
+ */
+export interface RehydratedShadowConversation {
+  /** The server-opaque shadow thread id (the render-registry key `shadow:${threadId}`). */
+  threadId: string;
+  /** The contact this shadow thread is with. */
+  peerUid: string;
   /** Newest message timestamp (unix ms) for chat-list ordering. */
   lastAt: number;
   /** The reduced render state, ready to hand to the Conversation_Screen. */
@@ -234,6 +253,13 @@ export interface ChatController {
    * encrypted store is open.
    */
   loadConversations(): Promise<RehydratedConversation[]>;
+  /**
+   * Rehydrate every persisted SHADOW thread on relaunch (Shadow Chat, Req 7 + 14) so a shadow chat's
+   * history survives a restart and its thread can be reopened in the render registry (restoring
+   * inbound routing). Real-mode gated: returns an empty list in decoy/locked mode, revealing nothing
+   * (design Correctness Properties 6, 16), and before the encrypted store is open.
+   */
+  loadShadowConversations(): Promise<RehydratedShadowConversation[]>;
   /**
    * The device-local, real-PIN-gated {@link ShadowSecretStore} for Shadow Chat, backed by the
    * encrypted on-device vault so its master secret, alias key, and alias→thread mappings survive
@@ -892,51 +918,17 @@ export function createMobileController(): ChatController {
       } catch {
         return [];
       }
-      // Group persisted rows by peer, then replay them through the shared reducer so the
-      // rehydrated state is byte-for-byte what a live session would have produced (Req 6.7).
-      const byPeer = new Map<string, typeof rows>();
-      for (const row of rows) {
-        const list = byPeer.get(row.remoteUid) ?? [];
-        list.push(row);
-        byPeer.set(row.remoteUid, list);
-      }
+      // Partition persisted rows into SURFACE (seq < 1e9) and SHADOW (seq >= 1e9) and rehydrate ONLY
+      // the surface conversations here. Shadow rows are deliberately EXCLUDED so a restart can never
+      // replay a shadow message into the normal chat (Shadow Chat, Correctness Property 8); shadow
+      // threads are rehydrated separately, real-mode gated, by `loadShadowConversations`.
+      const { surfaceByPeer } = partitionPersistedRows(rows);
       const now = Date.now();
       const conversations: RehydratedConversation[] = [];
-      for (const [peerUid, peerRows] of byPeer) {
-        let state = initialConversationState('mobile');
-        let lastAt = 0;
-        // Apply oldest-first so ordering/gap detection matches live arrival semantics.
-        for (const row of [...peerRows].sort((a, b) => a.createdAt - b.createdAt)) {
-          // Skip disappearing messages already past expiry — Messaging.initPurgeSchedule erases
-          // them from the store on launch; don't flash them in the UI first (Req 4.2).
-          if (row.expiresAt !== undefined && Number.isFinite(row.expiresAt) && now >= row.expiresAt) {
-            continue;
-          }
-          lastAt = Math.max(lastAt, row.createdAt);
-          // A row still `sending` at relaunch never got its server ack (the ack timer died
-          // with the previous process), so surface it as `failed` — text retained — rather
-          // than a spinner that can never resolve.
-          const status = row.status === 'sending' ? 'failed' : row.status;
-          const event: ConversationEvent =
-            row.direction === 'in' && row.plaintext === null && status === 'delivery-error'
-              ? { type: 'inbound-delivery-error', id: row.id, seq: row.seq, remoteUid: peerUid }
-              : {
-                  type: 'message-appended',
-                  message: {
-                    id: row.id,
-                    seq: row.seq,
-                    direction: row.direction,
-                    text: row.plaintext,
-                    status,
-                    // Persisted reaction/edit/delete state, so those survive a relaunch too.
-                    ...(row.reactions !== undefined ? { reactions: row.reactions } : {}),
-                    ...(row.edited === true ? { edited: true } : {}),
-                    ...(row.deleted === true ? { deleted: true } : {}),
-                  },
-                  remoteUid: peerUid,
-                };
-          state = reduce(state, event);
-        }
+      for (const [peerUid, peerRows] of surfaceByPeer) {
+        // Replay through the shared reducer so the rehydrated state is byte-for-byte what a live
+        // session would have produced (Req 6.7).
+        let { state, lastAt } = reduceRowsToState(peerRows, { now, platform: 'mobile' });
         // Rehydrate the per-conversation disappearing-message timer (Req 4.1) and seed it into
         // Messaging (without re-notifying the peer) so messages sent this session expire too.
         const ttlMs = timers[peerUid] ?? 0;
@@ -945,6 +937,72 @@ export function createMobileController(): ChatController {
           messaging?.primeConversationTtl(peerUid, ttlMs);
         }
         conversations.push({ id: peerUid, lastAt, state });
+      }
+      return conversations;
+    },
+
+    async loadShadowConversations(): Promise<RehydratedShadowConversation[]> {
+      // Rehydrate persisted SHADOW threads on relaunch so their history survives a restart AND so the
+      // render registry can reopen them — without which an inbound shadow message arriving after a
+      // restart is dropped as an "unknown thread" (Req 7.8) and the thread looks empty. Real-mode
+      // gated: in decoy/locked mode this reveals NOTHING (returns []), exactly like every other shadow
+      // entry point (design Correctness Properties 6, 16).
+      if (keyStore === null || shadowRowThreads === null || currentAppMode !== 'real') {
+        return [];
+      }
+      // Resolve every KNOWN shadow thread's peer: active invited threads (the invite flow) plus any
+      // alias-bound thread (the /alias flow). Both map threadId -> peerUid. Failures fail closed.
+      const peerByThread = new Map<string, string>();
+      try {
+        const invited = (await shadowSecretPersistence?.loadInvitedThreads()) ?? [];
+        for (const ref of invited) {
+          if (ref.state === 'active') {
+            peerByThread.set(ref.threadId, ref.peerUid);
+          }
+        }
+      } catch {
+        // fail closed — a persistence error reveals no shadow threads
+      }
+      try {
+        const aliases = shadowSecretStore !== null ? await shadowSecretStore.listAliasEntries('real') : [];
+        for (const entry of aliases) {
+          peerByThread.set(entry.ref.threadId, entry.ref.peerUid);
+        }
+      } catch {
+        // fail closed
+      }
+      if (peerByThread.size === 0) {
+        return [];
+      }
+      let rows;
+      try {
+        rows = await keyStore.loadMessages();
+      } catch {
+        return [];
+      }
+      const rowsById = new Map(rows.map((row) => [row.id, row] as const));
+      const now = Date.now();
+      const conversations: RehydratedShadowConversation[] = [];
+      for (const [threadId, peerUid] of peerByThread) {
+        // The persisted MessageRow carries no threadId; the durable device-local row->thread
+        // association resolves which rows belong to this thread (Req 14).
+        let rowIds: string[];
+        try {
+          rowIds = await shadowRowThreads.rowIdsForThread(threadId);
+        } catch {
+          rowIds = [];
+        }
+        const threadRows = rowIds
+          .map((id) => rowsById.get(id))
+          .filter((row): row is NonNullable<typeof row> => row !== undefined);
+        // Replay through the same shared reducer as the surface path so a shadow thread renders
+        // byte-for-byte like a live one (stamp the resolved peer onto each event).
+        const { state, lastAt } = reduceRowsToState(threadRows, {
+          now,
+          platform: 'mobile',
+          remoteUid: peerUid,
+        });
+        conversations.push({ threadId, peerUid, lastAt, state });
       }
       return conversations;
     },
@@ -1196,6 +1254,10 @@ export function createDemoController(): ChatController {
       return { invalid: true };
     },
     async loadConversations(): Promise<RehydratedConversation[]> {
+      return [];
+    },
+    async loadShadowConversations(): Promise<RehydratedShadowConversation[]> {
+      // Demo controller has no encrypted vault, so there are no persisted shadow threads.
       return [];
     },
     subscribe(listener: (event: ControllerEvent) => void): () => void {
