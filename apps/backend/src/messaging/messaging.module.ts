@@ -15,11 +15,12 @@
 import { Module } from '@nestjs/common';
 
 import { DevicesModule } from '../devices';
+import { FcmPushSender } from './fcm-push-sender';
 import { InProcessSocketRegistry, LOCAL_SOCKET_REGISTRY } from './local-socket-registry';
 import { MessageRelayService } from './message-relay.service';
 import { OfflineQueueService } from './offline-queue.service';
 import { PushNotificationService } from './push-notification.service';
-import { NoopPushSender, PUSH_SENDER } from './push-sender';
+import { PUSH_SENDER } from './push-sender';
 
 @Module({
   // DevicesModule supplies DevicesService (push-token lookup) to PushNotificationService.
@@ -28,9 +29,10 @@ import { NoopPushSender, PUSH_SENDER } from './push-sender';
     MessageRelayService,
     OfflineQueueService,
     PushNotificationService,
-    // The content-free push transport. NoopPushSender keeps the pipeline green until the FCM
-    // binding lands with the mobile integration (task 6.3); swap the `useClass` then.
-    { provide: PUSH_SENDER, useClass: NoopPushSender },
+    // The content-free push transport. FcmPushSender reuses the existing Firebase Admin app
+    // (the OTP-auth project) and self-degrades to a no-op when Firebase isn't configured (e.g.
+    // CI / self-hosted without FIREBASE_* creds), so it is safe to wire unconditionally.
+    { provide: PUSH_SENDER, useClass: FcmPushSender },
     { provide: LOCAL_SOCKET_REGISTRY, useClass: InProcessSocketRegistry },
   ],
   exports: [MessageRelayService, OfflineQueueService, LOCAL_SOCKET_REGISTRY],
