@@ -145,6 +145,18 @@ export interface RehydratedShadowConversation {
   state: ConversationState;
 }
 
+/**
+ * A lightweight reference to one of the user's active shadow chats, for the real-mode shadow-chat
+ * manager (so it can be cleared/revoked without first reopening it via its `/alias`). Carries only
+ * the routing ids; the display name is resolved separately via {@link ChatController.resolvePeerName}.
+ */
+export interface ShadowChatRef {
+  /** The server-opaque shadow thread id. */
+  threadId: string;
+  /** The contact this shadow thread is with. */
+  peerUid: string;
+}
+
 export interface ChatController {
   requestOtp(e164: string): Promise<RequestOtpResult>;
   /** Confirm the OTP. `e164` is the number the code was sent to (stored as a discovery fallback). */
@@ -260,6 +272,12 @@ export interface ChatController {
    * (design Correctness Properties 6, 16), and before the encrypted store is open.
    */
   loadShadowConversations(): Promise<RehydratedShadowConversation[]>;
+  /**
+   * List the user's active shadow chats (Shadow Chat Invites, Req 6/7) for the real-mode shadow-chat
+   * manager, so each can be cleared or revoked WITHOUT first reopening it via its `/alias`. Real-mode
+   * gated: returns an empty list in decoy/locked mode, revealing nothing (Correctness Properties 6, 16).
+   */
+  listShadowChats(): Promise<ShadowChatRef[]>;
   /**
    * The device-local, real-PIN-gated {@link ShadowSecretStore} for Shadow Chat, backed by the
    * encrypted on-device vault so its master secret, alias key, and alias→thread mappings survive
@@ -648,6 +666,35 @@ export function createMobileController(): ChatController {
     activeRecipient = null;
   }
 
+  /**
+   * Resolve every KNOWN shadow thread to its peer UID — active invited threads (the invite flow) plus
+   * any alias-bound thread (the /alias flow) — as `threadId -> peerUid`. Shared by shadow rehydration
+   * and the shadow-chat manager. Real-mode gated by the callers; fail-closed (a persistence error
+   * contributes no entries) so it never reveals a shadow thread the user can't securely access.
+   */
+  async function resolveKnownShadowThreads(): Promise<Map<string, string>> {
+    const peerByThread = new Map<string, string>();
+    try {
+      const invited = (await shadowSecretPersistence?.loadInvitedThreads()) ?? [];
+      for (const ref of invited) {
+        if (ref.state === 'active') {
+          peerByThread.set(ref.threadId, ref.peerUid);
+        }
+      }
+    } catch {
+      // fail closed — a persistence error reveals no shadow threads
+    }
+    try {
+      const aliases = shadowSecretStore !== null ? await shadowSecretStore.listAliasEntries('real') : [];
+      for (const entry of aliases) {
+        peerByThread.set(entry.ref.threadId, entry.ref.peerUid);
+      }
+    } catch {
+      // fail closed
+    }
+    return peerByThread;
+  }
+
   // Restore a persisted Firebase session on launch (and react to fresh sign-in / sign-out).
   // Firebase persists auth across an app kill, so this fires with the signed-in user shortly
   // after launch — bootstrapping and surfacing the uid so the UI skips the Sign_In_Screen.
@@ -950,27 +997,7 @@ export function createMobileController(): ChatController {
       if (keyStore === null || shadowRowThreads === null || currentAppMode !== 'real') {
         return [];
       }
-      // Resolve every KNOWN shadow thread's peer: active invited threads (the invite flow) plus any
-      // alias-bound thread (the /alias flow). Both map threadId -> peerUid. Failures fail closed.
-      const peerByThread = new Map<string, string>();
-      try {
-        const invited = (await shadowSecretPersistence?.loadInvitedThreads()) ?? [];
-        for (const ref of invited) {
-          if (ref.state === 'active') {
-            peerByThread.set(ref.threadId, ref.peerUid);
-          }
-        }
-      } catch {
-        // fail closed — a persistence error reveals no shadow threads
-      }
-      try {
-        const aliases = shadowSecretStore !== null ? await shadowSecretStore.listAliasEntries('real') : [];
-        for (const entry of aliases) {
-          peerByThread.set(entry.ref.threadId, entry.ref.peerUid);
-        }
-      } catch {
-        // fail closed
-      }
+      const peerByThread = await resolveKnownShadowThreads();
       if (peerByThread.size === 0) {
         return [];
       }
@@ -1005,6 +1032,18 @@ export function createMobileController(): ChatController {
         conversations.push({ threadId, peerUid, lastAt, state });
       }
       return conversations;
+    },
+
+    async listShadowChats(): Promise<ShadowChatRef[]> {
+      // Enumerate the user's active shadow chats for the manager UI so they can be cleared/revoked
+      // WITHOUT first reopening each via its /alias. Real-mode gated: decoy/locked reveal nothing
+      // (returns []), so the manager can never expose that shadow chats exist under coercion (design
+      // Correctness Properties 6, 16).
+      if (currentAppMode !== 'real') {
+        return [];
+      }
+      const peerByThread = await resolveKnownShadowThreads();
+      return [...peerByThread.entries()].map(([threadId, peerUid]) => ({ threadId, peerUid }));
     },
 
     subscribe(listener: (event: ControllerEvent) => void): () => void {
@@ -1258,6 +1297,10 @@ export function createDemoController(): ChatController {
     },
     async loadShadowConversations(): Promise<RehydratedShadowConversation[]> {
       // Demo controller has no encrypted vault, so there are no persisted shadow threads.
+      return [];
+    },
+    async listShadowChats(): Promise<ShadowChatRef[]> {
+      // Demo controller has no encrypted vault, so there are no shadow chats to manage.
       return [];
     },
     subscribe(listener: (event: ControllerEvent) => void): () => void {

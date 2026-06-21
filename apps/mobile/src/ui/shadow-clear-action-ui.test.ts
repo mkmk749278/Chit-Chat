@@ -28,9 +28,13 @@ import path from 'node:path';
 import { test } from 'node:test';
 
 const SRC_UI = path.resolve(__dirname, '../../src/ui');
+const SRC_APP = path.resolve(__dirname, '../../src/app');
 const APP_ROOT = path.resolve(__dirname, '../..');
 const appSrc = readFileSync(path.join(APP_ROOT, 'App.tsx'), 'utf8');
 const menuSrc = readFileSync(path.join(SRC_UI, 'ConversationOverflowMenu.tsx'), 'utf8');
+const settingsSrc = readFileSync(path.join(SRC_UI, 'SettingsScreen.tsx'), 'utf8');
+const managerSrc = readFileSync(path.join(SRC_UI, 'ShadowChatManagerSheet.tsx'), 'utf8');
+const controllerSrc = readFileSync(path.join(SRC_APP, 'chat-controller.ts'), 'utf8');
 
 // (a) Container gating — Clear/Revoke shadow are offered ONLY for a shadow thread in real mode.
 
@@ -96,4 +100,44 @@ test('the overflow menu renders Clear/Revoke shadow rows when callbacks are prov
     /onRevokeShadowChat != null && \([\s\S]*?Revoke shadow chat/,
     'the menu must render the "Revoke shadow chat" row when onRevokeShadowChat is provided',
   );
+});
+
+// (e) Settings shadow-chat manager — a real-mode-only way to clear/revoke without reopening via /alias.
+
+test('controller.listShadowChats is real-mode gated', () => {
+  // The manager source of truth must reveal nothing in decoy/locked mode (Correctness Properties 6, 16).
+  assert.match(
+    controllerSrc,
+    /async listShadowChats\(\): Promise<ShadowChatRef\[\]> \{[\s\S]*?if \(currentAppMode !== 'real'\) \{\s*return \[\];/,
+    'listShadowChats must return [] outside real mode',
+  );
+});
+
+test('Settings passes onManageShadowChats ONLY in real mode', () => {
+  assert.match(
+    appSrc,
+    /onManageShadowChats=\{appMode === 'real' \? openShadowManager : undefined\}/,
+    'the Settings manager entry must be gated to real mode',
+  );
+});
+
+test('SettingsScreen renders the "Shadow chats" row ONLY when onManageShadowChats is provided', () => {
+  assert.match(
+    settingsSrc,
+    /onManageShadowChats !== undefined && \([\s\S]*?label="Shadow chats"/,
+    'the "Shadow chats" row must render only when the handler is provided',
+  );
+});
+
+test('App.tsx wires the manager sheet to the controller clear/revoke + updates local state', () => {
+  assert.match(appSrc, /controller\s*\.clearShadowChat\(threadId\)/, 'manager Clear must call controller.clearShadowChat');
+  assert.match(appSrc, /controller\s*\.revokeShadowChat\(threadId\)/, 'manager Revoke must call controller.revokeShadowChat');
+  // Revoke removes the thread from the thread set so it no longer routes / lists.
+  assert.match(appSrc, /revokeShadowChatById[\s\S]*?setShadowThreadIds\(\(prev\) => \{[\s\S]*?next\.delete\(threadId\)/, 'manager Revoke must drop the thread from shadowThreadIds');
+});
+
+test('the manager sheet renders a Clear and a Revoke action per chat through SheetModal', () => {
+  assert.match(managerSrc, /<SheetModal\b/, 'the manager must render through the SheetModal portal (top z-order)');
+  assert.match(managerSrc, /label="Clear shadow chat"[\s\S]*?onPress=\{\(\) => onClear\(chat\.threadId\)\}/, 'each chat must offer Clear');
+  assert.match(managerSrc, /label="Revoke shadow chat"[\s\S]*?onPress=\{\(\) => onRevoke\(chat\.threadId\)\}/, 'each chat must offer Revoke');
 });

@@ -36,6 +36,7 @@ import {
   type ChatController,
   type SetupState,
 } from './src/app/chat-controller';
+import { ShadowChatManagerSheet, type ShadowChatManagerEntry } from './src/ui/ShadowChatManagerSheet';
 import { createMobileShadowSearchHandler } from './src/app/shadow-search';
 import { CallsScreen } from './src/ui/CallsScreen';
 import { ChatsListScreen, type ChatSummary } from './src/ui/ChatsListScreen';
@@ -112,6 +113,10 @@ function AppShell(): React.JSX.Element {
   // list / contacts (task 8.3, Req 7.5/7.6).
   const shadowPeerRef = useRef<Map<string, string>>(new Map());
   const [shadowThreadIds, setShadowThreadIds] = useState<ReadonlySet<string>>(new Set());
+  // Shadow-chat manager (Settings → "Shadow chats"): the open sheet's entries + which thread is being
+  // cleared/revoked. Real-mode only; populated from `controller.listShadowChats()` (empty otherwise).
+  const [shadowManager, setShadowManager] = useState<ReadonlyArray<ShadowChatManagerEntry> | null>(null);
+  const [shadowManagerBusy, setShadowManagerBusy] = useState<string | null>(null);
 
   // Long-press shadow-chat creation flow (Shadow Chat, task 15.1, Requirement 11). `rowMenu` is the
   // row whose long-press overlay is open; `createSheet` is the contact a shadow chat is being created
@@ -466,6 +471,68 @@ function AppShell(): React.JSX.Element {
       controller.openConversation(ref.peerUid);
       animateNext();
       setOpenChatId(ref.threadId);
+    },
+    [controller],
+  );
+
+  // Open the Settings → "Shadow chats" manager: list the user's active shadow chats (real-mode only;
+  // the controller returns nothing otherwise) and resolve each peer's display name, so they can be
+  // cleared/revoked WITHOUT first reopening each via its /alias. A miss leaves a neutral label.
+  const openShadowManager = useCallback(() => {
+    void controller.listShadowChats().then(async (refs) => {
+      const entries = await Promise.all(
+        refs.map(async (ref) => {
+          const name = await controller.resolvePeerName(ref.peerUid).catch(() => null);
+          return { threadId: ref.threadId, name: name !== null && name.length > 0 ? name : 'Shadow chat' };
+        }),
+      );
+      setShadowManager(entries);
+    });
+  }, [controller]);
+
+  // Clear a shadow chat's local history from the manager (keeps the thread working). Mirrors the
+  // in-conversation "Clear shadow chat": purge durable rows, then reset the open view if it's showing.
+  const clearShadowChatById = useCallback(
+    (threadId: string) => {
+      setShadowManagerBusy(threadId);
+      void controller
+        .clearShadowChat(threadId)
+        .then(() => {
+          setConversations((prev) =>
+            prev.map((c) =>
+              c.id === threadId
+                ? { ...c, state: reduce(c.state, { type: 'conversation-cleared', remoteUid: threadId }) }
+                : c,
+            ),
+          );
+        })
+        .finally(() => setShadowManagerBusy(null));
+    },
+    [controller],
+  );
+
+  // Revoke a shadow chat from the manager: delete the key + history on both sides and close it, then
+  // drop it from the render registry, the thread set, the conversation list, and the manager list.
+  const revokeShadowChatById = useCallback(
+    (threadId: string) => {
+      setShadowManagerBusy(threadId);
+      void controller
+        .revokeShadowChat(threadId)
+        .then(() => {
+          shadowRegistryRef.current?.closeThread(threadId);
+          setShadowThreadIds((prev) => {
+            if (!prev.has(threadId)) {
+              return prev;
+            }
+            const next = new Set(prev);
+            next.delete(threadId);
+            return next;
+          });
+          setConversations((prev) => prev.filter((c) => c.id !== threadId));
+          setOpenChatId((cur) => (cur === threadId ? null : cur));
+          setShadowManager((prev) => (prev === null ? prev : prev.filter((e) => e.threadId !== threadId)));
+        })
+        .finally(() => setShadowManagerBusy(null));
     },
     [controller],
   );
@@ -1181,6 +1248,7 @@ function AppShell(): React.JSX.Element {
                 }
               }}
               onSignOut={signOut}
+              onManageShadowChats={appMode === 'real' ? openShadowManager : undefined}
             />
           )}
           <TabBar
@@ -1225,6 +1293,19 @@ function AppShell(): React.JSX.Element {
         onClose={() => setCreateSheet(null)}
         contactName={createSheet?.name ?? ''}
         onCreate={onCreateShadowChat}
+      />
+      <ShadowChatManagerSheet
+        visible={shadowManager !== null}
+        onClose={() => {
+          if (shadowManagerBusy === null) {
+            setShadowManager(null);
+          }
+        }}
+        theme={theme}
+        chats={shadowManager ?? []}
+        busyThreadId={shadowManagerBusy}
+        onClear={clearShadowChatById}
+        onRevoke={revokeShadowChatById}
       />
       <ShadowInviteRequestCard
         visible={activeInviteCard !== null}
