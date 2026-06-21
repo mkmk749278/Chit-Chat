@@ -1,14 +1,18 @@
 /**
  * `@chat-app/crypto` — libsignal wrapper (shared TypeScript).
  *
- * Phase 0 scope: expose the signature-verification function shape that device
- * registration depends on (Requirement 2.9). This is an intentional stub — the
- * function signature and a working implementation shape are defined here, while the
- * real libsignal Curve25519 / XEdDSA wiring lands in Phase 1.
+ * Exposes the signature-verification function that device registration depends on
+ * (Requirement 2.9). Verification is real Curve25519 / XEdDSA, delegated to the same
+ * pure-TypeScript libsignal implementation (`@privacyresearch/libsignal-protocol-typescript`)
+ * that the clients use to PRODUCE the signature (see `libsignal-puretsignal.ts`), so a
+ * signed prekey that verifies here is exactly one a peer would accept — no native addon,
+ * so this stays bundleable into the web/mobile clients too.
  *
  * The server only ever handles PUBLIC key material (Requirement 13.4); no private
  * keys are accepted, stored, or passed through this module.
  */
+
+import SignalInit from '@privacyresearch/libsignal-protocol-typescript';
 
 /**
  * Public key material accepted by the verification API. Callers may pass raw bytes
@@ -19,8 +23,40 @@
 export type KeyMaterial = Uint8Array | string;
 
 /**
- * Verifies that `signature` is a valid signature over `publicKey` (a signed prekey's
- * public key) produced by the private key paired with `identityKey`.
+ * Curve25519 byte-length invariants (libsignal DJB key format).
+ *
+ * Public keys are serialized as a 1-byte type prefix (`0x05`) + 32 key bytes = 33 bytes;
+ * the verifier also tolerates a bare 32-byte key. XEdDSA signatures are always 64 bytes.
+ */
+const PUBLIC_KEY_LENGTHS = [32, 33];
+const SIGNATURE_LENGTH = 64;
+
+/** ArrayBuffer copy of a byte view (the libsignal Curve works in `ArrayBuffer`s). */
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const copy = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(copy).set(bytes);
+  return copy;
+}
+
+/**
+ * Lazily-initialized Curve25519 engine. Initialization loads the curve25519 WASM module
+ * and is asynchronous, so we cache the in-flight promise and reuse the resolved engine for
+ * every subsequent verification.
+ */
+let curvePromise: Promise<{
+  verifySignature: (pubKey: ArrayBuffer, msg: ArrayBuffer, sig: ArrayBuffer) => boolean;
+}> | null = null;
+
+function getCurve(): Promise<{
+  verifySignature: (pubKey: ArrayBuffer, msg: ArrayBuffer, sig: ArrayBuffer) => boolean;
+}> {
+  curvePromise ??= SignalInit().then((signal) => signal.Curve);
+  return curvePromise;
+}
+
+/**
+ * Verifies that `signature` is a valid Curve25519 / XEdDSA signature over `publicKey`
+ * (a signed prekey's public key) produced by the private key paired with `identityKey`.
  *
  * Used by device registration to validate a signed prekey before persisting the
  * public prekey bundle (Requirement 2.9). A registration whose signed prekey
@@ -29,35 +65,54 @@ export type KeyMaterial = Uint8Array | string;
  * @param identityKey - the signer's PUBLIC identity key (bytes or base64 string)
  * @param publicKey   - the signed prekey PUBLIC key that was signed (bytes or base64)
  * @param signature   - the signature asserted over `publicKey` (bytes or base64)
- * @returns `true` when the signature verifies against `identityKey`, otherwise `false`
+ * @returns a promise resolving to `true` when the signature verifies against
+ *   `identityKey`, otherwise `false`
  * @throws {TypeError} if any argument is neither a `Uint8Array` nor a valid base64 string
  *
  * @remarks
- * Phase 0 stub. It enforces the structural preconditions the real implementation
- * also requires (each argument must decode to a non-empty byte sequence) and returns
- * a placeholder positive result for well-formed input. Phase 1 replaces the
- * placeholder body with libsignal's authoritative verification while keeping this
- * exact signature, so callers (e.g. `DevicesService`) need no changes.
+ * Delegates to the pure-TS libsignal Curve25519 engine — the same implementation the
+ * clients use to produce the signature — so this is authoritative, not a placeholder.
+ * Structurally impossible inputs (empty material, a non-DJB public key length, or a
+ * signature that is not 64 bytes) short-circuit to `false` without invoking the curve,
+ * and any error raised by the curve itself is treated as a verification failure rather
+ * than propagated, so a malformed-but-base64 key can never produce a 500.
+ *
+ * Note the underlying sync curve API uses inverted C semantics — it returns `0`/`false`
+ * for a VALID signature — so the result is negated here (locked by the round-trip tests).
  */
-export function verifySignedPreKeySignature(
+export async function verifySignedPreKeySignature(
   identityKey: KeyMaterial,
   publicKey: KeyMaterial,
   signature: KeyMaterial,
-): boolean {
+): Promise<boolean> {
   const identityBytes = toBytes(identityKey, 'identityKey');
   const publicKeyBytes = toBytes(publicKey, 'publicKey');
   const signatureBytes = toBytes(signature, 'signature');
 
-  // Structurally invalid material can never be a valid signed prekey signature.
-  if (identityBytes.length === 0 || publicKeyBytes.length === 0 || signatureBytes.length === 0) {
+  // Structurally invalid material can never be a valid signed prekey signature. Reject it
+  // up front so the curve only ever sees inputs it can process.
+  if (publicKeyBytes.length === 0) {
+    return false;
+  }
+  if (!PUBLIC_KEY_LENGTHS.includes(identityBytes.length)) {
+    return false;
+  }
+  if (signatureBytes.length !== SIGNATURE_LENGTH) {
     return false;
   }
 
-  // TODO(phase-1): replace this placeholder with real libsignal verification
-  // (Curve25519 / XEdDSA) against `identityKey`. Phase 0 intentionally returns a
-  // placeholder positive result for structurally well-formed public key material so
-  // device registration can be wired end-to-end without the native bindings.
-  return true;
+  const curve = await getCurve();
+  try {
+    // The sync curve returns `true` for an INVALID signature and `false` for a valid one
+    // (inverted C return convention), so a valid signature is the negation.
+    return !curve.verifySignature(
+      toArrayBuffer(identityBytes),
+      toArrayBuffer(publicKeyBytes),
+      toArrayBuffer(signatureBytes),
+    );
+  } catch {
+    return false;
+  }
 }
 
 /**

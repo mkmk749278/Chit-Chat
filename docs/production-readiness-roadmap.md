@@ -19,7 +19,7 @@
 | 1 | Offline push delivery (FCM) end-to-end | P0 | L | ⬜ |
 | 2 | Shadow chat UX (invite model is invisible/asymmetric) | P0 | M | 🟡 |
 | 3 | Attachments / media (send + receive) | P0 | L | 🟡 |
-| 4 | Signed-prekey signature verification is a stub | P0 | S | ⬜ |
+| 4 | Signed-prekey signature verification is a stub | P0 | S | ✅ |
 | 5 | Connection reliability + offline UX (the "Connecting…" problem) | P1 | M | 🟡 |
 | 6 | In-app / foreground new-message notifications | P1 | M | ⬜ |
 | 7 | Contact/profile polish (avatars, names on shadow headers) | P2 | M | 🟡 |
@@ -96,17 +96,26 @@ media variant (signature feature 6).
 
 **Effort:** L.
 
-### 4. Signed-prekey signature verification is a stub
-**Evidence:** `verifySignedPreKeySignature` in `packages/crypto/src/index.ts` is a **Phase-0 stub
-that returns `true` for any structurally-valid input** (`// TODO(phase-1): replace … with real
-libsignal verification`). For a privacy-first app this is a real integrity gap if it's on the device
--registration path.
+### 4. Signed-prekey signature verification is a stub — ✅ DONE
+**Was:** `verifySignedPreKeySignature` in `packages/crypto/src/index.ts` was a Phase-0 stub that
+returned `true` for any structurally-valid input — a real integrity gap on the device-registration
+path.
 
-**What's needed:** confirm where it's used server-side; replace with real Curve25519/XEdDSA
-verification (the pure-TS libsignal engine already exists for the client —
-`libsignal-puretsignal.ts`). Reject registrations whose signed prekey fails verification.
+**Now:** `verifySignedPreKeySignature` performs real **Curve25519 / XEdDSA** verification, delegating
+to the same pure-TS libsignal implementation (`@privacyresearch/libsignal-protocol-typescript`) the
+clients use to *produce* the signature, so a signed prekey that verifies server-side is exactly one a
+peer would accept — and no native addon is pulled into the web/mobile bundles. The function is now
+async (the curve init loads a WASM module); `SignedPreKeyVerificationPipe` awaits it, still rejecting
+a bad signature with HTTP 400 **before** any database access (Req 2.9). It short-circuits to `false`
+on structurally impossible input (non-DJB key length, non-64-byte signature) and treats any
+curve-internal error as a verification failure rather than a 500.
 
-**Effort:** S–M. **Sev P0** because it's security-load-bearing.
+> ⚠️ Polarity note for maintainers: the underlying sync curve returns `0`/`false` for a **valid**
+> signature (inverted C convention), so the result is **negated** in `index.ts`. Round-trip tests in
+> `index.test.ts` (genuine sig → `true`; tampered sig / wrong identity key / tampered prekey → `false`)
+> lock this in — do not "simplify" away the negation.
+
+**Effort:** S. **Sev P0** because it's security-load-bearing.
 
 ---
 
@@ -150,7 +159,7 @@ message search, reply/quote, forward, or link previews. **Effort:** M (per item)
 ---
 
 ## Recommended delivery order
-1. **#4 prekey verification** (S, security) — fast and load-bearing.
+1. ~~**#4 prekey verification** (S, security) — fast and load-bearing.~~ ✅ **DONE.**
 2. **#1 offline push (FCM)** (L) — the single biggest "feels like a real app" win.
 3. **#2 shadow chat UX** (M) — closes the recurring complaint loop.
 4. **#3 attachments** (L) — table-stakes media.
