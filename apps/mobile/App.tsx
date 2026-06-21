@@ -124,11 +124,6 @@ function AppShell(): React.JSX.Element {
   // Shadow Chat Invites (design Component A): inbound Accept/Decline request cards, keyed by inviteId.
   // Folded from the controller's onShadowInvite stream; a card auto-dismisses on `invite-resolved`.
   const [inviteCards, setInviteCards] = useState<ReadonlyMap<string, ShadowInviteCard>>(new Map());
-  // When the recipient accepts a HIDDEN invite, they set a secret (alias to re-open + optional PIN)
-  // via this sheet before the thread is bound — so a hidden shadow chat can always be re-entered.
-  const [acceptSheet, setAcceptSheet] = useState<
-    { inviteId: string; routing: RecipientRouting; peerUid: string; peerName: string } | null
-  >(null);
   const [pinPrompt, setPinPrompt] = useState<{
     verify: (pin: string) => Promise<boolean>;
     resolve: (opened: boolean) => void;
@@ -473,25 +468,19 @@ function AppShell(): React.JSX.Element {
       alias?: string,
       pin?: string,
     ): Promise<void> => {
-      try {
-        if (alias !== undefined) {
-          await controller.provisionShadowContext();
-        }
-        const threadId = await controller.acceptShadowInvite(inviteId, routing, alias, pin);
-        if (threadId === null) {
-          throw new Error('The invitation could not be set up — it may have expired.');
-        }
-        shadowRegistryRef.current?.openShadowThread(threadId, peerUid);
-        openShadowThreadLocal({ threadId, peerUid }, peerName);
-        if (alias !== undefined) {
-          Alert.alert('Shadow chat ready', `Re-open it anytime by searching "${alias}" in the search bar.`);
-        }
-      } catch (err) {
-        Alert.alert(
-          'Could not open shadow chat',
-          err instanceof Error ? err.message : 'Something went wrong setting up the shadow chat.',
-        );
-        throw err instanceof Error ? err : new Error('accept failed');
+      // The caller (the invite card) shows any failure inline and keeps the sheet open, so we let the
+      // error propagate rather than alerting here.
+      if (alias !== undefined) {
+        await controller.provisionShadowContext();
+      }
+      const threadId = await controller.acceptShadowInvite(inviteId, routing, alias, pin);
+      if (threadId === null) {
+        throw new Error('The invitation could not be set up — it may have expired.');
+      }
+      shadowRegistryRef.current?.openShadowThread(threadId, peerUid);
+      openShadowThreadLocal({ threadId, peerUid }, peerName);
+      if (alias !== undefined) {
+        Alert.alert('Shadow chat ready', `Re-open it anytime by searching "${alias}" in the search bar.`);
       }
     },
     [controller, openShadowThreadLocal],
@@ -1171,44 +1160,20 @@ function AppShell(): React.JSX.Element {
         contactName={createSheet?.name ?? ''}
         onCreate={onCreateShadowChat}
       />
-      {/* Recipient: set a secret (alias to re-open + optional PIN) when accepting a HIDDEN invite. */}
-      <ShadowChatCreateSheet
-        visible={acceptSheet !== null}
-        onClose={() => setAcceptSheet(null)}
-        contactName={acceptSheet?.peerName ?? ''}
-        title="Set a secret to re-open this shadow chat"
-        hint="This hidden chat won’t appear in your chat list. Choose an alias to re-open it later by searching, and an optional PIN to lock it."
-        submitLabel="Accept shadow chat"
-        onCreate={async (alias, pin) => {
-          const sheet = acceptSheet;
-          if (sheet === null) {
-            return;
-          }
-          await acceptInviteWithSecret(sheet.inviteId, sheet.routing, sheet.peerUid, sheet.peerName, alias, pin);
-          setAcceptSheet(null);
-        }}
-      />
       <ShadowInviteRequestCard
         visible={activeInviteCard !== null}
         theme={theme}
         peerName={activeInvitePeerName}
         {...(activeInviteCard?.label !== undefined ? { label: activeInviteCard.label } : {})}
-        onAccept={(routing) => {
+        onAccept={async (routing, alias, pin) => {
           const card = activeInviteCard;
           if (card === null) {
             return;
           }
-          const peerName = activeInvitePeerName;
-          // Dismiss the request card immediately.
+          // Accept (with the secret for a hidden thread). A failure throws back to the card, which
+          // keeps the sheet open and shows the reason inline; on success we dismiss the card.
+          await acceptInviteWithSecret(card.inviteId, routing, card.peerUid, activeInvitePeerName, alias, pin);
           setInviteCards((prev) => reduceInviteCards(prev, { type: 'invite-resolved', inviteId: card.inviteId, reason: 'accepted' }));
-          if (routing === 'hidden') {
-            // A HIDDEN chat is excluded from the chat list, so the recipient MUST set a secret (an
-            // alias to re-open via search, plus an optional PIN) or it could never be re-entered.
-            setAcceptSheet({ inviteId: card.inviteId, routing, peerUid: card.peerUid, peerName });
-          } else {
-            // MERGE shows in the main chat list, so no secret is needed to find it again.
-            void acceptInviteWithSecret(card.inviteId, routing, card.peerUid, peerName);
-          }
         }}
         onDecline={() => {
           const card = activeInviteCard;
