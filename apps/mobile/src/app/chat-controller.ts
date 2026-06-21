@@ -277,7 +277,7 @@ export interface ChatController {
     routing: RecipientRouting,
     alias?: string,
     pin?: string,
-  ): Promise<boolean>;
+  ): Promise<string | null>;
   /** Decline an inbound shadow invite; persists no shadow data and auto-removes the request card. */
   declineShadowInvite(inviteId: string): Promise<void>;
   /**
@@ -295,6 +295,13 @@ export interface ChatController {
    * `invite-accepted` / `invite-resolved` (dismiss it), `thread-revoked` (remove the thread).
    */
   onShadowInvite(listener: (event: ShadowInviteEvent) => void): () => void;
+  /**
+   * Tell the controller the current resolved App-Lock mode (`real` / `decoy` / `null`). Shadow Chat
+   * Invites actions are gated on this; the shell calls it whenever its app mode changes — including
+   * the no-PIN case where the app runs in `real` mode WITHOUT an unlock — so the coordinator is never
+   * left inert in real mode. Without this, `createShadowInvite` would silently no-op (no invite sent).
+   */
+  setActiveAppMode(mode: AppMode | null): void;
   subscribe(listener: (event: ControllerEvent) => void): () => void;
   /**
    * Subscribe to sign-in state. Fires with the signed-in UID when Firebase restores a
@@ -989,9 +996,13 @@ export function createMobileController(): ChatController {
       routing: RecipientRouting,
       alias?: string,
       pin?: string,
-    ): Promise<boolean> {
+    ): Promise<string | null> {
       const ref = await shadowInviteCoordinator?.acceptInvite(inviteId, routing, alias, pin);
-      return ref != null;
+      return ref != null ? ref.threadId : null;
+    },
+
+    setActiveAppMode(mode: AppMode | null): void {
+      currentAppMode = mode;
     },
 
     async declineShadowInvite(inviteId: string): Promise<void> {
@@ -1203,8 +1214,8 @@ export function createDemoController(): ChatController {
     async createShadowInvite(): Promise<{ inviteId: string; threadId: string } | null> {
       return null;
     },
-    async acceptShadowInvite(): Promise<boolean> {
-      return false;
+    async acceptShadowInvite(): Promise<string | null> {
+      return null;
     },
     async declineShadowInvite(): Promise<void> {
       // no-op
@@ -1217,6 +1228,9 @@ export function createDemoController(): ChatController {
     },
     onShadowInvite(): () => void {
       return () => undefined;
+    },
+    setActiveAppMode(): void {
+      // no-op (demo controller has no coordinator)
     },
     onAuthStateChanged(): () => void {
       return () => undefined;

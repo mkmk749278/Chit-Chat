@@ -259,10 +259,12 @@ function AppShell(): React.JSX.Element {
   // Shadow Chat Invites: fold the lifecycle event stream into the visible request-card set. Only an
   // `invite-received` (emitted by the coordinator in real mode only) adds a card; `invite-resolved`
   // removes it, so the card auto-dismisses with no residue. Inert in decoy/locked (no event fires).
-  useEffect(
-    () => controller.onShadowInvite((event) => setInviteCards((prev) => reduceInviteCards(prev, event))),
-    [controller],
-  );
+  // Keep the controller's shadow-invite gate in sync with the resolved app mode. CRITICAL: in the
+  // no-PIN case the app enters `real` mode WITHOUT an unlock call, so without this the coordinator
+  // would stay inert and `createShadowInvite` would silently send nothing.
+  useEffect(() => {
+    controller.setActiveAppMode(appMode);
+  }, [controller, appMode]);
   // The single request card currently shown (the oldest pending invite) and its inviter's name.
   const activeInviteCard: ShadowInviteCard | null = [...inviteCards.values()][0] ?? null;
   const activeInvitePeerName =
@@ -450,6 +452,33 @@ function AppShell(): React.JSX.Element {
     [controller],
   );
 
+  // Shadow Chat Invites lifecycle: fold events into the request-card set, and on Accept open the now
+  // -converged thread in THIS app's render registry (the coordinator opened it in its own lifecycle
+  // registry) so messages route; on revoke, drop the thread. Defined after `openShadowThreadLocal`.
+  useEffect(
+    () =>
+      controller.onShadowInvite((event) => {
+        setInviteCards((prev) => reduceInviteCards(prev, event));
+        if (event.type === 'invite-accepted') {
+          // INVITER side: the recipient accepted — surface the thread so the inviter can chat.
+          shadowRegistryRef.current?.openShadowThread(event.threadId, event.peerUid);
+          openShadowThreadLocal({ threadId: event.threadId, peerUid: event.peerUid });
+        }
+        if (event.type === 'thread-revoked') {
+          const threadId = event.threadId;
+          shadowRegistryRef.current?.closeThread(threadId);
+          setShadowThreadIds((prev) => {
+            const next = new Set(prev);
+            next.delete(threadId);
+            return next;
+          });
+          setConversations((prev) => prev.filter((c) => c.id !== threadId));
+          setOpenChatId((cur) => (cur === threadId ? null : cur));
+        }
+      }),
+    [controller, openShadowThreadLocal],
+  );
+
   // Bridge the search handler's off-thread PIN re-entry (Req 12.3) to the modal prompt: the handler
   // calls this with a `verify(pin)` closure; we surface the prompt and resolve the handler's promise
   // once the user verifies (true) or dismisses (false). Verification runs inside the prompt behind
@@ -493,41 +522,36 @@ function AppShell(): React.JSX.Element {
     [appMode, controller, onRevealSearch, openShadowThreadLocal, promptForPin],
   );
 
-  // Long-press → "Shadow chat" → creation sheet confirm (Shadow Chat, Requirement 11.6, 11.7). In
-  // real mode only: ensure the device-local shadow secrets exist, bind the alias-discriminated
-  // thread (hash-only) durably through the store, open the (hidden) thread in the registry, and show
-  // it — WITHOUT sending any message, advancing any surface sequence, or mutating the contact's
-  // surface conversation. Throws on failure so the sheet surfaces a generic inline message.
+  // Long-press → "Shadow chat" → creation sheet confirm (Shadow Chat Invites, Req 1.1, 1.3). In real
+  // mode only: SEND A CONSENT-BASED INVITE to the contact, who receives an Accept/Decline card. The
+  // two-party shadow thread converges on a shared key and opens on BOTH sides only after Accept (this
+  // side opens it on the `invite-accepted` event), so nothing is shown or sent into the surface chat
+  // here. The optional name becomes the invite's local handle + label. Throws on failure so the sheet
+  // surfaces a generic inline message.
   const onCreateShadowChat = useCallback(
     async (alias: string, pin?: string): Promise<void> => {
       const target = createSheet;
       if (appMode !== 'real' || target === null) {
         throw new Error('Shadow chat is unavailable right now.');
       }
-      const store = controller.getShadowSecretStore();
-      const myUid = controller.getUid() ?? uid;
-      if (store === null || myUid === null) {
-        throw new Error('Secure storage is still setting up. Try again in a moment.');
-      }
-      // Provision the Master_Secret / Alias_Key once (no-op if already provisioned) so bindAlias has
-      // a context to derive from (Req 11.6); secrets stay in the encrypted vault (Req 9.1, 9.5).
-      // A `false` result means the encrypted store is not open yet (setup still running) — a
-      // distinct, recoverable "not ready" condition rather than a derivation/persistence failure.
+      // Provision the device-local Alias_Key once (no-op if already provisioned) so the invite's
+      // optional local alias handle can be hashed and stored (the shared thread key itself is minted
+      // by the coordinator); secrets stay in the encrypted vault (Req 9.1, 9.5).
       const provisioned = await controller.provisionShadowContext();
       if (!provisioned) {
         throw new Error('Secure storage is still setting up. Try again in a moment.');
       }
-      const ref = await store.bindAlias('real', alias, target.peerUid, myUid, pin);
-      if (ref === null) {
-        // Secrets were not released (not real mode, or provisioning did not persist) — distinct
-        // from a thrown derivation/persistence error, which propagates with its own message.
-        throw new Error('Shadow chat could not be set up: secure storage is unavailable.');
+      const pending = await controller.createShadowInvite(target.peerUid, alias, pin);
+      if (pending === null) {
+        throw new Error('Shadow chat invite could not be sent right now.');
       }
-      shadowRegistryRef.current?.openShadowThread(ref.threadId, ref.peerUid);
-      openShadowThreadLocal(ref, target.name);
       setCreateSheet(null);
+      Alert.alert(
+        'Invitation sent',
+        `${target.name} will get a request to start a shadow chat. It opens here once they accept.`,
+      );
     },
-    [appMode, controller, uid, createSheet, openShadowThreadLocal],
+    [appMode, controller, createSheet],
   );
 
   // Open the row long-press overlay (Req 11.1). The menu offers "Shadow chat" only in real mode.
@@ -1091,22 +1115,10 @@ function AppShell(): React.JSX.Element {
           const row = rowMenu;
           setRowMenu(null);
           if (row !== null) {
+            // Opens the sheet to (optionally) name the chat, then SENDS AN INVITE (Req 1.1).
             setCreateSheet({ peerUid: row.id, name: row.name });
           }
         }}
-        onShadowInvite={
-          rowMenu?.kind === 'contact'
-            ? () => {
-                const row = rowMenu;
-                setRowMenu(null);
-                if (row !== null) {
-                  // Consent-based invite (Req 1.1): the recipient gets an Accept/Decline card. The
-                  // coordinator is real-mode gated, so this is a no-op in decoy/locked.
-                  void controller.createShadowInvite(row.id);
-                }
-              }
-            : undefined
-        }
       />
       <ShadowChatCreateSheet
         visible={createSheet !== null}
@@ -1123,7 +1135,13 @@ function AppShell(): React.JSX.Element {
           const card = activeInviteCard;
           if (card !== null) {
             setInviteCards((prev) => reduceInviteCards(prev, { type: 'invite-resolved', inviteId: card.inviteId, reason: 'accepted' }));
-            void controller.acceptShadowInvite(card.inviteId, routing);
+            // RECIPIENT side: accept, then open the converged thread for rendering and show it.
+            void controller.acceptShadowInvite(card.inviteId, routing).then((threadId) => {
+              if (threadId !== null) {
+                shadowRegistryRef.current?.openShadowThread(threadId, card.peerUid);
+                openShadowThreadLocal({ threadId, peerUid: card.peerUid }, activeInvitePeerName);
+              }
+            });
           }
         }}
         onDecline={() => {
