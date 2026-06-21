@@ -41,6 +41,12 @@ export interface ShadowChatCreateSheetProps {
    * generic inline failure and leaves the sheet open.
    */
   onCreate: (alias: string, pin?: string) => Promise<void>;
+  /** Sheet title; defaults to "New shadow chat" (override e.g. for the Accept flow). */
+  title?: string;
+  /** Explanatory hint under the title; defaults to the new-chat copy. */
+  hint?: string;
+  /** Primary button label; defaults to "Create shadow chat". */
+  submitLabel?: string;
 }
 
 /** The alias + optional-PIN creation sheet. See the module doc. */
@@ -49,6 +55,9 @@ export function ShadowChatCreateSheet({
   onClose,
   contactName,
   onCreate,
+  title = 'New shadow chat',
+  hint,
+  submitLabel = 'Create shadow chat',
 }: ShadowChatCreateSheetProps): React.JSX.Element {
   const t = useTheme();
   const [alias, setAlias] = useState('');
@@ -107,10 +116,10 @@ export function ShadowChatCreateSheet({
 
   return (
     <SheetModal visible={visible} onClose={close} theme={t}>
-      <Text style={[sheetStyles.sheetTitle, { color: t.text }]}>New shadow chat</Text>
+      <Text style={[sheetStyles.sheetTitle, { color: t.text }]}>{title}</Text>
       <Text style={[sheetStyles.sheetHint, { color: t.subtext }]}>
-        A hidden conversation with {contactName}. Re-enter it later by typing its alias in the search
-        bar. Nothing about it appears in your chat list.
+        {hint ??
+          `A hidden conversation with ${contactName}. Re-enter it later by typing its alias in the search bar. Nothing about it appears in your chat list.`}
       </Text>
 
       <Text style={[styles.label, { color: t.faint }]}>ALIAS</Text>
@@ -164,7 +173,7 @@ export function ShadowChatCreateSheet({
         {busy ? (
           <ActivityIndicator color={t.onBrand} />
         ) : (
-          <Text style={[styles.createText, { color: t.onBrand }]}>Create shadow chat</Text>
+          <Text style={[styles.createText, { color: t.onBrand }]}>{submitLabel}</Text>
         )}
       </Pressable>
     </SheetModal>
