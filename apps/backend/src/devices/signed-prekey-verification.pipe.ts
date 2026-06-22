@@ -28,19 +28,20 @@ export const INVALID_SIGNED_PREKEY_SIGNATURE_MESSAGE = 'invalid signed prekey si
 
 @Injectable()
 export class SignedPreKeyVerificationPipe
-  implements PipeTransform<RegisterDeviceDto, RegisterDeviceDto>
+  implements PipeTransform<RegisterDeviceDto, Promise<RegisterDeviceDto>>
 {
   /**
    * Verifies the signed prekey signature against the supplied public identity key and
-   * returns the unchanged DTO on success.
+   * returns the unchanged DTO on success. Async because the libsignal verification initializes
+   * the Curve25519 wrapper lazily; NestJS awaits an async pipe before the handler runs.
    *
    * @throws {BadRequestException} (HTTP 400) when the signature does not verify, so the
    * request is rejected before any database access.
    */
-  transform(value: RegisterDeviceDto): RegisterDeviceDto {
+  async transform(value: RegisterDeviceDto): Promise<RegisterDeviceDto> {
     let verified: boolean;
     try {
-      verified = verifySignedPreKeySignature(
+      verified = await verifySignedPreKeySignature(
         value.identityKey,
         value.signedPreKey.publicKey,
         value.signedPreKey.signature,

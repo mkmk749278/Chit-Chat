@@ -113,15 +113,44 @@ const decodeSession = (bytes: Uint8Array): string => new TextDecoder().decode(by
 // its default async initializer (which builds the Curve25519 wrapper); init once and cache.
 // ---------------------------------------------------------------------------
 
-let curvePromise: Promise<{
+interface CurveApi {
   calculateSignature: (privKey: ArrayBuffer, message: ArrayBuffer) => ArrayBuffer | Promise<ArrayBuffer>;
-}> | null = null;
+  // NOTE the INVERTED C-style result: the underlying curve25519 `verify` (and thus this
+  // `Curve.verifySignature`) returns `true` when the signature is INVALID and `false` when it is
+  // VALID (see `curve-wrapper.js` `verify` / its own `signatureIsValid = !verify`). It throws on
+  // malformed key/sig lengths. {@link verifyCurveSignature} normalises this to a sane boolean.
+  verifySignature: (pubKey: ArrayBuffer, msg: ArrayBuffer, sig: ArrayBuffer) => boolean;
+}
 
-async function getCurve(): Promise<{
-  calculateSignature: (privKey: ArrayBuffer, message: ArrayBuffer) => ArrayBuffer | Promise<ArrayBuffer>;
-}> {
-  curvePromise ??= SignalInit().then((signal) => signal.Curve);
+let curvePromise: Promise<CurveApi> | null = null;
+
+async function getCurve(): Promise<CurveApi> {
+  curvePromise ??= SignalInit().then((signal) => signal.Curve as unknown as CurveApi);
   return curvePromise;
+}
+
+/**
+ * Verify a Curve25519/XEdDSA signature over `message` by the private key paired with `pubKey`
+ * (libsignal's `Curve.verifySignature`). Returns `true` IFF the signature is valid; `false` for an
+ * invalid signature, malformed key/signature material, or any underlying error — it never throws — so
+ * callers (e.g. device registration) can treat verification as a simple boolean gate.
+ *
+ * IMPORTANT: the library's `verifySignature` is inverted (it returns `true` for an INVALID signature),
+ * so the signature is valid exactly when it returns a falsy value — mirroring the library's own
+ * `signatureIsValid = !verify`. A thrown result (malformed input) is treated as not verified.
+ */
+export async function verifyCurveSignature(
+  pubKey: Uint8Array,
+  message: Uint8Array,
+  signature: Uint8Array,
+): Promise<boolean> {
+  try {
+    const curve = await getCurve();
+    const reportedInvalid = curve.verifySignature(ab(pubKey), ab(message), ab(signature));
+    return reportedInvalid === false; // inverted convention: falsy ⇒ VALID
+  } catch {
+    return false; // malformed key/signature length, or any underlying error ⇒ not verified
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -10,6 +10,8 @@
  * keys are accepted, stored, or passed through this module.
  */
 
+import { verifyCurveSignature } from './libsignal-puretsignal';
+
 /**
  * Public key material accepted by the verification API. Callers may pass raw bytes
  * (`Uint8Array`, including a Node `Buffer`) or a base64-encoded string. Base64 is
@@ -19,31 +21,30 @@
 export type KeyMaterial = Uint8Array | string;
 
 /**
- * Verifies that `signature` is a valid signature over `publicKey` (a signed prekey's
- * public key) produced by the private key paired with `identityKey`.
+ * Verifies that `signature` is a valid Curve25519/XEdDSA signature over `publicKey` (a signed
+ * prekey's public key) produced by the private key paired with `identityKey`.
  *
- * Used by device registration to validate a signed prekey before persisting the
- * public prekey bundle (Requirement 2.9). A registration whose signed prekey
- * signature fails verification is rejected before any database access.
+ * Used by device registration to validate a signed prekey before persisting the public prekey
+ * bundle (Requirement 2.9): a registration whose signed prekey signature fails verification is
+ * rejected before any database access. This is the authoritative check — it delegates to libsignal's
+ * `Curve.verifySignature` ({@link verifyCurveSignature}) rather than trusting the client.
  *
  * @param identityKey - the signer's PUBLIC identity key (bytes or base64 string)
  * @param publicKey   - the signed prekey PUBLIC key that was signed (bytes or base64)
  * @param signature   - the signature asserted over `publicKey` (bytes or base64)
- * @returns `true` when the signature verifies against `identityKey`, otherwise `false`
+ * @returns a promise resolving `true` when the signature verifies against `identityKey`, else `false`
  * @throws {TypeError} if any argument is neither a `Uint8Array` nor a valid base64 string
  *
  * @remarks
- * Phase 0 stub. It enforces the structural preconditions the real implementation
- * also requires (each argument must decode to a non-empty byte sequence) and returns
- * a placeholder positive result for well-formed input. Phase 1 replaces the
- * placeholder body with libsignal's authoritative verification while keeping this
- * exact signature, so callers (e.g. `DevicesService`) need no changes.
+ * Structural preconditions (each argument must decode to a non-empty byte sequence) are enforced
+ * before the cryptographic check; empty material can never be a valid signature, so it short-circuits
+ * to `false`. A malformed signature/key that decodes but does not verify also yields `false`.
  */
-export function verifySignedPreKeySignature(
+export async function verifySignedPreKeySignature(
   identityKey: KeyMaterial,
   publicKey: KeyMaterial,
   signature: KeyMaterial,
-): boolean {
+): Promise<boolean> {
   const identityBytes = toBytes(identityKey, 'identityKey');
   const publicKeyBytes = toBytes(publicKey, 'publicKey');
   const signatureBytes = toBytes(signature, 'signature');
@@ -53,11 +54,9 @@ export function verifySignedPreKeySignature(
     return false;
   }
 
-  // TODO(phase-1): replace this placeholder with real libsignal verification
-  // (Curve25519 / XEdDSA) against `identityKey`. Phase 0 intentionally returns a
-  // placeholder positive result for structurally well-formed public key material so
-  // device registration can be wired end-to-end without the native bindings.
-  return true;
+  // Authoritative verification: the signature must be over the signed prekey's PUBLIC key, made by
+  // the private key paired with the PUBLIC identity key (libsignal Curve25519/XEdDSA).
+  return verifyCurveSignature(identityBytes, publicKeyBytes, signatureBytes);
 }
 
 /**
