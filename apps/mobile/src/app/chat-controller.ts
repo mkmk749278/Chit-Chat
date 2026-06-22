@@ -56,6 +56,7 @@ import {
   type KeyStore,
   type MessageTarget,
   type Messaging,
+  type OutgoingAttachment,
   type RecipientRouting,
   type RegistrationResult,
   type RowThreadAssociation,
@@ -72,6 +73,7 @@ import type { PresenceResponse, WhoAmIResponse } from '@chat-app/types';
 import { FirebaseAuthAdapter } from '../auth';
 import { API_BASE_URL, REGISTER_URL, WS_URL } from '../api/api-config';
 import {
+  createBlobStore,
   createDirectoryClient,
   createPreKeyClaimClient,
   createPushTokenClient,
@@ -193,6 +195,15 @@ export interface ChatController {
   openConversation(recipientUid: string): void;
   /** Send `plaintext` to the currently-open conversation (see {@link openConversation}). */
   send(plaintext: string, options?: { viewOnce?: boolean; threadId?: string }): Promise<void>;
+  /**
+   * Send an end-to-end encrypted attachment (e.g. a photo) to the currently-open conversation (Req
+   * 7). The decrypted bytes are encrypted locally under a fresh per-attachment key and only the
+   * ciphertext is uploaded to the blob store; the key rides the E2E payload. Optimistically renders a
+   * `sending` row like {@link send} and never throws for an expected delivery problem (offline,
+   * upload failure) — those surface as a `failed` message. Pass `options.threadId` to route into the
+   * open shadow thread (mirrors {@link send}); absent ⇒ surface chat.
+   */
+  sendAttachment(content: OutgoingAttachment, options?: { threadId?: string }): Promise<void>;
   /**
    * Mark a view-once message as displayed: purge it from the store and remove it from the UI so
    * it cannot be re-opened (Req 4.3). `id` is the message's stable row id.
@@ -630,6 +641,11 @@ export function createMobileController(): ChatController {
         recordRow: (rowId: string, threadId: string) => shadowRowThreads?.record(rowId, threadId),
         codec: createEnvelopeCodec(),
         keyClaimer: createPreKeyClaimClient(httpClient, () => authService.getCurrentToken(), API_BASE_URL),
+        // E2E attachments (Req 7): the orchestrator encrypts media locally and moves ONLY the
+        // ciphertext through this blob store (`POST/GET /api/blobs`); the per-attachment key rides
+        // the encrypted message payload, never the store. Absent ⇒ attachments degrade to a local
+        // `failed` row, so wiring it is what turns on send/receive of photos.
+        blobs: createBlobStore(httpClient, () => authService.getCurrentToken(), API_BASE_URL),
         sender: {
           resolveSender: async () => {
             const deviceId = await store.loadDeviceId();
@@ -843,6 +859,19 @@ export function createMobileController(): ChatController {
       // ⇒ ordinary surface send, byte-for-byte as before. The shared Messaging already supports this
       // option, so this is a pure passthrough (no wire/port change).
       await messaging.send(activeRecipient, plaintext, options);
+    },
+
+    async sendAttachment(
+      content: OutgoingAttachment,
+      options?: { threadId?: string },
+    ): Promise<void> {
+      if (messaging === null || activeRecipient === null) {
+        return;
+      }
+      // Pure passthrough to the shared orchestrator, mirroring `send`: it owns the encrypt → upload
+      // ciphertext → optimistic row → transmit lifecycle, and `options.threadId` routes into the
+      // open shadow thread when present.
+      await messaging.sendAttachment(activeRecipient, content, options);
     },
 
     async markViewed(id: string): Promise<void> {
@@ -1272,6 +1301,9 @@ export function createDemoController(): ChatController {
     async send(): Promise<void> {
       // No transport in the demo controller; the container's optimistic append is the
       // only visible effect.
+    },
+    async sendAttachment(): Promise<void> {
+      // No transport/blob store in the demo controller.
     },
     async markViewed(): Promise<void> {
       // No store in the demo controller.

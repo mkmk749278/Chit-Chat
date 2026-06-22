@@ -38,6 +38,7 @@ import {
 } from './src/app/chat-controller';
 import { ShadowChatManagerSheet, type ShadowChatManagerEntry } from './src/ui/ShadowChatManagerSheet';
 import { createMobileShadowSearchHandler } from './src/app/shadow-search';
+import { pickImageAttachment } from './src/media/image-picker';
 import { CallsScreen } from './src/ui/CallsScreen';
 import { ChatsListScreen, type ChatSummary } from './src/ui/ChatsListScreen';
 import { AppLockScreen } from './src/ui/AppLockScreen';
@@ -941,6 +942,32 @@ function AppShell(): React.JSX.Element {
     [conversations, controller, onComposerChange],
   );
 
+  // Pick + send an end-to-end encrypted photo (Req 7). The native picker returns the decrypted bytes;
+  // the controller owns the encrypt → upload-ciphertext → optimistic row lifecycle (the resulting
+  // `message-appended`/status events flow back through the subscription). Mirror `onSend`'s shadow
+  // handling: a shadow thread sends WITH its `threadId`, a surface chat passes none.
+  const onAttach = useCallback(() => {
+    const target = openChatRef.current;
+    if (target === null) {
+      return;
+    }
+    void (async () => {
+      try {
+        const attachment = await pickImageAttachment();
+        if (attachment === null) {
+          return; // user cancelled, or nothing readable was picked
+        }
+        const threadId = shadowPeerRef.current.has(target) ? target : undefined;
+        await controller.sendAttachment(
+          attachment,
+          threadId !== undefined ? { threadId } : undefined,
+        );
+      } catch (err) {
+        Alert.alert('Could not attach photo', err instanceof Error ? err.message : 'Please try again.');
+      }
+    })();
+  }, [controller]);
+
   // A view-once message was displayed: purge it (delete-on-display) via the controller (Req 4.3).
   const onView = useCallback((id: string) => void controller.markViewed(id), [controller]);
 
@@ -1059,6 +1086,7 @@ function AppShell(): React.JSX.Element {
           peerLastSeen={peerPresence.lastSeen}
           onComposerChange={onComposerChange}
           onSend={onSend}
+          onAttach={onAttach}
           onReact={onReact}
           onEdit={onEdit}
           onDelete={onDelete}
