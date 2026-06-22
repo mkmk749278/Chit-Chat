@@ -45,7 +45,8 @@ import type {
 } from '@chat-app/types';
 import type { ClaimedPreKeyBundle } from '@chat-app/types';
 
-import type { ConversationEvent } from './conversation-reducer';
+import { decryptAttachment, encryptAttachment } from './attachment-crypto';
+import type { ConversationEvent, RenderableAttachment } from './conversation-reducer';
 import { decodeContentPayload, encodeContentPayload, type ContentPayload } from './content-payload';
 import { msUntilNextExpiry, selectExpired, type ExpiringEntry } from './disappearing-timer';
 import {
@@ -56,7 +57,7 @@ import {
   verificationSeedToBase64,
 } from './identity-verification';
 import type { EnvelopeCodec } from './envelope-codec';
-import type { MessageRow, Unsubscribe } from './ports';
+import type { AttachmentRef, BlobStore, MessageRow, Unsubscribe } from './ports';
 import type { Scheduler, TimerHandle } from './realtime-client';
 import type { SequenceAllocator } from './sequence-allocator';
 import { SHADOW_SEQ_OFFSET } from './shadow-sequence-allocator';
@@ -178,6 +179,14 @@ export interface MessagingDeps {
    * device-local only — it adds no wire/envelope/codec field and never touches a surface row.
    */
   recordRow?: (rowId: string, threadId: string) => void | Promise<void>;
+  /**
+   * OPTIONAL transport for end-to-end encrypted attachment ciphertext (Req 7). When present,
+   * {@link Messaging.sendAttachment} encrypts + uploads media here and an inbound `attachment`
+   * payload is downloaded + decrypted for rendering. Bound by the platform adapter to the backend
+   * blob service. ABSENT in text-only constructions: `sendAttachment` then fails the message locally
+   * and an inbound attachment surfaces as a delivery-error row, so the surface path is unchanged.
+   */
+  blobs?: BlobStore;
 }
 
 /**
@@ -236,6 +245,16 @@ export interface SendOptions {
   threadId?: string;
 }
 
+/** The decrypted media handed to {@link Messaging.sendAttachment} (Req 7). */
+export interface OutgoingAttachment {
+  /** Raw, decrypted attachment bytes (the orchestrator encrypts them before upload). */
+  data: Uint8Array;
+  /** MIME type of the content (e.g. `image/jpeg`, `audio/aac`). */
+  mediaType: string;
+  /** Optional original file name to preserve for the recipient. */
+  name?: string;
+}
+
 /** Options for the targeted control operations (react/edit/delete) — Shadow Chat thread scoping. */
 export interface ControlOptions {
   /**
@@ -279,6 +298,16 @@ export interface Messaging {
    * Req 3.1); absent ⇒ surface chat, byte-for-byte unchanged.
    */
   send(recipientUid: string, plaintext: string, options?: SendOptions): Promise<void>;
+  /**
+   * Send an end-to-end encrypted attachment to `recipientUid` (Req 7). The decrypted bytes are
+   * encrypted locally under a fresh per-attachment AES-256-GCM key, the CIPHERTEXT is uploaded to the
+   * {@link MessagingDeps.blobs} store, and the blob handle + key + iv ride inside the same E2E channel
+   * as text — the key never reaches the store (Req 7.1/7.2). Optimistically renders a `sending` row
+   * (carrying the decrypted bytes for immediate display) like {@link send}. Never throws for an
+   * expected delivery problem (no blob transport, upload/encrypt failure, offline); those surface as a
+   * `failed` message. Pass `options.threadId` to route into a shadow thread (Shadow Chat, Req 3.1).
+   */
+  sendAttachment(recipientUid: string, content: OutgoingAttachment, options?: SendOptions): Promise<void>;
   /**
    * React to a prior message with an emoji (Requirement 3.1). `target` identifies the message
    * by its LOCAL direction + seq; the reaction rides as an E2E content payload and the peer
@@ -437,6 +466,21 @@ function routableThreadId(threadId: string | undefined): string | undefined {
 }
 
 /**
+ * Project a persisted {@link AttachmentRef} to the render-facing shape, optionally attaching the
+ * in-memory decrypted bytes. Deliberately DROPS the key/iv: the rendered message (and thus every
+ * `ConversationEvent`) never carries the content key, which stays confined to the store row.
+ */
+function renderableFromRef(ref: AttachmentRef, data?: Uint8Array): RenderableAttachment {
+  return {
+    blobId: ref.blobId,
+    mediaType: ref.mediaType,
+    size: ref.size,
+    ...(ref.name !== undefined ? { name: ref.name } : {}),
+    ...(data !== undefined ? { data } : {}),
+  };
+}
+
+/**
  * Defensive C1 / Property 5 invariant guard: the shadow `threadId` rides ONLY inside the encrypted
  * body, so the serialized {@link CiphertextEnvelope} must expose neither a `threadId` nor any
  * plaintext field. The current codec has no such field by construction; this guard fails fast if a
@@ -481,6 +525,8 @@ export class DefaultMessaging implements Messaging {
   private readonly shadowInvites?: InboundShadowControlHandler;
   /** Device-local row→thread recorder for shadow rows (Shadow Chat Invites, Req 14). */
   private readonly recordRow?: (rowId: string, threadId: string) => void | Promise<void>;
+  /** Encrypted-attachment ciphertext transport (Req 7); absent in text-only constructions. */
+  private readonly blobs?: BlobStore;
 
   private readonly generateId: () => string;
   private readonly now: () => number;
@@ -531,6 +577,7 @@ export class DefaultMessaging implements Messaging {
     this.shadowSequence = deps.shadowSequence;
     this.shadowInvites = deps.shadowInvites;
     this.recordRow = deps.recordRow;
+    this.blobs = deps.blobs;
 
     this.generateId = options.generateId;
     this.now = options.now ?? Date.now;
@@ -619,6 +666,33 @@ export class DefaultMessaging implements Messaging {
       ...(threadId !== undefined ? { threadId } : {}),
     });
 
+    // Encode the text as the versioned content payload, then run the shared session/encrypt/
+    // envelope/transmit tail (the same path attachments use).
+    await this.dispatch(
+      id,
+      recipientUid,
+      seq,
+      { type: 'text', body: plaintext, ...(viewOnce ? { viewOnce: true } : {}) },
+      threadId,
+    );
+  }
+
+  /**
+   * Shared send tail for any content payload (text or attachment): resolve the local sender,
+   * establish a libsignal session on first send, encrypt the (already shadow-threaded) payload, build
+   * the wire-safe envelope, register the pending/ack entry, and transmit (or hold for reconnect). Any
+   * expected delivery problem — no sender identity, no recipient keys, encrypt failure — marks the
+   * optimistic row `failed` with its content retained rather than throwing (Requirements 5.1, 5.2,
+   * 5.9, 5.10). The optimistic row + `message-appended` emit is the CALLER's responsibility, so this
+   * stays payload-shape agnostic.
+   */
+  private async dispatch(
+    id: string,
+    recipientUid: string,
+    seq: number,
+    payload: ContentPayload,
+    threadId: string | undefined,
+  ): Promise<void> {
     // Resolve the local routing identity; without it the message cannot be addressed (5.9).
     const sender = await this.sender.resolveSender();
     if (sender === null) {
@@ -628,7 +702,7 @@ export class DefaultMessaging implements Messaging {
 
     // Establish a libsignal session on first send to this recipient (5.1, 5.2). A claim
     // miss (no recipient device) or any establish/encrypt failure transmits nothing and
-    // retains the text as `failed` (Requirements 5.9; design Scenarios 6, 11).
+    // retains the content as `failed` (Requirements 5.9; design Scenarios 6, 11).
     let body;
     try {
       if (!(await this.sessions.hasSession(recipientUid))) {
@@ -639,17 +713,10 @@ export class DefaultMessaging implements Messaging {
         }
         await this.sessions.establishSession(recipientUid, bundle);
       }
-      body = await this.sessions.encrypt(
-        recipientUid,
-        // Wrap plain text in the versioned content payload (Phase 2). For a shadow send the
-        // `threadId` rides INSIDE this encrypted body (Shadow Chat, Req 3.1) — never on the wire
-        // envelope. The recipient decodes it back to text; a legacy peer that decodes the JSON as a
-        // bare string still shows it.
-        encodeContentPayload(
-          { type: 'text', body: plaintext, ...(viewOnce ? { viewOnce: true } : {}) },
-          threadId,
-        ),
-      );
+      // Wrap the payload in the versioned content envelope (Phase 2). For a shadow send the
+      // `threadId` rides INSIDE this encrypted body (Shadow Chat, Req 3.1) — never on the wire
+      // envelope. A legacy peer that predates a given payload type decodes it to `unsupported`.
+      body = await this.sessions.encrypt(recipientUid, encodeContentPayload(payload, threadId));
     } catch (err) {
       // A short reason is surfaced for diagnosis; the raw error (which may carry sensitive
       // material, 8.5) is never logged or transmitted.
@@ -689,6 +756,130 @@ export class DefaultMessaging implements Messaging {
     if (this.realtime.getStatus() === 'connected') {
       this.transmit(entry);
     }
+  }
+
+  /** @inheritdoc */
+  async sendAttachment(
+    recipientUid: string,
+    content: OutgoingAttachment,
+    options?: SendOptions,
+  ): Promise<void> {
+    const id = this.generateId();
+    const threadId = routableThreadId(options?.threadId);
+
+    // Same allocator selection as text: a shadow send needs the per-thread allocator; its absence is
+    // a misconfiguration that fails locally rather than leaking onto the surface (Shadow Chat, 3.6).
+    const allocator = this.allocatorFor(threadId);
+    if (allocator === null) {
+      this.failAttachment(id, recipientUid, content, threadId, 'shadow chat not configured');
+      return;
+    }
+    const seq = await allocator.next(recipientUid);
+
+    // Encrypt locally under a fresh per-attachment AES-256-GCM key, then upload ONLY the ciphertext
+    // (Req 7.1/7.2). The key + iv stay on the device and ride solely inside the E2E payload below.
+    if (this.blobs === undefined) {
+      this.failAttachment(id, recipientUid, content, threadId, 'attachments unavailable');
+      return;
+    }
+    let key: string;
+    let iv: string;
+    let blobId: string;
+    let size: number;
+    try {
+      const enc = await encryptAttachment(content.data);
+      key = Buffer.from(enc.key).toString('base64');
+      iv = Buffer.from(enc.iv).toString('base64');
+      size = enc.ciphertext.length;
+      blobId = await this.blobs.put(enc.ciphertext);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message.slice(0, 80) : 'unknown';
+      this.failAttachment(id, recipientUid, content, threadId, `attachment upload failed: ${reason}`);
+      return;
+    }
+
+    const ref: AttachmentRef = {
+      blobId,
+      key,
+      iv,
+      mediaType: content.mediaType,
+      size,
+      ...(content.name !== undefined ? { name: content.name } : {}),
+    };
+    // Optimistic row + emit, mirroring text send. `plaintext` is null (captions are not part of the
+    // attachment wire payload in this version); the decrypted bytes ride on the emit for immediate
+    // local render, while the persisted row keeps key/iv so a relaunch can re-fetch + re-decrypt.
+    const row: MessageRow = {
+      id,
+      remoteUid: recipientUid,
+      direction: 'out',
+      seq,
+      plaintext: null,
+      status: 'sending',
+      createdAt: this.now(),
+      attachment: ref,
+    };
+    if (threadId === undefined) {
+      this.stampExpiry(row);
+    }
+    await this.store.appendMessage(row);
+    if (threadId !== undefined) {
+      await this.recordRow?.(id, threadId);
+    }
+    this.emitUpdate({
+      type: 'message-appended',
+      message: {
+        id,
+        seq,
+        direction: 'out',
+        text: null,
+        status: 'sending',
+        createdAt: row.createdAt,
+        attachment: renderableFromRef(ref, content.data),
+      },
+      remoteUid: recipientUid,
+      ...(threadId !== undefined ? { threadId } : {}),
+    });
+
+    // Send the attachment routing/key payload over the SAME encrypted channel as text (Req 7.2):
+    // the content key travels only here, never to the blob store.
+    await this.dispatch(id, recipientUid, seq, { type: 'attachment', ...ref }, threadId);
+  }
+
+  /**
+   * Append + emit a `failed` attachment row when a send cannot even reach the transmit stage
+   * (shadow misconfig, no blob transport, or encrypt/upload failure) — so the user sees the failed
+   * media in place, with its bytes retained for a retry, rather than a silent drop.
+   */
+  private failAttachment(
+    id: string,
+    recipientUid: string,
+    content: OutgoingAttachment,
+    threadId: string | undefined,
+    reason: string,
+  ): void {
+    const render: RenderableAttachment = {
+      blobId: '',
+      mediaType: content.mediaType,
+      size: content.data.length,
+      ...(content.name !== undefined ? { name: content.name } : {}),
+      data: content.data,
+    };
+    this.emitUpdate({
+      type: 'message-appended',
+      message: {
+        id,
+        seq: -1,
+        direction: 'out',
+        text: null,
+        status: 'failed',
+        createdAt: this.now(),
+        error: reason,
+        attachment: render,
+      },
+      remoteUid: recipientUid,
+      ...(threadId !== undefined ? { threadId } : {}),
+    });
   }
 
   /** @inheritdoc */
@@ -828,11 +1019,92 @@ export class DefaultMessaging implements Messaging {
         }
         this.emitUpdate({ type: 'timer-changed', ttlMs: payload.ttlMs, remoteUid, ...threadTag });
         return;
-      case 'attachment':
-        // E2E attachment (Req 7). The crypto core (per-attachment AES-GCM) and the payload codec
-        // are in place; download + decrypt + render wiring lands with the media UI (task 7.3), so
-        // for now an inbound attachment payload is ignored rather than mis-rendered.
+      case 'attachment': {
+        // E2E attachment (Req 7): the payload carries the blob handle + the per-attachment key/iv
+        // (which arrived ONLY inside this decrypted body, never from the store). Download the
+        // ciphertext and decrypt locally. The persisted row keeps the key/iv so a relaunch can
+        // re-fetch + re-decrypt; the decrypted bytes ride on the emit for immediate render.
+        const ref: AttachmentRef = {
+          blobId: payload.blobId,
+          key: payload.key,
+          iv: payload.iv,
+          mediaType: payload.mediaType,
+          size: payload.size,
+          ...(payload.name !== undefined ? { name: payload.name } : {}),
+        };
+        let data: Uint8Array;
+        try {
+          if (this.blobs === undefined) {
+            throw new Error('no blob transport');
+          }
+          const ciphertext = await this.blobs.get(payload.blobId);
+          data = await decryptAttachment({
+            ciphertext,
+            key: new Uint8Array(Buffer.from(payload.key, 'base64')),
+            iv: new Uint8Array(Buffer.from(payload.iv, 'base64')),
+          });
+        } catch {
+          // No transport, a failed download, or a failed/tampered decrypt (GCM auth): surface a
+          // delivery-error row rather than dropping the message. The row keeps the ref so a retry
+          // (e.g. once a blob transport exists, or the blob becomes reachable) can resolve it.
+          const errorRow: MessageRow = {
+            id,
+            remoteUid,
+            direction: 'in',
+            seq: envelope.seq,
+            plaintext: null,
+            status: 'delivery-error',
+            createdAt: this.now(),
+            attachment: ref,
+          };
+          await this.store.appendMessage(errorRow);
+          if (threadId !== undefined) {
+            await this.recordRow?.(id, threadId);
+          }
+          this.emitUpdate({
+            type: 'inbound-delivery-error',
+            id,
+            seq: envelope.seq,
+            remoteUid,
+            createdAt: errorRow.createdAt,
+            ...threadTag,
+          });
+          return;
+        }
+        const row: MessageRow = {
+          id,
+          remoteUid,
+          direction: 'in',
+          seq: envelope.seq,
+          plaintext: null,
+          status: 'received',
+          createdAt: this.now(),
+          attachment: ref,
+        };
+        // Recipient's disappearing clock starts on arrival (Req 4.2); surface-scoped like text.
+        if (threadId === undefined) {
+          this.stampExpiry(row);
+        }
+        await this.store.appendMessage(row);
+        if (threadId !== undefined) {
+          await this.recordRow?.(id, threadId);
+        }
+        this.emitUpdate({
+          type: 'message-appended',
+          message: {
+            id,
+            seq: envelope.seq,
+            direction: 'in',
+            text: null,
+            status: 'received',
+            createdAt: row.createdAt,
+            attachment: renderableFromRef(ref, data),
+          },
+          remoteUid,
+          ...threadTag,
+        });
         return;
+      }
       case 'verify-request':
         // The peer is starting a verification and shared the session seed (§4.2). Hold it in RAM
         // and prompt the local user to answer with the rotating code (§4.3).

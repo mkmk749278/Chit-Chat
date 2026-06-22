@@ -132,6 +132,36 @@ export interface MessageRow {
    * purged from the store the instant it is first displayed, and is not re-openable (Req 4.3).
    */
   viewOnce?: boolean;
+  /**
+   * Present when the message carries an end-to-end encrypted attachment (Req 7). Holds the routing
+   * handle plus the per-attachment AES-GCM key + iv (base64) so the row is self-sufficient: after a
+   * relaunch the UI can re-fetch the ciphertext from the {@link BlobStore} and re-decrypt it without
+   * the original event. The key/iv are persisted at the SAME trust level as `plaintext` (the device's
+   * local store), and never leave the device — they are not part of any wire/envelope field. For an
+   * attachment row `plaintext` carries the optional caption text, or is `null` when there is none.
+   */
+  attachment?: AttachmentRef;
+}
+
+/**
+ * The decryptable reference to an end-to-end encrypted attachment, persisted on a {@link MessageRow}
+ * and carried (minus the key material) on the rendered message. `blobId` locates the ciphertext in
+ * the {@link BlobStore}; `key`/`iv` (base64) decrypt it locally; `mediaType`/`size`/`name` describe
+ * the decrypted content for rendering and progress (Req 7).
+ */
+export interface AttachmentRef {
+  /** Opaque {@link BlobStore} handle for the ciphertext (Req 7.1). */
+  blobId: string;
+  /** base64 AES-256 content key (Req 7.2) — device-local only, never on the wire. */
+  key: string;
+  /** base64 AES-GCM nonce. */
+  iv: string;
+  /** MIME type of the decrypted content (e.g. `image/jpeg`). */
+  mediaType: string;
+  /** Ciphertext byte length, for progress/bounds. */
+  size: number;
+  /** Optional original file name. */
+  name?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -343,6 +373,28 @@ export interface HttpResponse {
  */
 export interface HttpClient {
   send(request: HttpRequest): Promise<HttpResponse>;
+}
+
+// ---------------------------------------------------------------------------
+// Port 6: BlobStore  (E2E attachment ciphertext transport — Req 7.1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Opaque transport for ENCRYPTED attachment bytes (Req 7.1). The shared core encrypts an attachment
+ * locally (per-attachment AES-256-GCM, {@link encryptAttachment}) and uploads only the ciphertext
+ * here; the content key + iv never reach the store — they travel solely inside the E2E message
+ * payload (Req 7.2). Both methods move ciphertext only, so the store learns nothing about the media.
+ *
+ * Adapters bind this to the backend blob service (`apps/backend/src/blobs`): `put` → upload endpoint,
+ * `get` → authenticated download by handle. It is OPTIONAL on {@link MessagingDeps}; when absent the
+ * orchestrator cannot send or receive attachments (sends fail locally, inbound attachments surface a
+ * delivery-error row) so every surface-only construction keeps compiling and behaving identically.
+ */
+export interface BlobStore {
+  /** Upload encrypted attachment bytes; resolves the opaque blob handle to embed in the payload. */
+  put(ciphertext: Uint8Array): Promise<string>;
+  /** Download the encrypted attachment bytes for a handle previously produced by {@link put}. */
+  get(blobId: string): Promise<Uint8Array>;
 }
 
 // ---------------------------------------------------------------------------
