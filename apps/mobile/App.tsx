@@ -52,7 +52,8 @@ import { SettingsScreen } from './src/ui/SettingsScreen';
 import { ShadowChatCreateSheet } from './src/ui/ShadowChatCreateSheet';
 import { ShadowPinPrompt } from './src/ui/ShadowPinPrompt';
 import { SignInScreen } from './src/ui/SignInScreen';
-import { TabBar, type Tab } from './src/ui/TabBar';
+import { type Tab } from './src/ui/TabBar';
+import { TabPager } from './src/ui/TabPager';
 import { useTheme } from './src/ui/theme';
 
 /** One chat thread: peer identity + its reducer-owned conversation state. */
@@ -1173,21 +1174,24 @@ function AppShell(): React.JSX.Element {
               <Text style={styles.bannerAction}>Tap to retry</Text>
             </Pressable>
           )}
-          {tab === 'chats' && (
-            <ChatsListScreen
-              chats={summaries}
-              onOpenChat={openChat}
-              onSearchSubmit={onSearch}
-              onLongPressRow={(id, name) => onLongPressRow(id, name, 'chat')}
-              onNewChat={() => {
-                animateNext();
-                setNewChatOpen(true);
-              }}
-            />
-          )}
-          {tab === 'calls' && <CallsScreen />}
-          {tab === 'settings' && (
-            <SettingsScreen
+          <TabPager
+            tab={tab}
+            onTabChange={setTab}
+            chats={
+              <ChatsListScreen
+                chats={summaries}
+                onOpenChat={openChat}
+                onSearchSubmit={onSearch}
+                onLongPressRow={(id, name) => onLongPressRow(id, name, 'chat')}
+                onNewChat={() => {
+                  animateNext();
+                  setNewChatOpen(true);
+                }}
+              />
+            }
+            calls={<CallsScreen />}
+            settings={
+              <SettingsScreen
               displayName={displayName}
               phone={phone}
               presenceEnabled={presenceEnabled}
@@ -1249,14 +1253,8 @@ function AppShell(): React.JSX.Element {
               }}
               onSignOut={signOut}
               onManageShadowChats={appMode === 'real' ? openShadowManager : undefined}
-            />
-          )}
-          <TabBar
-            active={tab}
-            onSelect={(next) => {
-              animateNext();
-              setTab(next);
-            }}
+              />
+            }
           />
         </>
       )}
