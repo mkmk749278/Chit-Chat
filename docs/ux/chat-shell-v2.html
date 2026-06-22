@@ -1,0 +1,99 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>Chit-Chat — shell v2 (pill nav + swipe tabs)</title>
+<style>
+  :root{--bg:#FAFAF9;--surface:#FFFFFF;--field:#F1F2F4;--divider:#ECEDEF;--text:#1F2430;
+    --subtext:#5C6470;--faint:#98A0AB;--brand:#2F5FE8;--onBrand:#fff;--brandFill:#EDF2FD;--secure:#2E7D55;--cardsh:rgba(0,0,0,.10);--navsh:rgba(0,0,0,.16)}
+  @media(prefers-color-scheme:dark){:root{--bg:#15171C;--surface:#1B1E24;--field:#252932;--divider:#272B33;--text:#ECEEF1;
+    --subtext:#9AA2AD;--faint:#646C78;--brand:#3D6BEA;--onBrand:#fff;--brandFill:#1D2433;--secure:#5FB98A;--cardsh:rgba(0,0,0,.45);--navsh:rgba(0,0,0,.55)}}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none}
+  body{margin:0;background:#0E0F12;display:flex;justify-content:center;font-family:Inter,Segoe UI,Arial,sans-serif}
+  .phone{width:400px;max-width:100vw;height:100vh;background:var(--bg);overflow:hidden;position:relative}
+  .pager{display:flex;width:300%;height:100%;touch-action:pan-y}
+  .page{width:33.3333%;height:100%;overflow-y:auto;padding-bottom:120px}
+  .head{padding:54px 24px 6px}.head h1{margin:0;font-size:28px;font-weight:800;color:var(--text)}
+  .search{margin:8px 20px;height:44px;border-radius:12px;background:var(--field);display:flex;align-items:center;gap:8px;padding:0 14px;color:var(--faint);font-size:15px}
+  .feed{padding:8px 14px 8px}
+  .card{display:flex;align-items:center;gap:14px;background:var(--surface);border-radius:20px;padding:14px 16px;margin-bottom:12px;box-shadow:0 6px 16px var(--cardsh);transition:transform .12s;cursor:pointer}
+  .card:active{transform:scale(.985)}
+  .card.unread{background:var(--brandFill);border-left:4px solid var(--brand)}
+  .av{width:50px;height:50px;border-radius:50%;flex:0 0 auto;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:18px}
+  .body{flex:1;min-width:0}.name{font-size:16.5px;font-weight:700;color:var(--text)}
+  .prev{font-size:13px;color:var(--subtext);margin-top:3px;display:flex;gap:5px;align-items:center}
+  .card.unread .prev{color:var(--text);font-weight:600}
+  .meta{display:flex;flex-direction:column;align-items:flex-end;gap:7px}
+  .time{font-size:11.5px;font-weight:600;color:var(--faint)}.card.unread .time{color:var(--brand)}
+  .badge{min-width:22px;height:22px;border-radius:11px;background:var(--brand);color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;padding:0 6px}
+  .placeholder{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--faint)}
+  .placeholder h2{color:var(--text);margin:0;font-size:20px}
+  /* floating pill nav */
+  .nav{position:absolute;left:14px;right:14px;bottom:18px;height:64px;background:var(--surface);border-radius:26px;
+    box-shadow:0 10px 28px var(--navsh);display:flex;align-items:center;z-index:5}
+  .pill{position:absolute;top:9px;height:46px;border-radius:23px;background:var(--brandFill);transition:left .28s cubic-bezier(.22,.7,.2,1),width .28s cubic-bezier(.22,.7,.2,1)}
+  .nitem{flex:1;height:100%;display:flex;align-items:center;justify-content:center;gap:7px;z-index:2;cursor:pointer}
+  .nitem svg{width:22px;height:22px}
+  .nlabel{font-size:13.5px;font-weight:700;color:var(--brand);max-width:0;overflow:hidden;opacity:0;transition:max-width .28s,opacity .2s;white-space:nowrap}
+  .nitem.active .nlabel{max-width:80px;opacity:1}
+  .fab{position:absolute;right:24px;bottom:94px;width:58px;height:58px;border-radius:29px;background:var(--brand);display:flex;align-items:center;justify-content:center;box-shadow:0 8px 20px rgba(0,0,0,.28);z-index:6}
+  .hint{position:absolute;top:10px;left:50%;transform:translateX(-50%);font-size:11px;color:var(--faint);background:var(--field);padding:3px 10px;border-radius:999px;z-index:7}
+</style></head>
+<body><div class="phone">
+  <div class="hint">swipe left/right ↔ or tap a tab</div>
+  <div class="pager" id="pager">
+    <div class="page" id="chats"></div>
+    <div class="page"><div class="placeholder"><svg width="40" height="40" viewBox="0 0 24 24" fill="var(--faint)"><path d="M4 4c2 0 3 1 3 3 0 1-1 2-1 3 1 3 4 6 7 7 1 0 2-1 3-1 2 0 3 1 3 3 0 2-1 3-3 3C9 25 -1 15 1 7 1 5 2 4 4 4z"/></svg><h2>Calls</h2><div>Recent calls appear here</div></div></div>
+    <div class="page"><div class="placeholder"><svg width="40" height="40" viewBox="0 0 24 24" fill="var(--faint)"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg><h2>Settings</h2><div>Account · Privacy · Appearance</div></div></div>
+  </div>
+  <div class="nav" id="nav">
+    <div class="pill" id="pill"></div>
+    <div class="nitem active" data-i="0"><svg viewBox="0 0 24 24" fill="currentColor" style="color:var(--brand)"><path d="M4 5h16a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9l-4 4v-4H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/></svg><span class="nlabel">Chats</span></div>
+    <div class="nitem" data-i="1"><svg viewBox="0 0 24 24" fill="currentColor" style="color:var(--faint)"><path d="M4 4c2 0 3 1 3 3 0 1-1 2-1 3 1 3 4 6 7 7 1 0 2-1 3-1 2 0 3 1 3 3 0 2-1 3-3 3C9 25 -1 15 1 7 1 5 2 4 4 4z"/></svg><span class="nlabel">Calls</span></div>
+    <div class="nitem" data-i="2"><svg viewBox="0 0 24 24" fill="currentColor" style="color:var(--faint)"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg><span class="nlabel">Settings</span></div>
+  </div>
+  <div class="fab"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 19 L16 8 L19 11 L8 22 L4 22 Z"/></svg></div>
+</div>
+<script>
+const AV=['#4A7D6D','#B07A4F','#4A6FA8','#A86487','#6E6AA8','#508487'];
+const ac=s=>{let h=0;for(const c of s)h=(h*31+c.charCodeAt(0))|0;return AV[Math.abs(h)%6]};
+const ini=n=>{const p=n.trim().split(/\s+/).filter(Boolean);return((p[0][0]||'?')+(p[1]?p[1][0]:'')).toUpperCase()};
+const LOCK='<svg style="width:11px;height:11px;flex:0 0 auto" viewBox="0 0 12 14"><rect x="1" y="6" width="10" height="7" rx="2" fill="var(--secure)"/><path d="M3 6 V4 a3 3 0 0 1 6 0 V6" fill="none" stroke="var(--secure)" stroke-width="1.6"/></svg>';
+const CH=[['u-maya','Maya Patel','See you in a few!','09:10',0,0],['u-leo','Leo Nguyen','You: sent the files','08:42',0,1],
+['u-aria','Aria Costa','Can you call me later?','Yesterday',3,0],['u-sam','Sam Okoye','Encrypted message','Yesterday',1,1],
+['u-team','Design Sync','Priya: pushed the mockups','Mon',0,0],['u-dad','Dad','Thanks!','Sun',0,0],
+['u-zoe','Zoe Adler','Perfect, thank you','Sun',0,0],['u-noor','Noor Haddad','You: see you tomorrow','Fri',0,1]];
+const chats=document.getElementById('chats');
+chats.innerHTML='<div class="head"><h1>Chats</h1></div>'+
+ '<div class="search"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--faint)"><circle cx="7" cy="7" r="5" stroke-width="2"/><line x1="11" y1="11" x2="15" y2="15" stroke-width="2" stroke-linecap="round"/></svg>Search</div>'+
+ '<div class="feed">'+CH.map(c=>{const[id,n,p,t,u,s]=c;return `<div class="card${u?' unread':''}"><div class="av" style="background:${ac(id)}">${ini(n)}</div><div class="body"><div class="name">${n}</div><div class="prev">${s?LOCK:''}<span>${p}</span></div></div><div class="meta"><div class="time">${t}</div>${u?`<div class="badge">${u}</div>`:''}</div></div>`}).join('')+'</div>';
+
+const pager=document.getElementById('pager'), nav=document.getElementById('nav'), pill=document.getElementById('pill');
+const items=[...document.querySelectorAll('.nitem')];
+const W=()=>document.querySelector('.phone').clientWidth;
+let idx=0, drag=null;
+function placePill(frac){ // frac: 0..2 continuous page position
+  const iw=nav.clientWidth/3;
+  // interpolate pill width/left between integer tab slots so it morphs while swiping
+  const active=Math.round(frac);
+  items.forEach((it,i)=>it.classList.toggle('active',i===active));
+  const labelW=[58,54,72][active]||58; const pw=22+8+labelW+24;
+  const cx=iw*(frac+0.5);
+  pill.style.width=pw+'px'; pill.style.left=(cx-pw/2)+'px';
+  items.forEach((it,i)=>{const c=it.querySelector('svg');c.style.color=(i===active)?'var(--brand)':'var(--faint)'});
+}
+function go(i,animate=true){ idx=Math.max(0,Math.min(2,i));
+  pager.style.transition=animate?'transform .3s cubic-bezier(.22,.7,.2,1)':'none';
+  pager.style.transform=`translateX(${-idx*33.3333}%)`; placePill(idx);
+}
+items.forEach(it=>it.addEventListener('click',()=>go(+it.dataset.i)));
+pager.addEventListener('touchstart',e=>{drag={x:e.touches[0].clientX,y:e.touches[0].clientY,base:idx};pager.style.transition='none'},{passive:true});
+pager.addEventListener('touchmove',e=>{if(!drag)return;const dx=e.touches[0].clientX-drag.x;const frac=drag.base - dx/W();
+  const cl=Math.max(0,Math.min(2,frac)); pager.style.transform=`translateX(${-cl*33.3333}%)`; placePill(cl);},{passive:true});
+pager.addEventListener('touchend',e=>{if(!drag)return;const dx=(e.changedTouches[0].clientX-drag.x);const moved=dx/W();
+  let target=drag.base; if(Math.abs(moved)>0.18) target=drag.base-Math.sign(moved); go(Math.round(target)); drag=null;});
+// mouse drag for desktop preview
+let md=null;
+pager.addEventListener('mousedown',e=>{md={x:e.clientX,base:idx};pager.style.transition='none';e.preventDefault()});
+window.addEventListener('mousemove',e=>{if(!md)return;const frac=md.base-(e.clientX-md.x)/W();const cl=Math.max(0,Math.min(2,frac));pager.style.transform=`translateX(${-cl*33.3333}%)`;placePill(cl)});
+window.addEventListener('mouseup',e=>{if(!md)return;const moved=(e.clientX-md.x)/W();let tgt=md.base;if(Math.abs(moved)>0.18)tgt=md.base-Math.sign(moved);go(Math.round(tgt));md=null});
+go(0,false);
+</script></body></html>
