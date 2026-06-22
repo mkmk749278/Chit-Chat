@@ -87,6 +87,28 @@ export interface RenderableMessage {
    * removes it (delete-on-display) once shown; on the sender it is just labelled (Req 4.3).
    */
   viewOnce?: boolean;
+  /**
+   * Present when the message carries an end-to-end encrypted attachment (Req 7). Describes the
+   * decrypted content for rendering; `data` holds the decrypted bytes when they are available in
+   * memory (freshly sent, or freshly downloaded on receipt) and is absent on a row rehydrated from
+   * the store — in which case the UI re-fetches + re-decrypts from the persisted key/iv. The key
+   * material itself is deliberately NOT exposed here.
+   */
+  attachment?: RenderableAttachment;
+}
+
+/** The render-facing view of an attachment: descriptive metadata plus the decrypted bytes when in memory. */
+export interface RenderableAttachment {
+  /** Opaque blob-store handle for the ciphertext (Req 7.1). */
+  blobId: string;
+  /** MIME type of the decrypted content (e.g. `image/jpeg`). */
+  mediaType: string;
+  /** Decrypted byte length. */
+  size: number;
+  /** Optional original file name. */
+  name?: string;
+  /** Decrypted bytes when in memory; absent on a store-rehydrated row (UI re-fetches/decrypts). */
+  data?: Uint8Array;
 }
 
 /**
