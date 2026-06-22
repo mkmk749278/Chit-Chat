@@ -120,37 +120,49 @@ export function ChatsListScreen({
       <FlatList
         data={visible}
         keyExtractor={(c) => c.id}
-        renderItem={({ item }) => (
-          <Pressable
-            style={styles.row}
-            onPress={() => onOpenChat(item.id)}
-            onLongPress={onLongPressRow !== undefined ? () => onLongPressRow(item.id, item.name) : undefined}
-            accessibilityRole="button"
-          >
-            <View style={[styles.avatar, { backgroundColor: avatarColor(item.id) }]}>
-              <Text style={styles.avatarText}>{initials(item.name)}</Text>
-            </View>
-            <View style={styles.rowBody}>
-              <Text style={[styles.rowName, { color: t.text }]} numberOfLines={1}>
-                {item.name}
-              </Text>
-              <Text style={[styles.rowPreview, { color: t.subtext }]} numberOfLines={1}>
-                {item.preview}
-              </Text>
-            </View>
-            <View style={styles.rowMeta}>
-              <Text style={[styles.rowTime, { color: t.faint }]}>{item.time}</Text>
-              {item.unread > 0 && (
-                <View style={[styles.badge, { backgroundColor: t.brand }]}>
-                  <Text style={styles.badgeText}>{item.unread}</Text>
-                </View>
-              )}
-            </View>
-          </Pressable>
-        )}
-        ItemSeparatorComponent={() => (
-          <View style={[styles.separator, { backgroundColor: t.divider }]} />
-        )}
+        contentContainerStyle={styles.listContent}
+        renderItem={({ item }) => {
+          const unread = item.unread > 0;
+          return (
+            <Pressable
+              style={({ pressed }) => [
+                styles.card,
+                { backgroundColor: unread ? t.brandFill : t.surface, shadowColor: '#000' },
+                unread && { borderLeftWidth: 4, borderLeftColor: t.brand },
+                pressed && styles.cardPressed,
+              ]}
+              onPress={() => onOpenChat(item.id)}
+              onLongPress={onLongPressRow !== undefined ? () => onLongPressRow(item.id, item.name) : undefined}
+              accessibilityRole="button"
+            >
+              <View style={[styles.avatar, { backgroundColor: avatarColor(item.id) }]}>
+                <Text style={styles.avatarText}>{initials(item.name)}</Text>
+              </View>
+              <View style={styles.rowBody}>
+                <Text style={[styles.rowName, { color: t.text }]} numberOfLines={1}>
+                  {item.name}
+                </Text>
+                <Text
+                  style={[
+                    styles.rowPreview,
+                    { color: unread ? t.text : t.subtext, fontWeight: unread ? '600' : '400' },
+                  ]}
+                  numberOfLines={1}
+                >
+                  {item.preview}
+                </Text>
+              </View>
+              <View style={styles.rowMeta}>
+                <Text style={[styles.rowTime, { color: unread ? t.brand : t.faint }]}>{item.time}</Text>
+                {unread && (
+                  <View style={[styles.badge, { backgroundColor: t.brand }]}>
+                    <Text style={styles.badgeText}>{item.unread}</Text>
+                  </View>
+                )}
+              </View>
+            </Pressable>
+          );
+        }}
         ListEmptyComponent={
           <View style={styles.empty}>
             <Icon name="chats" size={40} color={t.faint} />
@@ -207,25 +219,35 @@ const styles = StyleSheet.create({
   searchIcon: { paddingLeft: 8 },
   searchInput: { flex: 1, paddingHorizontal: 12, paddingVertical: 10, fontSize: 15 },
   searchSpinner: { marginRight: 10 },
-  row: {
+  // Card-feed list: each chat is a rounded, shadowed card with spacing between rows.
+  listContent: { paddingTop: 8, paddingHorizontal: 14, paddingBottom: 120 },
+  card: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
+    borderRadius: 20,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    marginBottom: 12,
+    // Soft "floating card" shadow (iOS) + elevation (Android).
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 2,
   },
+  cardPressed: { transform: [{ scale: 0.985 }], opacity: 0.96 },
   avatar: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
+    width: 50,
+    height: 50,
+    borderRadius: 25,
     alignItems: 'center',
     justifyContent: 'center',
   },
   avatarText: { color: '#fff', fontSize: 18, fontWeight: '700' },
   rowBody: { flex: 1, marginLeft: 14 },
-  rowName: { fontSize: 16, fontWeight: '700' },
+  rowName: { fontSize: 16.5, fontWeight: '700' },
   rowPreview: { fontSize: 13, marginTop: 3 },
-  rowMeta: { alignItems: 'flex-end', gap: 6 },
-  rowTime: { fontSize: 12 },
+  rowMeta: { alignItems: 'flex-end', gap: 7 },
+  rowTime: { fontSize: 11.5, fontWeight: '600' },
   badge: {
     minWidth: 22,
     height: 22,
@@ -235,7 +257,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
   },
   badgeText: { color: '#fff', fontSize: 11, fontWeight: '700' },
-  separator: { height: StyleSheet.hairlineWidth, marginLeft: 86 },
   empty: { alignItems: 'center', marginTop: 96, paddingHorizontal: 40 },
   emptyTitle: { fontSize: 17, fontWeight: '700' },
   emptyBody: { fontSize: 13, textAlign: 'center', marginTop: 6 },
