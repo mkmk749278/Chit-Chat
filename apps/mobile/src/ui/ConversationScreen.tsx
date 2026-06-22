@@ -15,7 +15,8 @@
  */
 
 import React, { useMemo, useRef, useState } from 'react';
-import { Alert, Dimensions, FlatList, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Dimensions, FlatList, Image, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Buffer } from 'buffer';
 
 import type {
   ConversationState,
@@ -46,6 +47,12 @@ export interface ConversationScreenProps {
   peerLastSeen?: number | null;
   onComposerChange: (text: string) => void;
   onSend: (options?: { viewOnce?: boolean }) => void;
+  /**
+   * Pick + send an end-to-end encrypted image attachment (Req 7). When provided, an attach (📎)
+   * button appears in the composer; the container owns the native picker + `controller.sendAttachment`
+   * wiring. Absent ⇒ no attach affordance (e.g. the demo controller).
+   */
+  onAttach?: () => void;
   /** Back to the chats list. */
   onBack: () => void;
   /** React to a message with an emoji (Req 3.1). */
@@ -265,6 +272,7 @@ export function ConversationScreen({
   peerLastSeen = null,
   onComposerChange,
   onSend,
+  onAttach,
   onBack,
   onReact,
   onEdit,
@@ -609,6 +617,17 @@ export function ConversationScreen({
       />
 
       <View style={[styles.composer, { backgroundColor: t.surface, borderTopColor: t.divider }]}>
+        {onAttach !== undefined && (
+          <Pressable
+            onPress={onAttach}
+            accessibilityRole="button"
+            accessibilityLabel="Attach photo"
+            hitSlop={8}
+            style={[styles.attachButton, { borderColor: t.divider }]}
+          >
+            <Text style={[styles.attachButtonIcon, { color: t.faint }]}>📎</Text>
+          </Pressable>
+        )}
         <Pressable
           onPress={() => setComposeViewOnce((v) => !v)}
           accessibilityRole="button"
@@ -944,6 +963,19 @@ function Bubble({
   onRetry?: () => void;
 }): React.JSX.Element {
   const outbound = message.direction === 'out';
+  const att = message.attachment;
+  const isImageAtt = att !== undefined && att.mediaType.startsWith('image/');
+  // Build an inline data URI from the decrypted bytes when they're in memory (live send/receive).
+  // A rehydrated row carries no `data` (the bytes aren't re-fetched/decrypted yet), so we fall back
+  // to a placeholder rather than render a broken image. Memoized on the byte reference so the base64
+  // encode doesn't re-run on every FlatList re-render.
+  const attImageUri = useMemo(
+    () =>
+      isImageAtt && att?.data !== undefined
+        ? `data:${att.mediaType};base64,${Buffer.from(att.data).toString('base64')}`
+        : null,
+    [isImageAtt, att?.data, att?.mediaType],
+  );
   const isError = message.status === 'delivery-error' || message.status === 'failed';
   // A failed OUTBOUND message is tappable to re-send (delivery-error is an inbound decrypt failure,
   // which is not resendable).
@@ -958,15 +990,19 @@ function Bubble({
   const timeText = time ?? '';
   // A received view-once message is gated behind "tap to view" until opened (Req 4.3).
   const gated = message.viewOnce === true && !outbound && message.deleted !== true && message.text !== null;
+  // For an attachment row `text` is null (no caption in this version) but the image IS the content, so
+  // it must NOT collapse to "message unavailable"; the image/placeholder below carries the bubble.
   const body =
     message.deleted === true
       ? '🚫 message deleted'
       : gated
         ? '👁 Tap to view · disappears after viewing'
         : message.text === null
-          ? '⚠ message unavailable'
+          ? att !== undefined
+            ? ''
+            : '⚠ message unavailable'
           : message.text;
-  const muted = message.deleted === true || message.text === null;
+  const muted = message.deleted === true || (message.text === null && att === undefined);
   return (
     <Pressable
       style={[
@@ -996,15 +1032,39 @@ function Bubble({
           gated && { borderStyle: 'dashed', borderWidth: 1, borderColor: t.brandSoft },
         ]}
       >
-        <Text
-          style={[
-            styles.bubbleText,
-            { color: outbound ? t.onBrand : t.text },
-            (muted || gated) && styles.bubbleTextMissing,
-          ]}
-        >
-          {body}
-        </Text>
+        {/* E2E attachment (Req 7): render the decrypted image inline when its bytes are in memory
+            (live send/receive); otherwise a placeholder — a rehydrated row whose bytes aren't loaded,
+            a non-image, or a download/decrypt failure. Hidden for a deleted row (its tombstone shows). */}
+        {att !== undefined && message.deleted !== true &&
+          (attImageUri !== null ? (
+            <Image
+              source={{ uri: attImageUri }}
+              style={styles.attImage}
+              resizeMode="cover"
+              accessibilityLabel={att.name ?? 'Photo'}
+            />
+          ) : (
+            <View style={[styles.attPlaceholder, { backgroundColor: outbound ? t.brandSoft : t.field }]}>
+              <Text style={[styles.attPlaceholderText, { color: outbound ? t.onBrand : t.faint }]}>
+                {message.status === 'delivery-error'
+                  ? '⚠ Photo unavailable'
+                  : isImageAtt
+                    ? '📷 Photo'
+                    : `📎 ${att.name ?? 'Attachment'}`}
+              </Text>
+            </View>
+          ))}
+        {body.length > 0 && (
+          <Text
+            style={[
+              styles.bubbleText,
+              { color: outbound ? t.onBrand : t.text },
+              (muted || gated) && styles.bubbleTextMissing,
+            ]}
+          >
+            {body}
+          </Text>
+        )}
         {message.viewOnce === true && outbound && message.deleted !== true && (
           <Text style={[styles.editedTag, { color: t.onBrand }]}>👁 view once</Text>
         )}
@@ -1093,6 +1153,16 @@ const styles = StyleSheet.create({
   tailIn: { borderBottomLeftRadius: 5 },
   bubbleText: { fontSize: 15 },
   bubbleTextMissing: { fontStyle: 'italic' },
+  attImage: { width: 200, height: 200, borderRadius: 12, marginBottom: 2 },
+  attPlaceholder: {
+    width: 200,
+    height: 140,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 2,
+  },
+  attPlaceholderText: { fontSize: 13, fontWeight: '600' },
   editedTag: { fontSize: 9, marginTop: 2, opacity: 0.8 },
   reactionsBar: { flexDirection: 'row', gap: 4, marginTop: 3 },
   reactionChip: { borderRadius: 10, borderWidth: 1, paddingHorizontal: 6, paddingVertical: 1 },
@@ -1101,6 +1171,15 @@ const styles = StyleSheet.create({
   timeLabel: { fontSize: 10 },
   status: { fontSize: 10, marginTop: 2, alignSelf: 'flex-end' },
   composer: { flexDirection: 'row', alignItems: 'center', padding: 12, borderTopWidth: 1, gap: 8 },
+  attachButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  attachButtonIcon: { fontSize: 16 },
   viewOnceToggle: {
     width: 38,
     height: 38,

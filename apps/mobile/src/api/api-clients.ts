@@ -1,23 +1,98 @@
 /**
- * `apps/mobile` — REST clients for prekey claim and phone→UID directory lookup.
+ * `apps/mobile` — REST clients for prekey claim, phone→UID directory lookup, push-token
+ * registration, and the E2E attachment blob store.
  *
  * Thin wrappers over the shared {@link HttpClient} port that attach the caller's Firebase
  * bearer token and parse the typed responses. Both are TLS-only (the HttpClient adapter
  * enforces `https://`) and never log headers or bodies (Requirements 8.5–8.7).
  */
 
-import type { HttpClient, PreKeyClaimClient } from '@chat-app/crypto';
+import { Buffer } from 'buffer';
+
+import type { BlobStore, HttpClient, PreKeyClaimClient } from '@chat-app/crypto';
 import type {
   ClaimedPreKeyBundle,
+  DownloadBlobResponse,
   GetProfileResponse,
   PresenceResponse,
   ResolvePhoneResponse,
   SetPushTokenRequest,
+  UploadBlobRequest,
+  UploadBlobResponse,
   WhoAmIResponse,
 } from '@chat-app/types';
 
 /** Per-request timeout for the REST lookups (matches the registration budget, 3.8). */
 const REQUEST_TIMEOUT_MS = 10_000;
+
+/**
+ * Per-request timeout for blob upload/download. Larger than the metadata lookups above because
+ * attachment ciphertext can be sizeable (a photo, not a few hundred bytes of JSON).
+ */
+const BLOB_REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * Build the {@link BlobStore} the Messaging orchestrator uses to move ENCRYPTED attachment
+ * ciphertext (Req 7.1): `put` → `POST /api/blobs`, `get` → `GET /api/blobs/:id`. The bytes are
+ * opaque, client-encrypted ciphertext — the per-attachment key NEVER touches this transport (it
+ * rides the E2E `attachment` payload, Req 7.2). base64 is the wire encoding on both ends.
+ *
+ * Both methods THROW on a missing token / non-2xx / malformed body so the orchestrator marks the
+ * outbound message `failed` (on `put`) or surfaces an inbound delivery-error (on `get`) instead of
+ * silently dropping the attachment.
+ */
+export function createBlobStore(
+  http: HttpClient,
+  getToken: () => string | null,
+  apiBaseUrl: string,
+): BlobStore {
+  return {
+    async put(ciphertext: Uint8Array): Promise<string> {
+      const token = getToken();
+      if (token === null) {
+        throw new Error('blob upload: not signed in');
+      }
+      const response = await http.send({
+        method: 'POST',
+        url: `${apiBaseUrl}/api/blobs`,
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ciphertext: Buffer.from(ciphertext).toString('base64'),
+        } satisfies UploadBlobRequest),
+        timeoutMs: BLOB_REQUEST_TIMEOUT_MS,
+      });
+      if (response.status < 200 || response.status >= 300) {
+        throw new Error(`blob upload failed (HTTP ${response.status})`);
+      }
+      const { blobId } = JSON.parse(response.body) as UploadBlobResponse;
+      if (typeof blobId !== 'string' || blobId.length === 0) {
+        throw new Error('blob upload: malformed response');
+      }
+      return blobId;
+    },
+
+    async get(blobId: string): Promise<Uint8Array> {
+      const token = getToken();
+      if (token === null) {
+        throw new Error('blob download: not signed in');
+      }
+      const response = await http.send({
+        method: 'GET',
+        url: `${apiBaseUrl}/api/blobs/${encodeURIComponent(blobId)}`,
+        headers: { Authorization: `Bearer ${token}` },
+        timeoutMs: BLOB_REQUEST_TIMEOUT_MS,
+      });
+      if (response.status < 200 || response.status >= 300) {
+        throw new Error(`blob download failed (HTTP ${response.status})`);
+      }
+      const { ciphertext } = JSON.parse(response.body) as DownloadBlobResponse;
+      if (typeof ciphertext !== 'string') {
+        throw new Error('blob download: malformed response');
+      }
+      return new Uint8Array(Buffer.from(ciphertext, 'base64'));
+    },
+  };
+}
 
 /**
  * Build the {@link PreKeyClaimClient} the Messaging orchestrator uses to fetch a recipient's

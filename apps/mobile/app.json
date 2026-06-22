@@ -18,7 +18,15 @@
       "googleServicesFile": "./google-services.json"
     },
     "plugins": [
-      "@react-native-firebase/app"
+      "@react-native-firebase/app",
+      [
+        "react-native-image-picker",
+        {
+          "photoPermission": "Lumin Chat needs access to your photos so you can send them in an end-to-end encrypted chat.",
+          "cameraPermission": false,
+          "microphonePermission": false
+        }
+      ]
     ],
     "newArchEnabled": true
   }
