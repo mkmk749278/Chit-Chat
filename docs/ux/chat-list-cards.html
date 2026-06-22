@@ -1,0 +1,91 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Chit-Chat — Card-feed chat list</title>
+<style>
+  :root{
+    --bg:#FAFAF9; --surface:#FFFFFF; --field:#F1F2F4; --divider:#ECEDEF;
+    --text:#1F2430; --subtext:#5C6470; --faint:#98A0AB; --brand:#2F5FE8;
+    --onBrand:#FFFFFF; --brandFill:#EDF2FD; --secure:#2E7D55; --cardsh:rgba(0,0,0,.10);
+  }
+  @media (prefers-color-scheme: dark){:root{
+    --bg:#15171C; --surface:#1B1E24; --field:#252932; --divider:#272B33;
+    --text:#ECEEF1; --subtext:#9AA2AD; --faint:#646C78; --brand:#3D6BEA;
+    --onBrand:#FFFFFF; --brandFill:#1D2433; --secure:#5FB98A; --cardsh:rgba(0,0,0,.45);
+  }}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{margin:0;background:#0E0F12;display:flex;justify-content:center;font-family:Inter,Segoe UI,Arial,sans-serif}
+  .phone{width:400px;max-width:100vw;height:100vh;background:var(--bg);overflow:hidden;display:flex;flex-direction:column;position:relative}
+  .head{padding:54px 24px 6px}.head h1{margin:0;font-size:28px;font-weight:800;color:var(--text)}
+  .search{margin:8px 20px;height:44px;border-radius:12px;background:var(--field);display:flex;align-items:center;gap:8px;padding:0 14px;color:var(--faint);font-size:15px}
+  .search svg{stroke:var(--faint)}
+  .feed{flex:1;overflow-y:auto;padding:8px 14px 120px;scroll-behavior:smooth;-webkit-overflow-scrolling:touch}
+  .card{display:flex;align-items:center;gap:14px;background:var(--surface);border-radius:20px;
+    padding:14px 16px;margin-bottom:12px;box-shadow:0 6px 16px var(--cardsh);
+    transition:transform .14s ease, box-shadow .14s ease; cursor:pointer;
+    opacity:0;transform:translateY(18px);animation:rise .55s cubic-bezier(.22,.7,.2,1) forwards}
+  .card:active{transform:scale(.985)}
+  .card.unread{background:var(--brandFill);border-left:4px solid var(--brand)}
+  @keyframes rise{to{opacity:1;transform:none}}
+  .av{width:50px;height:50px;border-radius:50%;flex:0 0 auto;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:18px}
+  .body{flex:1;min-width:0}
+  .name{font-size:16.5px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .prev{font-size:13px;color:var(--subtext);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:5px}
+  .card.unread .prev{color:var(--text);font-weight:600}
+  .lock{width:11px;height:11px;flex:0 0 auto}
+  .meta{display:flex;flex-direction:column;align-items:flex-end;gap:7px}
+  .time{font-size:11.5px;font-weight:600;color:var(--faint)} .card.unread .time{color:var(--brand)}
+  .badge{min-width:22px;height:22px;border-radius:11px;background:var(--brand);color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;padding:0 6px}
+  .fab{position:absolute;right:22px;bottom:84px;width:58px;height:58px;border-radius:29px;background:var(--brand);
+    display:flex;align-items:center;justify-content:center;box-shadow:0 8px 20px rgba(0,0,0,.28)}
+  .tabs{position:absolute;left:0;right:0;bottom:0;height:62px;background:var(--surface);border-top:1px solid var(--divider);
+    display:flex;align-items:center;justify-content:space-around}
+  .tabs svg{width:24px;height:24px}
+  .hint{position:absolute;top:10px;left:50%;transform:translateX(-50%);font-size:11px;color:var(--faint);background:var(--field);padding:3px 10px;border-radius:999px;opacity:.9}
+</style></head>
+<body>
+<div class="phone">
+  <div class="hint">scroll the feed ↑↓</div>
+  <div class="head"><h1>Chats</h1></div>
+  <div class="search"><svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="5" stroke-width="2"/><line x1="11" y1="11" x2="15" y2="15" stroke-width="2" stroke-linecap="round"/></svg>Search</div>
+  <div class="feed" id="feed"></div>
+  <div class="fab"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 19 L16 8 L19 11 L8 22 L4 22 Z"/></svg></div>
+  <div class="tabs">
+    <svg viewBox="0 0 24 24" fill="var(--brand)"><path d="M4 5h16a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9l-4 4v-4H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/></svg>
+    <svg viewBox="0 0 24 24" fill="var(--faint)"><path d="M4 4c2 0 3 1 3 3 0 1-1 2-1 3 1 3 4 6 7 7 1 0 2-1 3-1 2 0 3 1 3 3 0 2-1 3-3 3C9 25 -1 15 1 7 1 5 2 4 4 4z"/></svg>
+    <svg viewBox="0 0 24 24" fill="var(--faint)"><circle cx="9" cy="9" r="3.5"/><circle cx="16" cy="9" r="3.5"/><path d="M3 19c0-3.5 3-5 6-5s6 1.5 6 5zM14 14c3 0 7 1.5 7 5h-5"/></svg>
+    <svg viewBox="0 0 24 24" fill="var(--faint)"><path d="M12 8a4 4 0 100 8 4 4 0 000-8zm9 4l-2-1 1-2-2-2-2 1-1-2h-2l-1 2-2-1-2 2 1 2-2 1v2l2 1-1 2 2 2 2-1 1 2h2l1-2 2 1 2-2-1-2 2-1z"/></svg>
+  </div>
+</div>
+<script>
+const AV=['#4A7D6D','#B07A4F','#4A6FA8','#A86487','#6E6AA8','#508487'];
+function avatarColor(s){let h=0;for(const c of s){h=(h*31+c.charCodeAt(0))|0}return AV[Math.abs(h)%AV.length]}
+function initials(n){const p=n.trim().split(/\s+/).filter(Boolean);if(!p.length)return'?';return((p[0][0]||'?')+(p[1]?p[1][0]:'')).toUpperCase()}
+const LOCK='<svg class="lock" viewBox="0 0 12 14" fill="none" stroke="var(--secure)" stroke-width="1.6"><rect x="1" y="6" width="10" height="7" rx="2" fill="var(--secure)" stroke="none"/><path d="M3 6 V4 a3 3 0 0 1 6 0 V6"/></svg>';
+const CHATS=[
+ ['u-maya','Maya Patel','See you in a few!','09:10',0,false],
+ ['u-leo','Leo Nguyen','You: sent the files','08:42',0,true],
+ ['u-aria','Aria Costa','Can you call me later?','Yesterday',3,false],
+ ['u-sam','Sam Okoye','Encrypted message','Yesterday',1,true],
+ ['u-team','Design Sync','Priya: pushed the mockups','Mon',0,false],
+ ['u-dad','Dad','Thanks!','Sun',0,false],
+ ['u-zoe','Zoe Adler','Perfect, thank you 🙂','Sun',0,false],
+ ['u-ops','On-call','Deploy finished cleanly','Sat',0,false],
+ ['u-noor','Noor Haddad','You: see you tomorrow','Fri',0,true],
+ ['u-kai','Kai Mensah','Let me check and revert','Fri',0,false],
+];
+const feed=document.getElementById('feed');
+CHATS.forEach((c,i)=>{
+  const [id,name,prev,time,unread,secure]=c;
+  const el=document.createElement('div');
+  el.className='card'+(unread>0?' unread':'');
+  el.style.animationDelay=(i*0.06)+'s';
+  el.innerHTML=
+    `<div class="av" style="background:${avatarColor(id)}">${initials(name)}</div>`+
+    `<div class="body"><div class="name">${name}</div>`+
+    `<div class="prev">${secure?LOCK:''}<span>${prev}</span></div></div>`+
+    `<div class="meta"><div class="time">${time}</div>`+
+    `${unread>0?`<div class="badge">${unread}</div>`:''}</div>`;
+  feed.appendChild(el);
+});
+</script>
+</body></html>
