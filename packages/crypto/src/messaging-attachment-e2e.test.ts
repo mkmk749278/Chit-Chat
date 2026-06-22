@@ -221,10 +221,18 @@ function makeClient(
   };
 }
 
-async function flush(): Promise<void> {
-  for (let i = 0; i < 12; i += 1) {
+/**
+ * Wait until `predicate` holds, polling between macrotasks. The inbound attachment path has extra
+ * async hops beyond text (blob fetch + WebCrypto decrypt), which can settle on a later tick than a
+ * fixed-count {@link flush} guarantees — especially on a slow CI runner — so synchronize on the
+ * actual condition instead of a tick count to keep these e2e tests deterministic.
+ */
+async function waitFor(predicate: () => boolean, label: string): Promise<void> {
+  for (let i = 0; i < 300; i += 1) {
+    if (predicate()) return;
     await new Promise((resolve) => setImmediate(resolve));
   }
+  throw new Error(`waitFor timed out: ${label}`);
 }
 
 const inbound = (rows: Map<string, MessageRow>): MessageRow[] =>
@@ -247,7 +255,13 @@ test('attachment E2E: encrypt → upload → send key in-band → download → d
   const B = makeClient(bob, { [alice.uid]: alice.bundle }, hub, blobStore);
 
   await A.sendAttachment(bob.uid, { data: PLAINTEXT, mediaType: 'image/jpeg', name: 'p.jpg' });
-  await flush();
+  // Wait for the full async chain (ack → sent on the sender, download+decrypt → received on Bob).
+  await waitFor(
+    () =>
+      [...A.rows.values()].some((r) => r.direction === 'out' && r.status === 'sent') &&
+      inbound(B.rows).some((r) => r.status === 'received'),
+    'attachment delivered + decrypted',
+  );
 
   // Sender: optimistic row acked → sent, carrying the decrypted bytes for immediate render.
   const aOut = [...A.rows.values()].find((r) => r.direction === 'out');
@@ -300,7 +314,8 @@ test('attachment E2E: a tampered blob yields a delivery-error (GCM auth), no ren
   };
 
   await A.sendAttachment(bob.uid, { data: PLAINTEXT, mediaType: 'image/jpeg' });
-  await flush();
+  // The inbound row is appended only after the (failing) download+decrypt resolves — wait for it.
+  await waitFor(() => inbound(B.rows).length > 0, 'inbound attachment row appended');
 
   const received = inbound(B.rows)[0];
   assert.equal(received?.status, 'delivery-error');
@@ -336,7 +351,10 @@ test('attachment send without a blob transport fails locally (no silent drop)', 
   messaging.onConversationUpdate((e) => events.push(e));
 
   await messaging.sendAttachment(bob.uid, { data: PLAINTEXT, mediaType: 'image/jpeg' });
-  await flush();
+  await waitFor(
+    () => appended(events).some((m) => m.direction === 'out' && m.status === 'failed'),
+    'attachment send failed locally',
+  );
 
   const failed = appended(events).find((m) => m.direction === 'out');
   assert.equal(failed?.status, 'failed');
