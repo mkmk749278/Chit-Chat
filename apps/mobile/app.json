@@ -12,21 +12,18 @@
       "backgroundColor": "#ffffff",
       "resizeMode": "contain"
     },
+    "ios": {
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "Lumin Chat needs access to your photos so you can send them in an end-to-end encrypted chat."
+      }
+    },
     "android": {
       "package": "com.chatapp.mobile",
       "permissions": [],
       "googleServicesFile": "./google-services.json"
     },
     "plugins": [
-      "@react-native-firebase/app",
-      [
-        "react-native-image-picker",
-        {
-          "photoPermission": "Lumin Chat needs access to your photos so you can send them in an end-to-end encrypted chat.",
-          "cameraPermission": false,
-          "microphonePermission": false
-        }
-      ]
+      "@react-native-firebase/app"
     ],
     "newArchEnabled": true
   }
