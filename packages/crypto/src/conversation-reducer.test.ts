@@ -138,6 +138,26 @@ test('status-updated for an unknown id leaves messages unchanged', () => {
   assert.deepEqual(next.messages, state.messages);
 });
 
+test('status-updated to a non-failed status clears a prior failure reason (retry UX)', () => {
+  let state = initialConversationState('mobile');
+  state = reduce(state, { type: 'message-appended', message: out(1, 'hi', 'x') });
+  // First a failure stamps an error reason...
+  state = reduce(state, { type: 'status-updated', id: 'x', status: 'failed', error: 'no server ack' });
+  assert.equal(state.messages[0].error, 'no server ack');
+  // ...then retrying flips it back to `sending` and the stale error is gone.
+  state = reduce(state, { type: 'status-updated', id: 'x', status: 'sending' });
+  assert.equal(state.messages[0].status, 'sending');
+  assert.equal(state.messages[0].error, undefined);
+});
+
+test('status-updated to failed without a reason keeps any prior reason intact', () => {
+  let state = initialConversationState('mobile');
+  state = reduce(state, { type: 'message-appended', message: out(1, 'hi', 'x') });
+  state = reduce(state, { type: 'status-updated', id: 'x', status: 'failed', error: 'first reason' });
+  state = reduce(state, { type: 'status-updated', id: 'x', status: 'failed' });
+  assert.equal(state.messages[0].error, 'first reason');
+});
+
 // --- inbound delivery error (5.5, 6.9) ---------------------------------------
 
 test('inbound-delivery-error renders a null-text delivery-error entry (6.9)', () => {
