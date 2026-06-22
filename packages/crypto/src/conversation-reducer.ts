@@ -413,11 +413,23 @@ export function reduce(
     case 'status-updated':
       return {
         ...state,
-        messages: state.messages.map((message) =>
-          message.id === event.id
-            ? { ...message, status: event.status, ...(event.error !== undefined ? { error: event.error } : {}) }
-            : message,
-        ),
+        messages: state.messages.map((message) => {
+          if (message.id !== event.id) {
+            return message;
+          }
+          const next: RenderableMessage = { ...message, status: event.status };
+          // A `failed` status carries its (optional) diagnostic reason; ANY other status clears a
+          // prior failure reason — so retrying a failed send back to `sending` (or a late `sent`)
+          // drops the stale error from the row rather than showing it under an in-flight message.
+          if (event.status === 'failed') {
+            if (event.error !== undefined) {
+              next.error = event.error;
+            }
+          } else {
+            delete next.error;
+          }
+          return next;
+        }),
       };
 
     case 'composer-changed':

@@ -309,6 +309,16 @@ export interface Messaging {
    */
   sendAttachment(recipientUid: string, content: OutgoingAttachment, options?: SendOptions): Promise<void>;
   /**
+   * Re-send a previously `failed` outbound message (connection-reliability UX): the user taps "retry"
+   * on a message that never got an ack (offline, transient encrypt/claim failure, ack timeout). The
+   * message is reconstructed from its persisted row and re-driven through the same send path, reusing
+   * its ORIGINAL id and seq so no duplicate row or sequence number is created — it simply flips back
+   * to `sending` and then `sent`/`failed` again. A no-op (idempotent) when the target is not an
+   * outbound row, is not currently `failed`, or has nothing resendable. Pass `options.threadId` for a
+   * shadow-thread message (the thread context is not stored on the row, so the caller supplies it).
+   */
+  retryMessage(recipientUid: string, target: MessageTarget, options?: ControlOptions): Promise<void>;
+  /**
    * React to a prior message with an emoji (Requirement 3.1). `target` identifies the message
    * by its LOCAL direction + seq; the reaction rides as an E2E content payload and the peer
    * renders it against the same message. Pass `options.threadId` to scope the reaction to a shadow
@@ -880,6 +890,56 @@ export class DefaultMessaging implements Messaging {
       remoteUid: recipientUid,
       ...(threadId !== undefined ? { threadId } : {}),
     });
+  }
+
+  /** @inheritdoc */
+  async retryMessage(
+    recipientUid: string,
+    target: MessageTarget,
+    options?: ControlOptions,
+  ): Promise<void> {
+    // Only an outbound row this device sent can be retried (you can't resend a peer's message).
+    if (target.direction !== 'out') {
+      return;
+    }
+    const threadId = routableThreadId(options?.threadId);
+
+    // Locate the failed row from the durable store (the source of truth that survives a relaunch).
+    const rows = await this.store.loadMessages();
+    const row = rows.find(
+      (r) => r.remoteUid === recipientUid && r.direction === 'out' && r.seq === target.seq,
+    );
+    // Idempotent: nothing to do if the row is gone, already in flight, or already acknowledged.
+    if (row === undefined || row.status !== 'failed') {
+      return;
+    }
+
+    // Reconstruct the content payload from the persisted row. The core does not retain the raw
+    // attachment bytes, so an attachment is only resendable once its ciphertext was uploaded (a
+    // non-empty blobId); a row whose upload never produced a handle is left failed.
+    let payload: ContentPayload;
+    if (row.attachment !== undefined) {
+      if (row.attachment.blobId.length === 0) {
+        return;
+      }
+      payload = { type: 'attachment', ...row.attachment };
+    } else if (row.plaintext !== null) {
+      payload = { type: 'text', body: row.plaintext, ...(row.viewOnce ? { viewOnce: true } : {}) };
+    } else {
+      return; // a deleted/empty row carries nothing to resend
+    }
+
+    // Flip back to `sending` (clearing the prior error) and re-drive the shared send tail with the
+    // SAME id + seq — no new row, no new sequence number, so the message updates in place.
+    await this.store.updateMessageStatus(row.id, 'sending');
+    this.emitUpdate({
+      type: 'status-updated',
+      id: row.id,
+      status: 'sending',
+      remoteUid: recipientUid,
+      ...(threadId !== undefined ? { threadId } : {}),
+    });
+    await this.dispatch(row.id, recipientUid, row.seq, payload, threadId);
   }
 
   /** @inheritdoc */
