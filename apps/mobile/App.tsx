@@ -958,6 +958,16 @@ function AppShell(): React.JSX.Element {
     (target: MessageTarget) => void controller.deleteMessage(target),
     [controller],
   );
+  // Retry a failed send. Mirror `onSend`'s shadow handling: pass the open thread's `threadId` so a
+  // shadow message re-sends on its thread, a surface message on the surface.
+  const onRetry = useCallback(
+    (target: MessageTarget) => {
+      const open = openChatRef.current;
+      const threadId = open !== null && shadowPeerRef.current.has(open) ? open : undefined;
+      void controller.retryMessage(target, threadId !== undefined ? { threadId } : undefined);
+    },
+    [controller],
+  );
   const onSetTimer = useCallback(
     (ttlMs: number) => void controller.setDisappearingTimer(ttlMs),
     [controller],
@@ -1052,6 +1062,7 @@ function AppShell(): React.JSX.Element {
           onReact={onReact}
           onEdit={onEdit}
           onDelete={onDelete}
+          onRetry={onRetry}
           onView={onView}
           onSetTimer={onSetTimer}
           getSafetyNumber={getSafetyNumber}

@@ -54,6 +54,8 @@ export interface ConversationScreenProps {
   onEdit: (target: MessageTarget, body: string) => void;
   /** Delete (tombstone) a message (Req 3.3). */
   onDelete: (target: MessageTarget) => void;
+  /** Re-send a failed outbound message (connection-reliability retry, roadmap P1 #5). */
+  onRetry?: (target: MessageTarget) => void;
   /** A view-once message was opened: purge it (delete-on-display) by its row id (Req 4.3). */
   onView: (id: string) => void;
   /** Set the conversation's disappearing-message timer in ms; `0` disables it (Req 4.1). */
@@ -267,6 +269,7 @@ export function ConversationScreen({
   onReact,
   onEdit,
   onDelete,
+  onRetry,
   onView,
   onSetTimer,
   getSafetyNumber,
@@ -541,6 +544,17 @@ export function ConversationScreen({
         </Pressable>
       </View>
 
+      {/* Offline/connecting banner (roadmap P1 #5): a calm reassurance that queued messages will
+          send once the socket is back, rather than a silent "Connecting…" header only. */}
+      {!connected && (
+        <View style={[styles.offlineBanner, { backgroundColor: t.noticeFill }]}>
+          <View style={[styles.offlineDot, { backgroundColor: t.faint }]} />
+          <Text style={[styles.offlineText, { color: t.noticeText }]} numberOfLines={1}>
+            Connecting… messages will send when you're back online
+          </Text>
+        </View>
+      )}
+
       <FlatList
         style={styles.list}
         contentContainerStyle={styles.listContent}
@@ -575,6 +589,7 @@ export function ConversationScreen({
                 isTail={item.isTail}
                 onLongPress={() => setActionTarget(m)}
                 onReveal={() => revealViewOnce(m)}
+                onRetry={onRetry !== undefined ? () => onRetry(targetOf(m)) : undefined}
               />
             </View>
           );
@@ -913,6 +928,7 @@ function Bubble({
   isTail = true,
   onLongPress,
   onReveal,
+  onRetry,
 }: {
   message: RenderableMessage;
   theme: Theme;
@@ -924,9 +940,14 @@ function Bubble({
   isTail?: boolean;
   onLongPress: () => void;
   onReveal: () => void;
+  /** Tap handler for a failed outbound message: re-send it (roadmap P1 #5). */
+  onRetry?: () => void;
 }): React.JSX.Element {
   const outbound = message.direction === 'out';
   const isError = message.status === 'delivery-error' || message.status === 'failed';
+  // A failed OUTBOUND message is tappable to re-send (delivery-error is an inbound decrypt failure,
+  // which is not resendable).
+  const retryable = outbound && message.status === 'failed' && onRetry !== undefined;
   const statusLabel = STATUS_LABEL[message.status];
   // Status clock/checks become vector icons (Req 3.9); failed/delivery-error keep a short text label.
   const showStatusIcon =
@@ -952,11 +973,17 @@ function Bubble({
         styles.bubbleWrap,
         { alignSelf: outbound ? 'flex-end' : 'flex-start', marginTop: isHead ? 8 : 2 },
       ]}
-      onPress={gated ? onReveal : undefined}
+      onPress={gated ? onReveal : retryable ? onRetry : undefined}
       onLongPress={message.deleted === true || gated ? undefined : onLongPress}
       delayLongPress={250}
       accessibilityRole="button"
-      accessibilityLabel={gated ? 'View-once message, tap to view' : `Message: ${typeof body === 'string' ? body : ''}`}
+      accessibilityLabel={
+        gated
+          ? 'View-once message, tap to view'
+          : retryable
+            ? 'Failed to send, tap to retry'
+            : `Message: ${typeof body === 'string' ? body : ''}`
+      }
     >
       <View
         style={[
@@ -1005,6 +1032,7 @@ function Bubble({
             <Text style={[styles.status, { color: isError ? t.danger : t.faint }]}>
               {statusLabel}
               {message.error !== undefined ? ` · ${message.error}` : ''}
+              {retryable ? ' · Tap to retry' : ''}
             </Text>
           )}
         </View>
@@ -1015,6 +1043,15 @@ function Bubble({
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
+  offlineBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 7,
+  },
+  offlineDot: { width: 7, height: 7, borderRadius: 4 },
+  offlineText: { fontSize: 12, fontWeight: '600', flex: 1 },
   header: {
     flexDirection: 'row',
     alignItems: 'center',

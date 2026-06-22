@@ -212,6 +212,8 @@ export interface ChatController {
   editMessage(target: MessageTarget, body: string): Promise<void>;
   /** Delete (tombstone) a message in the open conversation (Req 3.3). */
   deleteMessage(target: MessageTarget): Promise<void>;
+  /** Re-send a previously failed outbound message in the open conversation (P1 #5 retry). */
+  retryMessage(target: MessageTarget, options?: { threadId?: string }): Promise<void>;
   /** Set the open conversation's disappearing-message timer; `0` disables it (Req 4.1). */
   setDisappearingTimer(ttlMs: number): Promise<void>;
   /**
@@ -887,6 +889,15 @@ export function createMobileController(): ChatController {
       await messaging.deleteMessage(activeRecipient, target);
     },
 
+    async retryMessage(target: MessageTarget, options?: { threadId?: string }): Promise<void> {
+      if (messaging === null || activeRecipient === null) {
+        return;
+      }
+      // Pass `options.threadId` through for a shadow-thread message so the resend rides the shadow
+      // seq space + routing (mirrors `send`); a surface message passes none.
+      await messaging.retryMessage(activeRecipient, target, options);
+    },
+
     async setDisappearingTimer(ttlMs: number): Promise<void> {
       if (messaging === null || activeRecipient === null) {
         return;
@@ -1275,6 +1286,9 @@ export function createDemoController(): ChatController {
       // No transport in the demo controller.
     },
     async deleteMessage(): Promise<void> {
+      // No transport in the demo controller.
+    },
+    async retryMessage(): Promise<void> {
       // No transport in the demo controller.
     },
     async setDisappearingTimer(): Promise<void> {
