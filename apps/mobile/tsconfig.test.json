@@ -36,7 +36,9 @@
     "src/data/shadow-secret-persistence.test.ts",
     "src/data/row-thread-association.ts",
     "src/data/row-thread-association.test.ts",
-    "src/data/shadow-create-e2e.test.ts"
+    "src/data/shadow-create-e2e.test.ts",
+    "src/push/push-registration.ts",
+    "src/push/push-registration.test.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }
