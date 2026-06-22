@@ -18,6 +18,19 @@ import { TabBar, type Tab } from './TabBar';
 const ORDER: readonly Tab[] = ['chats', 'calls', 'settings'];
 const LAST = ORDER.length - 1;
 
+/**
+ * The pager's springs MUST stay on the JS driver (`false`).
+ *
+ * `translateX` drives the track's `transform` (native-driver-safe on its own), but its
+ * interpolation `progress` is handed to {@link TabBar}, which animates the pill's `left` and `width`
+ * — LAYOUT props the native animated module does NOT support. Once `translateX` is moved to the
+ * native driver, that same node feeds those unsupported props and React Native throws
+ * "Style property 'left' is not supported by native animated module". In a release build there is no
+ * red box to dismiss, so it crashes on launch (the shell mounts immediately) and the app never opens.
+ * Keeping the whole graph JS-driven lets one value legally feed both `transform` and the pill layout.
+ */
+const USE_NATIVE_DRIVER = false;
+
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
 
 export function TabPager({
@@ -50,7 +63,7 @@ export function TabPager({
   useEffect(() => {
     const target = -index * width;
     baseX.current = target;
-    Animated.spring(translateX, { toValue: target, useNativeDriver: true, speed: 16, bounciness: 0 }).start();
+    Animated.spring(translateX, { toValue: target, useNativeDriver: USE_NATIVE_DRIVER, speed: 16, bounciness: 0 }).start();
   }, [index, width, translateX]);
 
   // Live 0..2 page position for the pill, recomputed if the width changes.
@@ -90,7 +103,7 @@ export function TabPager({
           baseX.current = -target * w;
           Animated.spring(translateX, {
             toValue: baseX.current,
-            useNativeDriver: true,
+            useNativeDriver: USE_NATIVE_DRIVER,
             speed: 16,
             bounciness: 0,
           }).start();
