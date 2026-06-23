@@ -446,6 +446,13 @@ export interface Messaging {
    */
   requestBiometricVerification(recipientUid: string): Promise<boolean>;
   /**
+   * Whether `recipientUid` has a PUBLIC attestation key persisted on this device (Signature Feature
+   * 2b, §4.5) — i.e. they enrolled in a previous session and we can verify their proofs without them
+   * re-enrolling. Lets the UI re-enable "verify presence" after a relaunch (the in-RAM badge resets,
+   * but the durable vault key does not). Resolves `false` when no enrollment store is wired.
+   */
+  isBiometricPeerEnrolled(recipientUid: string): Promise<boolean>;
+  /**
    * Handle an inbound `CiphertextEnvelope` from the Realtime_Client: decrypt and render the
    * plaintext, or surface a `delivery-error` with no plaintext on decryption failure
    * (Requirements 5.4, 5.5, 6.9).
@@ -1613,6 +1620,12 @@ export class DefaultMessaging implements Messaging {
     this.bioVerifyChallenges.set(recipientUid, challenge);
     await this.sendControl(recipientUid, { type: 'bioverify-request', challenge });
     return true;
+  }
+
+  /** @inheritdoc */
+  async isBiometricPeerEnrolled(recipientUid: string): Promise<boolean> {
+    const key = await this.biometricEnrollment?.loadPeerAttestationKey(recipientUid);
+    return key != null && key.length > 0;
   }
 
   /** @inheritdoc */

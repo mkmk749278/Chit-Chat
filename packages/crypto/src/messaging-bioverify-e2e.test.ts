@@ -244,6 +244,39 @@ test('enrolment shares the public key and a live-biometric proof verifies (§4.5
   assert.ok(result && result.type === 'bioverify-result' && result.ok === true && result.outcome === 'verified');
 });
 
+test('isBiometricPeerEnrolled reflects the durable enrollment store across a relaunch (§4.5)', async () => {
+  const alice = await newParty('alice', 'a-dev');
+  const bob = await newParty('bob', 'b-dev');
+  const hub = makeHub();
+  const A = makeClient(alice, { [bob.uid]: bob.bundle }, hub, (await makeFakeAttestor()).attestor);
+  const B = makeClient(bob, { [alice.uid]: alice.bundle }, hub, (await makeFakeAttestor()).attestor);
+
+  // Before enrolment Alice has no stored key for Bob, so the UI must keep "verify presence" disabled.
+  assert.equal(await A.messaging.isBiometricPeerEnrolled(bob.uid), false);
+
+  await B.messaging.enrollBiometricAttestation(alice.uid);
+  await flush();
+
+  // After enrolment the key persists in the store, so a fresh Messaging built over the SAME store
+  // (a relaunch — the in-RAM badge is gone but the durable key survives) still reports enrolled.
+  assert.equal(await A.messaging.isBiometricPeerEnrolled(bob.uid), true);
+  const relaunched = createMessaging(
+    {
+      realtime: hub.realtimeFor(alice.uid),
+      sessions: createSessionManager(alice.store, createPureTsLibsignalEngine()),
+      sequence: makeSequence(),
+      codec: createEnvelopeCodec(),
+      keyClaimer: { claim: async () => null },
+      sender: { resolveSender: async () => ({ uid: alice.uid, deviceId: alice.deviceId }) },
+      store: makeStore(),
+      biometricEnrollment: A.enrollment,
+    },
+    { generateId: () => 'x' },
+  );
+  assert.equal(await relaunched.isBiometricPeerEnrolled(bob.uid), true);
+  relaunched.dispose();
+});
+
 test('a declined biometric (borrowed device) fails with outcome unavailable (§4.5)', async () => {
   const alice = await newParty('alice', 'a-dev');
   const bob = await newParty('bob', 'b-dev');

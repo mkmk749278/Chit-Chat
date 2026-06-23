@@ -389,7 +389,14 @@ function AppShell(): React.JSX.Element {
   // with the peer, and challenge the peer to prove the real owner is present via a live biometric.
   const onEnrollBiometric = useCallback(() => {
     void controller.enrollBiometric().then((ok) => {
-      if (!ok) {
+      if (ok) {
+        // Success has no inbound event on THIS side (the peer is the one who receives our key), so
+        // confirm explicitly that the one-time setup completed and what to do next.
+        Alert.alert(
+          'Biometric presence set up',
+          'Your contact can now verify that the real you is present. Ask them to do the same so you can verify them too.',
+        );
+      } else {
         Alert.alert(
           'Biometric unavailable',
           'Set up Face ID / fingerprint on this device to use biometric presence verification.',
@@ -1091,6 +1098,29 @@ function AppShell(): React.JSX.Element {
   const openConversation = openChatId !== null
     ? conversations.find((c) => c.id === openChatId) ?? null
     : null;
+
+  // Biometric presence (Signature Feature 2b, §4.5): the per-peer badge is RAM-only and resets each
+  // launch, but the peer's enrolled attestation key persists in the encrypted vault. On opening a
+  // chat, re-hydrate the badge to `enrolled` when a stored key exists so "Verify presence" works
+  // after a relaunch without the peer re-enrolling. Never downgrade a peer already shown further
+  // along (incoming/verified/failed/unavailable) this session.
+  useEffect(() => {
+    if (openChatId === null) {
+      return;
+    }
+    let cancelled = false;
+    void controller.isPeerBiometricEnrolled().then((enrolled) => {
+      if (cancelled || !enrolled) {
+        return;
+      }
+      setBioByPeer((prev) => (prev[openChatId] === undefined || prev[openChatId] === 'none'
+        ? { ...prev, [openChatId]: 'enrolled' }
+        : prev));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [openChatId, controller]);
 
   // Hidden chats never appear in the list or contacts (§3.1); the only way in is the search-bar
   // secret (onRevealSearch), which opens the chat by id even though it is filtered out here. Shadow

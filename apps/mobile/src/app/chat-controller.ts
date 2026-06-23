@@ -279,6 +279,13 @@ export interface ChatController {
    */
   requestBiometricVerification(): Promise<boolean>;
   /**
+   * Whether the open conversation's peer has a PUBLIC attestation key persisted on this device
+   * (Signature Feature 2b, §4.5), i.e. they enrolled in a previous session. Lets the UI re-enable
+   * "verify presence" after a relaunch even though the in-RAM badge has reset. `false` when no
+   * conversation is open or no peer key is stored.
+   */
+  isPeerBiometricEnrolled(): Promise<boolean>;
+  /**
    * Whether a real app PIN is configured, so the shell should present the lock screen on launch
    * (Signature Feature 4, §6). `false` when no PIN is set or the encrypted vault is unavailable.
    */
@@ -1030,6 +1037,13 @@ export function createMobileController(): ChatController {
       return messaging.requestBiometricVerification(activeRecipient);
     },
 
+    async isPeerBiometricEnrolled(): Promise<boolean> {
+      if (messaging === null || activeRecipient === null) {
+        return false;
+      }
+      return messaging.isBiometricPeerEnrolled(activeRecipient);
+    },
+
     async hasAppPin(): Promise<boolean> {
       return gate !== null ? gate.hasRealPin() : false;
     },
@@ -1395,6 +1409,10 @@ export function createDemoController(): ChatController {
     },
     async requestBiometricVerification(): Promise<boolean> {
       // No messaging/attestor in the demo controller.
+      return false;
+    },
+    async isPeerBiometricEnrolled(): Promise<boolean> {
+      // No enrollment store in the demo controller.
       return false;
     },
     async hasAppPin(): Promise<boolean> {

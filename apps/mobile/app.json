@@ -14,7 +14,8 @@
     },
     "ios": {
       "infoPlist": {
-        "NSPhotoLibraryUsageDescription": "Lumin Chat needs access to your photos so you can send them in an end-to-end encrypted chat."
+        "NSPhotoLibraryUsageDescription": "Lumin Chat needs access to your photos so you can send them in an end-to-end encrypted chat.",
+        "NSFaceIDUsageDescription": "Lumin Chat uses Face ID to confirm it is really you before proving your live presence to a contact."
       }
     },
     "android": {
@@ -23,7 +24,19 @@
       "googleServicesFile": "./google-services.json"
     },
     "plugins": [
-      "@react-native-firebase/app"
+      "@react-native-firebase/app",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Lumin Chat uses Face ID to confirm it is really you before proving your live presence to a contact."
+        }
+      ],
+      [
+        "expo-secure-store",
+        {
+          "faceIDPermission": "Lumin Chat uses Face ID to unlock the key that signs your live-presence proof."
+        }
+      ]
     ],
     "newArchEnabled": true
   }
