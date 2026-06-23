@@ -565,6 +565,14 @@ export class DefaultMessaging implements Messaging {
   private readonly typingListeners = new Set<(fromUid: string) => void>();
   private readonly verificationListeners = new Set<(event: VerificationEvent) => void>();
   /**
+   * Per-peer serialization queues for inbound envelope processing. Each peer's envelopes are
+   * chained onto a promise so they are processed one-at-a-time in arrival order, preventing
+   * concurrent libsignal session access that can corrupt the Double Ratchet state when multiple
+   * frames arrive close together (e.g. verify-response triggering a sendControl while a text
+   * message is being decrypted).
+   */
+  private readonly envelopeQueues = new Map<string, Promise<void>>();
+  /**
    * Per-peer in-chat-verification seeds, RAM-only and session-scoped: cleared on `dispose`
    * (app lock/exit), so verification state never outlives the session (§4.4) and the seed is
    * never persisted (ephemeral-by-construction).
@@ -1039,6 +1047,7 @@ export class DefaultMessaging implements Messaging {
           remoteUid,
           ...threadTag,
         });
+        this.emitUpdate({ type: 'inbound-control-frame', seq: envelope.seq, remoteUid, ...threadTag });
         return;
       }
       case 'edit': {
@@ -1052,6 +1061,7 @@ export class DefaultMessaging implements Messaging {
           remoteUid,
           ...threadTag,
         });
+        this.emitUpdate({ type: 'inbound-control-frame', seq: envelope.seq, remoteUid, ...threadTag });
         return;
       }
       case 'delete': {
@@ -1064,6 +1074,7 @@ export class DefaultMessaging implements Messaging {
           remoteUid,
           ...threadTag,
         });
+        this.emitUpdate({ type: 'inbound-control-frame', seq: envelope.seq, remoteUid, ...threadTag });
         return;
       }
       case 'timer':
@@ -1078,6 +1089,7 @@ export class DefaultMessaging implements Messaging {
           await this.store.setConversationTimer(remoteUid, Math.max(0, payload.ttlMs));
         }
         this.emitUpdate({ type: 'timer-changed', ttlMs: payload.ttlMs, remoteUid, ...threadTag });
+        this.emitUpdate({ type: 'inbound-control-frame', seq: envelope.seq, remoteUid, ...threadTag });
         return;
       case 'attachment': {
         // E2E attachment (Req 7): the payload carries the blob handle + the per-attachment key/iv
@@ -1170,6 +1182,7 @@ export class DefaultMessaging implements Messaging {
         // and prompt the local user to answer with the rotating code (§4.3).
         this.verificationSeeds.set(remoteUid, verificationSeedFromBase64(payload.seed));
         this.emitVerification({ type: 'verify-incoming', peerUid: remoteUid });
+        this.emitUpdate({ type: 'inbound-control-frame', seq: envelope.seq, remoteUid, ...threadTag });
         return;
       case 'verify-response': {
         // We requested verification; classify the responder's code. Both a normal and a duress
@@ -1184,15 +1197,18 @@ export class DefaultMessaging implements Messaging {
         // Tell the responder the outcome so their badge converges with ours (§4.3), then show ours.
         await this.sendControl(remoteUid, { type: 'verify-result', ok });
         this.emitVerification({ type: 'verify-result', peerUid: remoteUid, ok });
+        this.emitUpdate({ type: 'inbound-control-frame', seq: envelope.seq, remoteUid, ...threadTag });
         return;
       }
       case 'verify-result':
         // The requester reported the outcome of the code we submitted; mirror their badge (§4.3).
         this.emitVerification({ type: 'verify-result', peerUid: remoteUid, ok: payload.ok });
+        this.emitUpdate({ type: 'inbound-control-frame', seq: envelope.seq, remoteUid, ...threadTag });
         return;
       case 'duress-alert':
         // We are a configured trusted contact: surface the silent duress alert discreetly (§4.3).
         this.emitVerification({ type: 'duress-alert-received', peerUid: payload.peerUid });
+        this.emitUpdate({ type: 'inbound-control-frame', seq: envelope.seq, remoteUid, ...threadTag });
         return;
       case 'shadow-invite':
       case 'shadow-accept':
@@ -1204,9 +1220,11 @@ export class DefaultMessaging implements Messaging {
         // ConversationRegistry as a message. When no coordinator is wired they are ignored, exactly
         // like any other control an older surface-only build does not consume (forward-compat).
         await this.shadowInvites?.handleInbound(remoteUid, payload);
+        this.emitUpdate({ type: 'inbound-control-frame', seq: envelope.seq, remoteUid, ...threadTag });
         return;
       case 'unsupported':
         // A payload type this client version does not understand; ignore (forward-compat).
+        this.emitUpdate({ type: 'inbound-control-frame', seq: envelope.seq, remoteUid, ...threadTag });
         return;
       default: {
         const _exhaustive: never = payload;
@@ -1554,11 +1572,23 @@ export class DefaultMessaging implements Messaging {
     }
   }
 
-  /** Route an inbound frame: `deliver` → decrypt+render; `ack` → resolve send; `typing` → hint. */
+  /**
+   * Enqueue an inbound envelope for per-peer serial processing. Chaining onto the existing
+   * promise for this sender ensures that all envelopes from the same peer are processed
+   * one-at-a-time in arrival order, preventing concurrent libsignal session access.
+   */
+  private enqueueEnvelope(senderUid: string, envelope: CiphertextEnvelope): void {
+    const prev = this.envelopeQueues.get(senderUid) ?? Promise.resolve();
+    // Always run the next envelope even if the previous one threw (chain via .then + .catch).
+    const next = prev.then(() => this.onEnvelope(envelope)).catch(() => {});
+    this.envelopeQueues.set(senderUid, next);
+  }
+
+  /** Route an inbound frame: `deliver` → decrypt+render (serialised per-peer); `ack` → resolve send; `typing` → hint. */
   private handleFrame(frame: ServerToClientFrame): void {
     if (frame.kind === 'deliver') {
-      // Fire-and-forget: onEnvelope persists + emits; a rejection cannot break the socket.
-      void this.onEnvelope(frame.envelope);
+      // Serialise per-peer so concurrent libsignal session access cannot corrupt ratchet state.
+      this.enqueueEnvelope(frame.envelope.senderUid, frame.envelope);
       return;
     }
     if (frame.kind === 'ack') {

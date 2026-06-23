@@ -88,3 +88,42 @@ test('duplicate arrivals do not create spurious gaps', () => {
   const state = apply([inbound(1), inbound(2), inbound(2), inbound(3)]);
   assert.deepEqual(state.missingBefore, []);
 });
+
+// --- inbound-control-frame gap filling ---------------------------------------
+
+const control = (seq: number): ConversationEvent => ({
+  type: 'inbound-control-frame',
+  seq,
+});
+
+test('a control frame at a skipped seq fills the gap (no false banner)', () => {
+  // Peer sent: seq=1 text, seq=2 verify-request (control), seq=3 text.
+  // Without control-frame tracking, seq=3 would report a gap. With it, no gap.
+  const state = apply([inbound(1), control(2), inbound(3)]);
+  assert.deepEqual(state.missingBefore, []);
+});
+
+test('multiple control frames between messages leave no gap', () => {
+  const state = apply([inbound(1), control(2), control(3), inbound(4)]);
+  assert.deepEqual(state.missingBefore, []);
+});
+
+test('a real missing message is still detected even with control frames present', () => {
+  // seq 1, 2(control), 4 arrived — seq 3 is truly missing.
+  const state = apply([inbound(1), control(2), inbound(4)]);
+  assert.deepEqual(state.missingBefore, [4]);
+});
+
+test('control frames do not create false gaps between themselves', () => {
+  const state = apply([inbound(1), control(2), control(4), inbound(5)]);
+  // seq 3 is missing between control frames; seq 5 follows a gap → banner.
+  assert.deepEqual(state.missingBefore, [4]);
+});
+
+test('conversation-cleared resets control seq tracking', () => {
+  const withControl = apply([inbound(1), control(2)]);
+  assert.equal(withControl.receivedControlSeqs.size, 1);
+  const cleared = reduce(withControl, { type: 'conversation-cleared' });
+  assert.equal(cleared.receivedControlSeqs.size, 0);
+  assert.deepEqual(cleared.missingBefore, []);
+});
