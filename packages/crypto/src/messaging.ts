@@ -1396,8 +1396,9 @@ export class DefaultMessaging implements Messaging {
         // history, emit lifecycle events) — they NEVER become a conversation row and never reach the
         // ConversationRegistry as a message. When no coordinator is wired they are ignored, exactly
         // like any other control an older surface-only build does not consume (forward-compat).
+        // No inbound-control-frame here: these are pre-conversation surface-seq frames for which no
+        // ConversationState may exist yet; emitting one would auto-create a phantom surface entry.
         await this.shadowInvites?.handleInbound(remoteUid, payload);
-        this.emitUpdate({ type: 'inbound-control-frame', seq: envelope.seq, remoteUid, ...threadTag });
         return;
       case 'unsupported':
         // A payload type this client version does not understand; ignore (forward-compat).
