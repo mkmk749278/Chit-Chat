@@ -134,6 +134,16 @@ export interface ConversationState {
    */
   missingBefore: number[];
   /**
+   * Inbound sequence numbers from control frames (reaction, edit, delete, timer, verify-*,
+   * duress-alert, shadow-invite/accept/decline/revoke, unsupported) that do not produce a
+   * visible message row. Tracked alongside `messages` so that `computeMissingBefore` treats
+   * these seqs as "received", preventing false "Messages may be missing" banners when a
+   * regular message follows a control frame from the same peer (Requirements 2.2, 5.5).
+   *
+   * In-memory / session-scoped only: not persisted across relaunches.
+   */
+  receivedControlSeqs: ReadonlySet<number>;
+  /**
    * Active disappearing-message timer for the conversation, in milliseconds; `0` means
    * disabled. Set by a `timer-changed` event so both peers agree on the same TTL (Req 4.1).
    * The actual scheduled deletion of expired messages is a store concern (task 4.2).
@@ -164,6 +174,12 @@ export interface ConversationState {
  * - `conversation-cleared`    — clear the conversation's local history (Clear chat): reset to
  *                               empty messages/gap state while preserving connection, composer,
  *                               disappearing-timer, and the web ephemerality acknowledgment.
+ * - `inbound-control-frame`   — an inbound control frame (reaction/edit/delete/timer/verify-X/
+ *                               duress-alert/shadow-invite/shadow-accept/shadow-decline/
+ *                               shadow-revoke/unsupported) was received at `seq` and consumed no
+ *                               visible message row. Tracked for gap detection so a regular
+ *                               message after a control frame does not produce a false "Messages
+ *                               may be missing" banner (Requirements 2.2, 5.5).
  *
  * The reaction/edit/delete events address their target by its LOCAL `(targetDirection,
  * targetSeq)`; the Messaging layer maps the on-wire sender-relative reference onto local
@@ -228,6 +244,17 @@ export type ConversationEvent =
   | { type: 'messages-expired'; ids: string[]; remoteUid?: string; threadId?: string }
   | {
       /**
+       * An inbound control frame was received at `seq` but produced no visible message row.
+       * Used solely to fill the gap-detection seq set so a subsequent regular message from
+       * the same peer does not trigger a false "Messages may be missing" banner (Req 2.2).
+       */
+      type: 'inbound-control-frame';
+      seq: number;
+      remoteUid?: string;
+      threadId?: string;
+    }
+  | {
+      /**
        * Clear a conversation's LOCAL history (the "Clear chat" action). Resets the conversation to
        * empty — no messages and no gap markers — while PRESERVING `connection`, `composer`,
        * `disappearingTtlMs`, and `webWarningAcknowledged` (the chat stays open, just empty). This is
@@ -279,6 +306,7 @@ export function initialConversationState(platform: 'mobile' | 'web'): Conversati
     connection: 'disconnected',
     messages: [],
     missingBefore: [],
+    receivedControlSeqs: new Set<number>(),
     disappearingTtlMs: 0,
     composer: { text: '', canSend: false },
     webWarningAcknowledged: platform !== 'web',
@@ -340,18 +368,25 @@ function upsertMessage(
 /**
  * Derive the inbound sequence numbers that immediately follow a gap (Requirement 2).
  *
- * Computed from the SET of received inbound seqs (a `delivery-error` entry still counts as
- * received — the message arrived, it just couldn't be decrypted), so the result depends only
- * on which messages are present, not the order they arrived in. A seq `s` is reported when the
- * previous present inbound seq is not `s - 1`, meaning at least one message between them is
- * missing. Only gaps strictly between the lowest and highest received inbound seq are reported,
- * so a recipient who joins mid-stream is not shown a spurious leading gap, and backfilled
- * messages clear the gap automatically (Requirements 2.1, 2.3).
+ * Computed from the SET of received inbound seqs — message rows (a `delivery-error` entry
+ * still counts as received) PLUS any control-frame seqs tracked in `controlSeqs` (reaction,
+ * edit, delete, timer, verify-*, duress-alert, shadow-*, unsupported). Both sources count as
+ * "received" so a regular message after a control frame never produces a false gap. A seq `s`
+ * is reported when the previous present inbound seq is not `s - 1`. Only gaps strictly between
+ * the lowest and highest received inbound seq are reported, so a recipient who joins mid-stream
+ * is not shown a spurious leading gap, and backfilled messages clear the gap automatically
+ * (Requirements 2.1, 2.3).
  */
-function computeMissingBefore(messages: readonly RenderableMessage[]): number[] {
-  const inboundSeqs = messages
+function computeMissingBefore(
+  messages: readonly RenderableMessage[],
+  controlSeqs: ReadonlySet<number>,
+): number[] {
+  const inboundSeqs: number[] = messages
     .filter((m) => m.direction === 'in')
     .map((m) => m.seq);
+  for (const s of controlSeqs) {
+    inboundSeqs.push(s);
+  }
   if (inboundSeqs.length < 2) {
     return [];
   }
@@ -406,7 +441,7 @@ export function reduce(
       return {
         ...state,
         messages,
-        missingBefore: computeMissingBefore(messages),
+        missingBefore: computeMissingBefore(messages, state.receivedControlSeqs),
       };
     }
 
@@ -459,7 +494,7 @@ export function reduce(
       return {
         ...state,
         messages,
-        missingBefore: computeMissingBefore(messages),
+        missingBefore: computeMissingBefore(messages, state.receivedControlSeqs),
       };
     }
 
@@ -515,7 +550,20 @@ export function reduce(
       if (messages.length === state.messages.length) {
         return state;
       }
-      return { ...state, messages, missingBefore: computeMissingBefore(messages) };
+      return { ...state, messages, missingBefore: computeMissingBefore(messages, state.receivedControlSeqs) };
+    }
+
+    case 'inbound-control-frame': {
+      // Record the envelope seq from a control frame that produced no visible message row, so
+      // gap detection treats this seq as "received" (Requirements 2.2, 5.5). Uses a Set to
+      // guarantee deduplication; immutable spread keeps the reducer pure.
+      const next = new Set(state.receivedControlSeqs);
+      next.add(event.seq);
+      return {
+        ...state,
+        receivedControlSeqs: next,
+        missingBefore: computeMissingBefore(state.messages, next),
+      };
     }
 
     case 'conversation-cleared':
@@ -523,7 +571,7 @@ export function reduce(
       // markers — while PRESERVING connection, composer, the disappearing-message timer, and the web
       // ephemerality acknowledgment. The chat itself stays open (now empty); this is "clear history",
       // NOT "delete conversation". `remoteUid`/`threadId` are routing tags read only by the registry.
-      return { ...state, messages: [], missingBefore: [] };
+      return { ...state, messages: [], missingBefore: [], receivedControlSeqs: new Set<number>() };
 
     default: {
       // Exhaustiveness guard: a new event variant must be handled explicitly.

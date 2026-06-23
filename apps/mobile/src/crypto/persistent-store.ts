@@ -191,6 +191,13 @@ interface VaultDoc {
    * touches the `MessageRow` wire shape or the frozen backend. Absent ⇒ no shadow rows tagged yet.
    */
   shadowRowThreads?: Record<string, string[]>;
+  /**
+   * Biometric presence attestation enrolment (Signature Feature 2b, §4.5): peers' PUBLIC attestation
+   * keys, base64-encoded, keyed by peer uid. Used to verify a peer's live-biometric proofs across
+   * launches. PUBLIC key material only — no secret — but kept inside the encrypted vault for
+   * consistency. Absent ⇒ no peer has enrolled on this device yet.
+   */
+  biometricEnrollment?: Record<string, string>;
 }
 
 const emptyDoc = (): VaultDoc => ({

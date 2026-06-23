@@ -70,6 +70,28 @@ export type ContentPayload =
    */
   | { type: 'duress-alert'; peerUid: string }
   /**
+   * Biometric presence attestation control payloads (Signature Feature 2b, §4.5). They ride inside
+   * the existing E2E ciphertext exactly like the verify-* controls, so the server never learns a
+   * presence check is happening. See {@link ./biometric-attestation}.
+   */
+  /** Attester → peer: enrol by sharing the device's PUBLIC attestation key (base64), once (§4.5). */
+  | { type: 'bioverify-enroll'; attestKey: string }
+  /** Verifier → attester: request a live biometric proof, carrying the fresh base64 challenge (§4.5). */
+  | { type: 'bioverify-request'; challenge: string }
+  /**
+   * Attester → verifier: the response to a challenge. When the attester's biometric succeeded it
+   * carries the echoed `challenge`, the signing time `issuedAt`, and the base64 `signature`. When
+   * biometrics are unavailable or the user cancelled, `available` is `false` and no signature is
+   * sent — so the verifier can distinguish "could not attest" from "attested but failed" (§4.5).
+   */
+  | {
+      type: 'bioverify-response';
+      challenge: string;
+      issuedAt: number;
+      signature: string;
+      available: boolean;
+    }
+  /**
    * Shadow Chat invite control payloads (Shadow Chat Invites, design "Component B"; Req 9, 12).
    * They ride inside the existing E2E ciphertext exactly like the verify-* / duress-alert controls, so
    * the (frozen, server-blind) backend never learns an invite is happening. They are intercepted by
@@ -298,6 +320,34 @@ function decodeEnvelopePayload(env: Record<string, unknown>): ContentPayload {
     case 'duress-alert':
       return typeof env.peerUid === 'string' && env.peerUid.length > 0
         ? { type: 'duress-alert', peerUid: env.peerUid }
+        : { type: 'unsupported' };
+    case 'bioverify-enroll':
+      // The PUBLIC attestation key, base64; a non-string / empty key ⇒ unsupported (no enrolment).
+      return typeof env.attestKey === 'string' && env.attestKey.length > 0
+        ? { type: 'bioverify-enroll', attestKey: env.attestKey }
+        : { type: 'unsupported' };
+    case 'bioverify-request':
+      return typeof env.challenge === 'string' && env.challenge.length > 0
+        ? { type: 'bioverify-request', challenge: env.challenge }
+        : { type: 'unsupported' };
+    case 'bioverify-response':
+      // A well-formed response always carries challenge/issuedAt/available; `signature` is required
+      // as a string but may be empty when `available === false` (no proof was produced). Validating
+      // the shape totally here means a malformed response decodes to `unsupported` and is ignored.
+      return typeof env.challenge === 'string' &&
+        env.challenge.length > 0 &&
+        typeof env.issuedAt === 'number' &&
+        Number.isFinite(env.issuedAt) &&
+        env.issuedAt >= 0 &&
+        typeof env.signature === 'string' &&
+        typeof env.available === 'boolean'
+        ? {
+            type: 'bioverify-response',
+            challenge: env.challenge,
+            issuedAt: env.issuedAt,
+            signature: env.signature,
+            available: env.available,
+          }
         : { type: 'unsupported' };
     case 'shadow-invite':
       // `key` must be canonical base64 decoding to EXACTLY 32 bytes (the shared thread key, Req 9.1);

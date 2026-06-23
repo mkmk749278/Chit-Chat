@@ -3,6 +3,8 @@ import { test } from 'node:test';
 
 import type { ClaimedPreKeyBundle, ClientToServerFrame, ServerToClientFrame } from '@chat-app/types';
 
+import { initialConversationState, reduce, type ConversationEvent, type ConversationState } from './conversation-reducer';
+
 import { createEnvelopeCodec } from './envelope-codec';
 import { createInMemorySignalProtocolStore } from './in-memory-signal-store';
 import {
@@ -228,6 +230,45 @@ test('a wrong code fails verification on both sides', async () => {
   await B.messaging.respondVerification('nobody', 'normal');
   await flush();
   assert.equal(A.verifications.filter((e) => e.type === 'verify-result').length, 0);
+
+  A.messaging.dispose();
+  B.messaging.dispose();
+});
+
+test('messages sent after verification are delivered without a false gap banner', async () => {
+  // Regression: verify-request/response/result each consume a sequence number but produce no
+  // visible message row. Without inbound-control-frame tracking the gap detector sees
+  // [text-seq, text-after-verify-seq] and reports a false "Messages may be missing" banner.
+  const alice = await newParty('alice', 'a-dev');
+  const bob = await newParty('bob', 'b-dev');
+  const hub = makeHub();
+  const A = makeClient(alice, { [bob.uid]: bob.bundle }, hub);
+  const B = makeClient(bob, { [alice.uid]: alice.bundle }, hub);
+
+  // Accumulate ALL conversation events for Alice so we can run them through the reducer.
+  const aliceEvents: ConversationEvent[] = [];
+  A.messaging.onConversationUpdate((e) => aliceEvents.push(e));
+
+  // Bob sends a message before verification.
+  await B.messaging.send(alice.uid, 'hello before verify');
+  await flush();
+
+  // Alice requests; Bob answers with the normal code.
+  await A.messaging.requestVerification(bob.uid);
+  await flush();
+  await B.messaging.respondVerification(alice.uid, 'normal');
+  await flush();
+
+  // Bob sends a message after the full verification handshake.
+  await B.messaging.send(alice.uid, 'hello after verify');
+  await flush();
+
+  // Replay Alice's events through the reducer and confirm no gap is reported.
+  const state = aliceEvents.reduce(reduce, initialConversationState('mobile'));
+  const texts = state.messages.filter((m) => m.direction === 'in' && m.text !== null).map((m) => m.text);
+  assert.ok(texts.includes('hello before verify'), 'first message must be received');
+  assert.ok(texts.includes('hello after verify'), 'post-verification message must be received');
+  assert.deepEqual(state.missingBefore, [], 'no false gap after verification control frames');
 
   A.messaging.dispose();
   B.messaging.dispose();

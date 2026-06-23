@@ -46,6 +46,14 @@ import type {
 import type { ClaimedPreKeyBundle } from '@chat-app/types';
 
 import { decryptAttachment, encryptAttachment } from './attachment-crypto';
+import {
+  buildAttestationMessage,
+  generateBioVerifyChallenge,
+  verifyBioAttestation,
+  type BioVerifyOutcome,
+  type BiometricAttestor,
+  type BiometricEnrollmentStore,
+} from './biometric-attestation';
 import type { ConversationEvent, RenderableAttachment } from './conversation-reducer';
 import { decodeContentPayload, encodeContentPayload, type ContentPayload } from './content-payload';
 import { msUntilNextExpiry, selectExpired, type ExpiringEntry } from './disappearing-timer';
@@ -187,6 +195,21 @@ export interface MessagingDeps {
    * and an inbound attachment surfaces as a delivery-error row, so the surface path is unchanged.
    */
   blobs?: BlobStore;
+  /**
+   * OPTIONAL biometric presence attestor (Signature Feature 2b, §4.5): the device's biometric-gated
+   * signing oracle. When present, {@link Messaging.enrollBiometricAttestation} can publish this
+   * device's public attestation key and an inbound `bioverify-request` is answered by prompting a
+   * live biometric and signing the challenge. ABSENT ⇒ the device cannot attest: an inbound request
+   * is answered with `available: false` and a local enrol/verify request resolves as unavailable, so
+   * the surface path is unchanged.
+   */
+  biometricAttestor?: BiometricAttestor;
+  /**
+   * OPTIONAL durable store for peers' PUBLIC attestation keys (Signature Feature 2b). When present,
+   * an inbound `bioverify-enroll` is persisted here and a `bioverify-response` is verified against
+   * the stored key. ABSENT ⇒ no peer can be enrolled, so a verification resolves as `not-enrolled`.
+   */
+  biometricEnrollment?: BiometricEnrollmentStore;
 }
 
 /**
@@ -281,7 +304,25 @@ export type VerificationEvent =
    * We are a pre-configured trusted contact and received a SILENT duress alert: `peerUid` is the
    * person who was coerced into running a verification (§4.2, §4.3). The UI surfaces this discreetly.
    */
-  | { type: 'duress-alert-received'; peerUid: string };
+  | { type: 'duress-alert-received'; peerUid: string }
+  /**
+   * Biometric presence attestation (Signature Feature 2b, §4.5).
+   */
+  /** `peerUid` shared their public attestation key — biometric presence verification is now possible. */
+  | { type: 'bioverify-enrolled'; peerUid: string }
+  /** `peerUid` asked us to prove presence; our device is prompting the live biometric to answer. */
+  | { type: 'bioverify-incoming'; peerUid: string }
+  /**
+   * A biometric presence verification with `peerUid` finished. `ok` drives the badge; `outcome`
+   * carries the precise result for diagnostics/UX (`verified`, or why it failed — a replay,
+   * staleness, a forged/borrowed-device signature, or that the peer could not attest at all).
+   */
+  | {
+      type: 'bioverify-result';
+      peerUid: string;
+      ok: boolean;
+      outcome: BioVerifyOutcome | 'unavailable' | 'not-enrolled';
+    };
 
 /** Which rotating code the responder submits when answering a verification (§4.2). */
 export type VerificationResponseKind = 'normal' | 'duress';
@@ -388,6 +429,22 @@ export interface Messaging {
   ): Promise<void>;
   /** Subscribe to {@link VerificationEvent}s driving the per-session verification badge (§4.3). */
   onVerification(listener: (event: VerificationEvent) => void): Unsubscribe;
+  /**
+   * Enrol this device for biometric presence attestation with `recipientUid` (Signature Feature 2b,
+   * §4.5): ensure the local biometric-bound attestation key pair exists and share its PUBLIC key with
+   * the peer over the E2E channel, so the peer can later verify our live-biometric proofs. Resolves
+   * `true` when the key was shared, `false` when biometrics are unavailable on this device (no
+   * attestor, or no enrolled biometric) — in which case nothing is sent.
+   */
+  enrollBiometricAttestation(recipientUid: string): Promise<boolean>;
+  /**
+   * Begin a biometric presence verification of `recipientUid` (Signature Feature 2b, §4.5): send a
+   * fresh challenge over the E2E channel for the peer's device to answer by prompting a live
+   * biometric and signing it. The outcome arrives as a `bioverify-result` {@link VerificationEvent}.
+   * Resolves `false` (sending nothing) when the peer has not enrolled a public attestation key on
+   * this device yet (call {@link enrollBiometricAttestation} on both sides first).
+   */
+  requestBiometricVerification(recipientUid: string): Promise<boolean>;
   /**
    * Handle an inbound `CiphertextEnvelope` from the Realtime_Client: decrypt and render the
    * plaintext, or surface a `delivery-error` with no plaintext on decryption failure
@@ -537,6 +594,10 @@ export class DefaultMessaging implements Messaging {
   private readonly recordRow?: (rowId: string, threadId: string) => void | Promise<void>;
   /** Encrypted-attachment ciphertext transport (Req 7); absent in text-only constructions. */
   private readonly blobs?: BlobStore;
+  /** Biometric-gated signing oracle for presence attestation (§4.5); absent ⇒ cannot attest. */
+  private readonly biometricAttestor?: BiometricAttestor;
+  /** Durable store for peers' public attestation keys (§4.5); absent ⇒ cannot verify presence. */
+  private readonly biometricEnrollment?: BiometricEnrollmentStore;
 
   private readonly generateId: () => string;
   private readonly now: () => number;
@@ -565,11 +626,26 @@ export class DefaultMessaging implements Messaging {
   private readonly typingListeners = new Set<(fromUid: string) => void>();
   private readonly verificationListeners = new Set<(event: VerificationEvent) => void>();
   /**
+   * Per-peer serialization queues for inbound envelope processing. Each peer's envelopes are
+   * chained onto a promise so they are processed one-at-a-time in arrival order, preventing
+   * concurrent libsignal session access that can corrupt the Double Ratchet state when multiple
+   * frames arrive close together (e.g. verify-response triggering a sendControl while a text
+   * message is being decrypted).
+   */
+  private readonly envelopeQueues = new Map<string, Promise<void>>();
+  /**
    * Per-peer in-chat-verification seeds, RAM-only and session-scoped: cleared on `dispose`
    * (app lock/exit), so verification state never outlives the session (§4.4) and the seed is
    * never persisted (ephemeral-by-construction).
    */
   private readonly verificationSeeds = new Map<string, Uint8Array>();
+  /**
+   * Per-peer pending biometric-verification challenges, RAM-only and session-scoped (cleared on
+   * `dispose`, §4.5). A challenge is recorded when WE request a verification and consumed (deleted)
+   * when the matching `bioverify-response` arrives, so each challenge is single-use — a response can
+   * never be replayed against a stale or absent challenge.
+   */
+  private readonly bioVerifyChallenges = new Map<string, string>();
   private readonly transportUnsubscribers: Unsubscribe[];
 
   constructor(deps: MessagingDeps, options: MessagingOptions) {
@@ -588,6 +664,8 @@ export class DefaultMessaging implements Messaging {
     this.shadowInvites = deps.shadowInvites;
     this.recordRow = deps.recordRow;
     this.blobs = deps.blobs;
+    this.biometricAttestor = deps.biometricAttestor;
+    this.biometricEnrollment = deps.biometricEnrollment;
 
     this.generateId = options.generateId;
     this.now = options.now ?? Date.now;
@@ -1039,6 +1117,7 @@ export class DefaultMessaging implements Messaging {
           remoteUid,
           ...threadTag,
         });
+        this.emitUpdate({ type: 'inbound-control-frame', seq: envelope.seq, remoteUid, ...threadTag });
         return;
       }
       case 'edit': {
@@ -1052,6 +1131,7 @@ export class DefaultMessaging implements Messaging {
           remoteUid,
           ...threadTag,
         });
+        this.emitUpdate({ type: 'inbound-control-frame', seq: envelope.seq, remoteUid, ...threadTag });
         return;
       }
       case 'delete': {
@@ -1064,6 +1144,7 @@ export class DefaultMessaging implements Messaging {
           remoteUid,
           ...threadTag,
         });
+        this.emitUpdate({ type: 'inbound-control-frame', seq: envelope.seq, remoteUid, ...threadTag });
         return;
       }
       case 'timer':
@@ -1078,6 +1159,7 @@ export class DefaultMessaging implements Messaging {
           await this.store.setConversationTimer(remoteUid, Math.max(0, payload.ttlMs));
         }
         this.emitUpdate({ type: 'timer-changed', ttlMs: payload.ttlMs, remoteUid, ...threadTag });
+        this.emitUpdate({ type: 'inbound-control-frame', seq: envelope.seq, remoteUid, ...threadTag });
         return;
       case 'attachment': {
         // E2E attachment (Req 7): the payload carries the blob handle + the per-attachment key/iv
@@ -1170,6 +1252,7 @@ export class DefaultMessaging implements Messaging {
         // and prompt the local user to answer with the rotating code (§4.3).
         this.verificationSeeds.set(remoteUid, verificationSeedFromBase64(payload.seed));
         this.emitVerification({ type: 'verify-incoming', peerUid: remoteUid });
+        this.emitUpdate({ type: 'inbound-control-frame', seq: envelope.seq, remoteUid, ...threadTag });
         return;
       case 'verify-response': {
         // We requested verification; classify the responder's code. Both a normal and a duress
@@ -1184,16 +1267,126 @@ export class DefaultMessaging implements Messaging {
         // Tell the responder the outcome so their badge converges with ours (§4.3), then show ours.
         await this.sendControl(remoteUid, { type: 'verify-result', ok });
         this.emitVerification({ type: 'verify-result', peerUid: remoteUid, ok });
+        this.emitUpdate({ type: 'inbound-control-frame', seq: envelope.seq, remoteUid, ...threadTag });
         return;
       }
       case 'verify-result':
         // The requester reported the outcome of the code we submitted; mirror their badge (§4.3).
         this.emitVerification({ type: 'verify-result', peerUid: remoteUid, ok: payload.ok });
+        this.emitUpdate({ type: 'inbound-control-frame', seq: envelope.seq, remoteUid, ...threadTag });
         return;
       case 'duress-alert':
         // We are a configured trusted contact: surface the silent duress alert discreetly (§4.3).
         this.emitVerification({ type: 'duress-alert-received', peerUid: payload.peerUid });
+        this.emitUpdate({ type: 'inbound-control-frame', seq: envelope.seq, remoteUid, ...threadTag });
         return;
+      case 'bioverify-enroll': {
+        // The peer shared their PUBLIC attestation key (§4.5). Persist it so we can later verify
+        // their live-biometric proofs; surface `bioverify-enrolled` so the UI can offer the check.
+        let stored = false;
+        try {
+          const key = new Uint8Array(Buffer.from(payload.attestKey, 'base64'));
+          if (key.length > 0) {
+            await this.biometricEnrollment?.savePeerAttestationKey(remoteUid, key);
+            stored = this.biometricEnrollment !== undefined;
+          }
+        } catch {
+          // A malformed key is ignored (no enrolment); the verification path stays `not-enrolled`.
+        }
+        if (stored) {
+          this.emitVerification({ type: 'bioverify-enrolled', peerUid: remoteUid });
+        }
+        this.emitUpdate({ type: 'inbound-control-frame', seq: envelope.seq, remoteUid, ...threadTag });
+        return;
+      }
+      case 'bioverify-request': {
+        // The peer asked us to prove the real person is present (§4.5). Prompt a live, strong
+        // biometric and, only on success, sign the challenge bound to both uids + the time. If we
+        // cannot attest (no attestor, no enrolled biometric, or the user cancelled), answer with
+        // `available: false` so the verifier shows "could not attest" rather than hanging.
+        this.emitVerification({ type: 'bioverify-incoming', peerUid: remoteUid });
+        const sender = await this.sender.resolveSender();
+        const attesterUid = sender?.uid;
+        let signature: Uint8Array | null = null;
+        const issuedAt = this.now();
+        if (this.biometricAttestor !== undefined && attesterUid !== undefined) {
+          const message = buildAttestationMessage({
+            challenge: payload.challenge,
+            verifierUid: remoteUid,
+            attesterUid,
+            issuedAt,
+          });
+          try {
+            signature = await this.biometricAttestor.authenticateAndSign(
+              message,
+              'Confirm it is really you',
+            );
+          } catch {
+            signature = null;
+          }
+        }
+        await this.sendControl(
+          remoteUid,
+          signature !== null
+            ? {
+                type: 'bioverify-response',
+                challenge: payload.challenge,
+                issuedAt,
+                signature: Buffer.from(signature).toString('base64'),
+                available: true,
+              }
+            : { type: 'bioverify-response', challenge: payload.challenge, issuedAt, signature: '', available: false },
+        );
+        this.emitUpdate({ type: 'inbound-control-frame', seq: envelope.seq, remoteUid, ...threadTag });
+        return;
+      }
+      case 'bioverify-response': {
+        // We requested the proof; verify the peer's response (§4.5). The pending challenge is
+        // single-use: consume it now so a duplicate/replayed response finds none and fails.
+        const expectedChallenge = this.bioVerifyChallenges.get(remoteUid);
+        this.bioVerifyChallenges.delete(remoteUid);
+        const sender = await this.sender.resolveSender();
+        const verifierUid = sender?.uid;
+        if (!payload.available) {
+          // The peer could not attest (no biometric hardware/enrolment, or they cancelled).
+          this.emitVerification({
+            type: 'bioverify-result',
+            peerUid: remoteUid,
+            ok: false,
+            outcome: 'unavailable',
+          });
+          this.emitUpdate({ type: 'inbound-control-frame', seq: envelope.seq, remoteUid, ...threadTag });
+          return;
+        }
+        const attesterKey = await this.biometricEnrollment?.loadPeerAttestationKey(remoteUid);
+        if (expectedChallenge === undefined || verifierUid === undefined || attesterKey == null) {
+          // No pending request, no local identity, or the peer never enrolled a key here: cannot verify.
+          this.emitVerification({
+            type: 'bioverify-result',
+            peerUid: remoteUid,
+            ok: false,
+            outcome: expectedChallenge === undefined ? 'challenge-mismatch' : 'not-enrolled',
+          });
+          this.emitUpdate({ type: 'inbound-control-frame', seq: envelope.seq, remoteUid, ...threadTag });
+          return;
+        }
+        const outcome = await verifyBioAttestation({
+          expectedChallenge,
+          verifierUid,
+          attesterUid: remoteUid,
+          response: { challenge: payload.challenge, issuedAt: payload.issuedAt, signature: payload.signature },
+          attesterPublicKey: attesterKey,
+          now: this.now(),
+        });
+        this.emitVerification({
+          type: 'bioverify-result',
+          peerUid: remoteUid,
+          ok: outcome === 'verified',
+          outcome,
+        });
+        this.emitUpdate({ type: 'inbound-control-frame', seq: envelope.seq, remoteUid, ...threadTag });
+        return;
+      }
       case 'shadow-invite':
       case 'shadow-accept':
       case 'shadow-decline':
@@ -1203,10 +1396,13 @@ export class DefaultMessaging implements Messaging {
         // history, emit lifecycle events) — they NEVER become a conversation row and never reach the
         // ConversationRegistry as a message. When no coordinator is wired they are ignored, exactly
         // like any other control an older surface-only build does not consume (forward-compat).
+        // No inbound-control-frame here: these are pre-conversation surface-seq frames for which no
+        // ConversationState may exist yet; emitting one would auto-create a phantom surface entry.
         await this.shadowInvites?.handleInbound(remoteUid, payload);
         return;
       case 'unsupported':
         // A payload type this client version does not understand; ignore (forward-compat).
+        this.emitUpdate({ type: 'inbound-control-frame', seq: envelope.seq, remoteUid, ...threadTag });
         return;
       default: {
         const _exhaustive: never = payload;
@@ -1384,6 +1580,42 @@ export class DefaultMessaging implements Messaging {
   }
 
   /** @inheritdoc */
+  async enrollBiometricAttestation(recipientUid: string): Promise<boolean> {
+    // Without a biometric attestor this device cannot produce proofs, so there is nothing to enrol.
+    if (this.biometricAttestor === undefined) {
+      return false;
+    }
+    if (!(await this.biometricAttestor.isAvailable())) {
+      return false;
+    }
+    const publicKey = await this.biometricAttestor.getPublicKey();
+    if (publicKey === null || publicKey.length === 0) {
+      return false;
+    }
+    // Share the PUBLIC key over the E2E channel; the peer persists it to verify our future proofs.
+    await this.sendControl(recipientUid, {
+      type: 'bioverify-enroll',
+      attestKey: Buffer.from(publicKey).toString('base64'),
+    });
+    return true;
+  }
+
+  /** @inheritdoc */
+  async requestBiometricVerification(recipientUid: string): Promise<boolean> {
+    // The verifier needs the peer's enrolled public key to check the eventual response; without it
+    // there is nothing to verify against, so do not send a challenge the peer's answer can't satisfy.
+    const enrolledKey = await this.biometricEnrollment?.loadPeerAttestationKey(recipientUid);
+    if (enrolledKey == null) {
+      return false;
+    }
+    // Fresh single-use challenge held in RAM until the matching response arrives (anti-replay, §4.5).
+    const challenge = generateBioVerifyChallenge();
+    this.bioVerifyChallenges.set(recipientUid, challenge);
+    await this.sendControl(recipientUid, { type: 'bioverify-request', challenge });
+    return true;
+  }
+
+  /** @inheritdoc */
   onVerification(listener: (event: VerificationEvent) => void): Unsubscribe {
     this.verificationListeners.add(listener);
     return () => {
@@ -1416,6 +1648,8 @@ export class DefaultMessaging implements Messaging {
     this.verificationListeners.clear();
     // Session-scoped verification seeds never survive the session (§4.4).
     this.verificationSeeds.clear();
+    // Pending biometric challenges are session-scoped too (§4.5).
+    this.bioVerifyChallenges.clear();
     if (this.purgeTimer !== null) {
       this.scheduler.clearTimeout(this.purgeTimer);
       this.purgeTimer = null;
@@ -1554,11 +1788,23 @@ export class DefaultMessaging implements Messaging {
     }
   }
 
-  /** Route an inbound frame: `deliver` → decrypt+render; `ack` → resolve send; `typing` → hint. */
+  /**
+   * Enqueue an inbound envelope for per-peer serial processing. Chaining onto the existing
+   * promise for this sender ensures that all envelopes from the same peer are processed
+   * one-at-a-time in arrival order, preventing concurrent libsignal session access.
+   */
+  private enqueueEnvelope(senderUid: string, envelope: CiphertextEnvelope): void {
+    const prev = this.envelopeQueues.get(senderUid) ?? Promise.resolve();
+    // Always run the next envelope even if the previous one threw (chain via .then + .catch).
+    const next = prev.then(() => this.onEnvelope(envelope)).catch(() => {});
+    this.envelopeQueues.set(senderUid, next);
+  }
+
+  /** Route an inbound frame: `deliver` → decrypt+render (serialised per-peer); `ack` → resolve send; `typing` → hint. */
   private handleFrame(frame: ServerToClientFrame): void {
     if (frame.kind === 'deliver') {
-      // Fire-and-forget: onEnvelope persists + emits; a rejection cannot break the socket.
-      void this.onEnvelope(frame.envelope);
+      // Serialise per-peer so concurrent libsignal session access cannot corrupt ratchet state.
+      this.enqueueEnvelope(frame.envelope.senderUid, frame.envelope);
       return;
     }
     if (frame.kind === 'ack') {

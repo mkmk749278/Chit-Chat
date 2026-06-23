@@ -496,10 +496,10 @@ test('an inbound shadow reaction routes a threadId-tagged reaction-applied with 
   };
   await h.messaging.onEnvelope(envelope);
 
-  const applied = h.events.at(-1)!;
-  assert.equal(applied.type, 'reaction-applied');
+  const applied = h.events.find((e) => e.type === 'reaction-applied');
+  assert.ok(applied && applied.type === 'reaction-applied', 'reaction-applied must be emitted');
   assert.equal(threadIdOf(applied), THREAD_ID);
-  assert.equal(applied.type === 'reaction-applied' ? applied.targetDirection : null, 'in');
+  assert.equal(applied.targetDirection, 'in');
 });
 
 // helper: encode a shadow text payload the way the sender would.
