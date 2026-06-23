@@ -240,6 +240,16 @@ export * from './identity-verification';
 
 
 /**
+ * Biometric presence attestation — live Face ID / fingerprint proof (Signature Feature 2b, §4.5).
+ * Closes the gap the TOTP/safety-number checks leave open: it proves the ACTUAL owner is present on
+ * the device right now (not someone holding their unlocked phone), because the proof is signed by a
+ * key the platform releases only after a successful live strong biometric. Pure challenge/verify
+ * here; the biometric prompt + sealed key live behind the injected `BiometricAttestor` port.
+ */
+export * from './biometric-attestation';
+
+
+/**
  * Hidden chats + decoy PIN crypto foundation (Signature Features 1 & 4, §3/§6).
  *   - `secret-hash` — salted PBKDF2 verifiers for hidden-chat secrets and app PINs (never plaintext).
  *   - `lockout-policy` — pure 5-fail/10-min → 30-min lockout math for unlock rate-limiting.

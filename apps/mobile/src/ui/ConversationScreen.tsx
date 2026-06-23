@@ -78,6 +78,18 @@ export interface ConversationScreenProps {
   onRequestVerification?: () => void;
   /** Answer the peer's verification with the normal or duress code (§4.2, §4.3). */
   onRespondVerification?: (kind: 'normal' | 'duress') => void;
+  /**
+   * Per-session biometric presence-attestation status for this peer (Signature Feature 2b, §4.5):
+   * `none` (not set up), `enrolled` (peer shared their key — verification possible), `incoming` (the
+   * peer is asking us to prove presence; our device prompts the biometric), `verified` (the live
+   * owner was confirmed), `failed` (signature/replay/stale mismatch), `unavailable` (peer could not
+   * attest). Drives the biometric section of the Verify-identity sheet.
+   */
+  bioVerification?: 'none' | 'enrolled' | 'incoming' | 'verified' | 'failed' | 'unavailable';
+  /** Enrol this device for biometric presence attestation with the peer (publish our key) (§4.5). */
+  onEnrollBiometric?: () => void;
+  /** Challenge the peer to prove the real owner is present via a live biometric (§4.5). */
+  onRequestBiometric?: () => void;
   /** Whether this chat is currently hidden (Signature Feature 1, §3). */
   isHidden?: boolean;
   /** Mark this chat hidden behind `secret` (§3.1). May hash asynchronously (Requirement 1.3). */
@@ -284,6 +296,9 @@ export function ConversationScreen({
   verification = 'none',
   onRequestVerification,
   onRespondVerification,
+  bioVerification = 'none',
+  onEnrollBiometric,
+  onRequestBiometric,
   isHidden = false,
   onHideChat,
   onUnhideChat,
@@ -819,6 +834,61 @@ export function ConversationScreen({
             />
           </>
         )}
+
+        {/* Biometric presence attestation (Signature Feature 2b, §4.5): a stronger check that the
+            ACTUAL owner — not someone holding their unlocked phone — is present, by challenging the
+            peer's device to sign with a key released only after a live Face ID / fingerprint. */}
+        {(onEnrollBiometric !== undefined || onRequestBiometric !== undefined) && (
+          <View style={styles.bioSection}>
+            <Text style={[styles.sheetTitle, { color: t.text }]}>Biometric presence</Text>
+            {bioVerification === 'incoming' ? (
+              <Text style={[styles.sheetHint, { color: t.faint }]}>
+                {peerName} asked you to confirm your presence — approve the biometric prompt on your
+                device.
+              </Text>
+            ) : bioVerification === 'verified' ? (
+              <Text style={[styles.sheetHint, { color: t.secure }]}>
+                Present ✓ — {peerName}’s live biometric confirmed them on their device this session.
+              </Text>
+            ) : bioVerification === 'failed' ? (
+              <Text style={[styles.sheetHint, { color: t.danger }]}>
+                Could not confirm {peerName}’s presence — the proof did not match. The person on that
+                device may not be {peerName}.
+              </Text>
+            ) : bioVerification === 'unavailable' ? (
+              <Text style={[styles.sheetHint, { color: t.faint }]}>
+                {peerName}’s device can’t provide a biometric proof (no Face ID / fingerprint set up,
+                or it was declined).
+              </Text>
+            ) : (
+              <Text style={[styles.sheetHint, { color: t.faint }]}>
+                Confirm the real {peerName} is on their device right now — their phone signs a
+                one-time challenge only after a live Face ID / fingerprint. A borrowed unlocked phone
+                can’t pass it.
+              </Text>
+            )}
+            {onEnrollBiometric !== undefined && (
+              <SheetItem
+                label="Set up my biometric presence"
+                theme={t}
+                onPress={() => {
+                  onEnrollBiometric();
+                }}
+              />
+            )}
+            {onRequestBiometric !== undefined && (
+              <SheetItem
+                label={`Verify ${peerName} is present`}
+                theme={t}
+                disabled={bioVerification === 'none'}
+                onPress={() => {
+                  onRequestBiometric();
+                  setVerifyOpen(false);
+                }}
+              />
+            )}
+          </View>
+        )}
         <SheetItem label="Close" theme={t} onPress={() => setVerifyOpen(false)} />
       </SheetModal>
 
@@ -1195,6 +1265,8 @@ const styles = StyleSheet.create({
   sendDisabled: { opacity: 0.4 },
   sheetTitle: { fontSize: 16, fontWeight: '700', marginBottom: 6 },
   sheetHint: { fontSize: 12, marginBottom: 12, lineHeight: 17 },
+  // Biometric-presence subsection within the Verify-identity sheet (Signature Feature 2b, §4.5).
+  bioSection: { marginTop: 8, paddingTop: 12, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: '#8884' },
   reactionRow: { flexDirection: 'row', justifyContent: 'space-around', paddingVertical: 8 },
   reactionPick: { padding: 6 },
   reactionPickText: { fontSize: 26 },

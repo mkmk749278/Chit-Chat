@@ -322,12 +322,47 @@ function AppShell(): React.JSX.Element {
   const [verificationByPeer, setVerificationByPeer] = useState<
     Record<string, 'none' | 'requested' | 'incoming' | 'verified' | 'unverified'>
   >({});
+  // Biometric presence attestation (Signature Feature 2b, §4.5): per-peer session badge, driven by
+  // the same E2E verification event stream. Session-scoped — reset on sign-out with the rest.
+  const [bioByPeer, setBioByPeer] = useState<
+    Record<string, 'none' | 'enrolled' | 'incoming' | 'verified' | 'failed' | 'unavailable'>
+  >({});
   useEffect(
     () =>
       controller.onVerification((event) => {
         if (event.type === 'duress-alert-received') {
           // A contact we are the trusted contact for signalled duress. Surface it discreetly (§4.3).
           Alert.alert('Safety alert', 'A contact may need help. Reach out to them privately.');
+          return;
+        }
+        // Biometric presence attestation events (Signature Feature 2b, §4.5) drive their own badge.
+        if (
+          event.type === 'bioverify-enrolled' ||
+          event.type === 'bioverify-incoming' ||
+          event.type === 'bioverify-result'
+        ) {
+          setBioByPeer((prev) => {
+            switch (event.type) {
+              case 'bioverify-enrolled':
+                // Don't downgrade a peer already shown as present this session.
+                return prev[event.peerUid] === 'verified'
+                  ? prev
+                  : { ...prev, [event.peerUid]: 'enrolled' };
+              case 'bioverify-incoming':
+                return { ...prev, [event.peerUid]: 'incoming' };
+              case 'bioverify-result':
+                return {
+                  ...prev,
+                  [event.peerUid]: event.ok
+                    ? 'verified'
+                    : event.outcome === 'unavailable'
+                      ? 'unavailable'
+                      : 'failed',
+                };
+              default:
+                return prev;
+            }
+          });
           return;
         }
         setVerificationByPeer((prev) => {
@@ -350,6 +385,28 @@ function AppShell(): React.JSX.Element {
     (kind: 'normal' | 'duress') => void controller.respondVerification(kind),
     [controller],
   );
+  // Biometric presence attestation (Signature Feature 2b, §4.5): enrol this device's attestation key
+  // with the peer, and challenge the peer to prove the real owner is present via a live biometric.
+  const onEnrollBiometric = useCallback(() => {
+    void controller.enrollBiometric().then((ok) => {
+      if (!ok) {
+        Alert.alert(
+          'Biometric unavailable',
+          'Set up Face ID / fingerprint on this device to use biometric presence verification.',
+        );
+      }
+    });
+  }, [controller]);
+  const onRequestBiometric = useCallback(() => {
+    void controller.requestBiometricVerification().then((sent) => {
+      if (!sent) {
+        Alert.alert(
+          'Set up needed first',
+          'Ask your contact to set up biometric presence once, then try verifying again.',
+        );
+      }
+    });
+  }, [controller]);
 
   // App-lock check (Signature Feature 4, §6): once signed in + onboarded, find out whether a real
   // PIN is configured. If so, stay locked (appMode === null) until it is entered; otherwise the app
@@ -1023,6 +1080,7 @@ function AppShell(): React.JSX.Element {
     setDecoyEnabled(false);
     setHiddenPeers([]);
     setVerificationByPeer({});
+    setBioByPeer({});
     setShadowThreadIds(new Set());
     shadowPeerRef.current.clear();
     setRowMenu(null);
@@ -1097,6 +1155,9 @@ function AppShell(): React.JSX.Element {
           verification={verificationByPeer[openConversation.id] ?? 'none'}
           onRequestVerification={onRequestVerification}
           onRespondVerification={onRespondVerification}
+          bioVerification={bioByPeer[openConversation.id] ?? 'none'}
+          onEnrollBiometric={onEnrollBiometric}
+          onRequestBiometric={onRequestBiometric}
           isHidden={hidden.has(openConversation.id)}
           onHideChat={
             appMode === 'real' && !shadowThreadIds.has(openConversation.id)

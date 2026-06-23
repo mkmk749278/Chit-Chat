@@ -87,6 +87,8 @@ import {
 } from '../push/push-registration';
 import { clearConversationHistory } from './clear-chat';
 import { createNativeVault, probeNativeCrypto } from '../crypto/native-vault';
+import { createExpoBiometricAttestor } from '../crypto/expo-biometric-attestor';
+import { createVaultBiometricEnrollment } from '../data/biometric-enrollment';
 import { createSecureGate, type RevealResult, type SecureGate, type UnlockResult } from './secure-gate';
 import { createVaultShadowSecretPersistence } from '../data/shadow-secret-persistence';
 import { createVaultRowThreadAssociation } from '../data/row-thread-association';
@@ -262,6 +264,20 @@ export interface ChatController {
   setTrustedContact(uid: string | null): void;
   /** Subscribe to in-chat verification events driving the per-session badge + duress alerts (§4.3). */
   onVerification(listener: (event: VerificationEvent) => void): () => void;
+  /**
+   * Enrol this device for biometric presence attestation with the open conversation's peer
+   * (Signature Feature 2b, §4.5): publish this device's public attestation key so the peer can later
+   * verify our live-biometric proofs. Resolves `true` when shared, `false` when this device has no
+   * usable biometric. Both sides should enrol once before {@link requestBiometricVerification}.
+   */
+  enrollBiometric(): Promise<boolean>;
+  /**
+   * Begin a biometric presence verification of the open conversation's peer (Signature Feature 2b,
+   * §4.5): challenge their device to prove the real owner is present via a live biometric. The
+   * outcome arrives as a `bioverify-result` {@link VerificationEvent}. Resolves `false` (sending
+   * nothing) when the peer has not enrolled a public attestation key on this device yet.
+   */
+  requestBiometricVerification(): Promise<boolean>;
   /**
    * Whether a real app PIN is configured, so the shell should present the lock screen on launch
    * (Signature Feature 4, §6). `false` when no PIN is set or the encrypted vault is unavailable.
@@ -646,6 +662,12 @@ export function createMobileController(): ChatController {
         // the encrypted message payload, never the store. Absent ⇒ attachments degrade to a local
         // `failed` row, so wiring it is what turns on send/receive of photos.
         blobs: createBlobStore(httpClient, () => authService.getCurrentToken(), API_BASE_URL),
+        // Biometric presence attestation (Signature Feature 2b, §4.5): the device's biometric-gated
+        // signing oracle proves the real owner is present, and peers' enrolled public keys are kept
+        // in the encrypted vault so a verification works across launches. Both are device-local; no
+        // wire/backend change. Absent ⇒ the feature degrades to "cannot attest" cleanly.
+        biometricAttestor: createExpoBiometricAttestor(),
+        biometricEnrollment: createVaultBiometricEnrollment(vault),
         sender: {
           resolveSender: async () => {
             const deviceId = await store.loadDeviceId();
@@ -992,6 +1014,20 @@ export function createMobileController(): ChatController {
     onVerification(listener: (event: VerificationEvent) => void): () => void {
       verificationListeners.add(listener);
       return () => verificationListeners.delete(listener);
+    },
+
+    async enrollBiometric(): Promise<boolean> {
+      if (messaging === null || activeRecipient === null) {
+        return false;
+      }
+      return messaging.enrollBiometricAttestation(activeRecipient);
+    },
+
+    async requestBiometricVerification(): Promise<boolean> {
+      if (messaging === null || activeRecipient === null) {
+        return false;
+      }
+      return messaging.requestBiometricVerification(activeRecipient);
     },
 
     async hasAppPin(): Promise<boolean> {
@@ -1352,6 +1388,14 @@ export function createDemoController(): ChatController {
     },
     onVerification(): () => void {
       return () => undefined;
+    },
+    async enrollBiometric(): Promise<boolean> {
+      // No messaging/attestor in the demo controller.
+      return false;
+    },
+    async requestBiometricVerification(): Promise<boolean> {
+      // No messaging/attestor in the demo controller.
+      return false;
     },
     async hasAppPin(): Promise<boolean> {
       return false;
