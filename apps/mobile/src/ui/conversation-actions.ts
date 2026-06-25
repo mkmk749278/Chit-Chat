@@ -53,6 +53,17 @@ export const CLEAR_CHAT_ACTION: { readonly key: 'clear'; readonly label: string 
   label: 'Clear chat',
 };
 
+/**
+ * The local "Delete chat" action. Like {@link CLEAR_CHAT_ACTION} it is NOT a member of {@link
+ * CONVERSATION_ACTIONS} and is surfaced ONLY in the overflow menu for a SURFACE chat in real mode.
+ * Unlike "Clear chat" (which empties the chat but keeps it in the list), "Delete chat" removes the
+ * conversation from the list entirely and leaves its view. Shadow threads use "Revoke" instead.
+ */
+export const DELETE_CHAT_ACTION: { readonly key: 'delete'; readonly label: string } = {
+  key: 'delete',
+  label: 'Delete chat',
+};
+
 /** The elements of the redesigned conversation header, left → right (Req 3.1). */
 export type HeaderElement = 'back' | 'avatar' | 'name' | 'status' | 'overflow';
 

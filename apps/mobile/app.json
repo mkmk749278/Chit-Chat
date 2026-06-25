@@ -23,7 +23,8 @@
       "googleServicesFile": "./google-services.json"
     },
     "plugins": [
-      "@react-native-firebase/app"
+      "@react-native-firebase/app",
+      "expo-notifications"
     ],
     "newArchEnabled": true
   }

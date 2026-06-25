@@ -52,3 +52,31 @@ export async function clearConversationHistory(
     // A store error must not crash the UI; the rows stay until a later relaunch/attempt.
   }
 }
+
+/**
+ * DELETE a surface conversation entirely (the "Delete chat" action). Unlike {@link
+ * clearConversationHistory} — which empties the chat but leaves it in the list — this purges every
+ * persisted row AND resets the per-conversation disappearing-message timer to `0`, so the
+ * conversation does NOT rehydrate on the next launch (rehydration groups by surviving rows) and no
+ * stale timer lingers. The caller is responsible for removing the now-orphaned conversation from the
+ * in-memory list and leaving its view. Local-only (no network, no wire change) and fail-soft on a
+ * store error, mirroring the clear/purge paths.
+ *
+ * Takes only the narrow {@link KeyStore} surface it needs so it is trivially testable with a fake.
+ */
+export async function deleteConversation(
+  keyStore: Pick<KeyStore, 'loadMessages' | 'purgeMessages' | 'setConversationTimer'>,
+  conversationId: string,
+): Promise<void> {
+  try {
+    const rows = await keyStore.loadMessages();
+    const ids = selectClearableRowIds(rows, conversationId);
+    if (ids.length > 0) {
+      await keyStore.purgeMessages(ids);
+    }
+    // Reset the timer so a stale entry can't outlive the deleted conversation (best-effort).
+    await keyStore.setConversationTimer(conversationId, 0);
+  } catch {
+    // A store error must not crash the UI; the rows stay until a later relaunch/attempt.
+  }
+}

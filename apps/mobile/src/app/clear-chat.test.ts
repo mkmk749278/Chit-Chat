@@ -13,7 +13,7 @@ import { test } from 'node:test';
 
 import type { KeyStore, MessageRow } from '@chat-app/crypto';
 
-import { clearConversationHistory, selectClearableRowIds } from './clear-chat';
+import { clearConversationHistory, deleteConversation, selectClearableRowIds } from './clear-chat';
 
 const row = (id: string, remoteUid: string, seq: number): MessageRow => ({
   id,
@@ -95,4 +95,63 @@ test('clearChatHistory is fail-soft when the store throws', async () => {
   };
   // Must not throw.
   await clearConversationHistory(failing, 'A');
+});
+
+// --- deleteConversation (the "Delete chat" action) ---------------------------
+
+/** Extends {@link fakeStore} with a recorded `setConversationTimer`, which delete also resets. */
+function fakeDeleteStore(rows: MessageRow[]): {
+  store: Pick<KeyStore, 'loadMessages' | 'purgeMessages' | 'setConversationTimer'>;
+  purged: string[][];
+  timers: Array<{ remoteUid: string; ttlMs: number }>;
+  remaining: () => MessageRow[];
+} {
+  const { store: base, purged, remaining } = fakeStore(rows);
+  const timers: Array<{ remoteUid: string; ttlMs: number }> = [];
+  const store: Pick<KeyStore, 'loadMessages' | 'purgeMessages' | 'setConversationTimer'> = {
+    ...base,
+    async setConversationTimer(remoteUid: string, ttlMs: number) {
+      timers.push({ remoteUid, ttlMs });
+    },
+  };
+  return { store, purged, timers, remaining };
+}
+
+test('deleteConversation purges the target rows and resets its timer to 0', async () => {
+  const rows = [row('a1', 'A', 1), row('a2', 'A', 2), row('b1', 'B', 1)];
+  const { store, purged, timers, remaining } = fakeDeleteStore(rows);
+
+  await deleteConversation(store, 'A');
+
+  assert.equal(purged.length, 1);
+  assert.deepEqual([...purged[0]].sort(), ['a1', 'a2']);
+  // The disappearing timer is reset so the deleted conversation leaves no trace.
+  assert.deepEqual(timers, [{ remoteUid: 'A', ttlMs: 0 }]);
+  // B is untouched.
+  assert.deepEqual(remaining().map((r) => r.id), ['b1']);
+});
+
+test('deleteConversation resets the timer even when there are no rows to purge', async () => {
+  const rows = [row('b1', 'B', 1)];
+  const { store, purged, timers } = fakeDeleteStore(rows);
+
+  await deleteConversation(store, 'A');
+
+  assert.deepEqual(purged, []);
+  assert.deepEqual(timers, [{ remoteUid: 'A', ttlMs: 0 }]);
+});
+
+test('deleteConversation is fail-soft when the store throws', async () => {
+  const failing: Pick<KeyStore, 'loadMessages' | 'purgeMessages' | 'setConversationTimer'> = {
+    async loadMessages(): Promise<MessageRow[]> {
+      throw new Error('store unavailable');
+    },
+    async purgeMessages(): Promise<void> {
+      /* never reached */
+    },
+    async setConversationTimer(): Promise<void> {
+      /* never reached */
+    },
+  };
+  await deleteConversation(failing, 'A');
 });

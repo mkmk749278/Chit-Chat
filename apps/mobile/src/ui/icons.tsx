@@ -26,6 +26,7 @@ export type IconName =
   | 'verified' // identity verified / verify identity
   | 'hide' // hide chat (eye-off)
   | 'clear' // clear chat history (broom / delete-sweep)
+  | 'trash' // delete chat entirely (trash can)
   | 'view-once' // view-once composer toggle (eye)
   | 'calls' // tab: calls
   | 'settings' // tab: settings
@@ -51,6 +52,7 @@ const GLYPH: Record<IconName, React.ComponentProps<typeof MaterialIcons>['name']
   verified: 'verified-user',
   hide: 'visibility-off',
   clear: 'delete-sweep',
+  trash: 'delete-outline',
   'view-once': 'visibility',
   calls: 'call',
   settings: 'settings',
