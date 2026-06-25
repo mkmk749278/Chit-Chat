@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { WsAdapter } from '@nestjs/platform-ws';
+import { json, urlencoded } from 'express';
 import { AppModule } from './app.module';
 
 /**
@@ -17,7 +18,12 @@ const HTTP_PORT = Number(process.env.PORT ?? 3000);
  */
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule);
+  // Disable the default 100 KB body-parser so we can set a larger limit that accommodates
+  // blob uploads: 8 MiB ciphertext base64-encodes to ~10.7 MiB; 25 MiB gives headroom for
+  // JSON framing. The service still enforces MAX_BLOB_BYTES before any Redis write.
+  const app = await NestFactory.create(AppModule, { bodyParser: false });
+  app.use(json({ limit: '25mb' }));
+  app.use(urlencoded({ extended: true, limit: '25mb' }));
 
   // Global request validation for every DTO-bound endpoint.
   // - whitelist: strip properties not declared on the DTO.

@@ -208,9 +208,10 @@ export interface ChatController {
   sendAttachment(content: OutgoingAttachment, options?: { threadId?: string }): Promise<void>;
   /**
    * Mark a view-once message as displayed: purge it from the store and remove it from the UI so
-   * it cannot be re-opened (Req 4.3). `id` is the message's stable row id.
+   * it cannot be re-opened (Req 4.3). `id` is the message's stable row id. Pass `options.threadId`
+   * when the message lives in a shadow thread so the expiry event is routed to the right conversation.
    */
-  markViewed(id: string): Promise<void>;
+  markViewed(id: string, options?: { threadId?: string }): Promise<void>;
   /**
    * Clear a SURFACE conversation's LOCAL history (the "Clear chat" action): purge every persisted
    * row belonging to `conversationId` (rows whose `remoteUid === conversationId`) via the store's
@@ -227,8 +228,12 @@ export interface ChatController {
   deleteMessage(target: MessageTarget): Promise<void>;
   /** Re-send a previously failed outbound message in the open conversation (P1 #5 retry). */
   retryMessage(target: MessageTarget, options?: { threadId?: string }): Promise<void>;
-  /** Set the open conversation's disappearing-message timer; `0` disables it (Req 4.1). */
-  setDisappearingTimer(ttlMs: number): Promise<void>;
+  /**
+   * Set the open conversation's disappearing-message timer; `0` disables it (Req 4.1). Pass
+   * `options.threadId` when the open conversation is a shadow thread so the timer control frame
+   * rides the shadow channel and routes back to the right conversation on both sides.
+   */
+  setDisappearingTimer(ttlMs: number, options?: { threadId?: string }): Promise<void>;
   /**
    * Notify the open conversation's peer that the user is typing (Req 5.3). Rate-limited
    * internally, so it is safe to call on every keystroke; ephemeral and never persisted.
@@ -896,7 +901,7 @@ export function createMobileController(): ChatController {
       await messaging.sendAttachment(activeRecipient, content, options);
     },
 
-    async markViewed(id: string): Promise<void> {
+    async markViewed(id: string, options?: { threadId?: string }): Promise<void> {
       if (keyStore === null || activeRecipient === null) {
         return;
       }
@@ -905,7 +910,15 @@ export function createMobileController(): ChatController {
       } catch {
         // A purge failure must not crash the UI; the message stays until a later relaunch.
       }
-      emit({ type: 'messages-expired', ids: [id], remoteUid: activeRecipient });
+      // Include threadId so the expiry event is routed to the shadow thread's conversation
+      // state (not the surface chat keyed by peerUID) when the message lives in a shadow thread.
+      const threadId = options?.threadId;
+      emit({
+        type: 'messages-expired',
+        ids: [id],
+        remoteUid: activeRecipient,
+        ...(threadId !== undefined ? { threadId } : {}),
+      });
     },
 
     async clearChatHistory(conversationId: string): Promise<void> {
@@ -949,11 +962,13 @@ export function createMobileController(): ChatController {
       await messaging.retryMessage(activeRecipient, target, options);
     },
 
-    async setDisappearingTimer(ttlMs: number): Promise<void> {
+    async setDisappearingTimer(ttlMs: number, options?: { threadId?: string }): Promise<void> {
       if (messaging === null || activeRecipient === null) {
         return;
       }
-      await messaging.setDisappearingTimer(activeRecipient, ttlMs);
+      // Pass threadId so the timer control frame rides the shadow channel and the resulting
+      // timer-changed event routes back to the shadow thread's conversation on both sides.
+      await messaging.setDisappearingTimer(activeRecipient, ttlMs, options);
     },
 
     sendTyping(): void {
@@ -1341,7 +1356,7 @@ export function createDemoController(): ChatController {
     async sendAttachment(): Promise<void> {
       // No transport/blob store in the demo controller.
     },
-    async markViewed(): Promise<void> {
+    async markViewed(_id: string, _options?: { threadId?: string }): Promise<void> {
       // No store in the demo controller.
     },
     async clearChatHistory(): Promise<void> {
@@ -1359,7 +1374,7 @@ export function createDemoController(): ChatController {
     async retryMessage(): Promise<void> {
       // No transport in the demo controller.
     },
-    async setDisappearingTimer(): Promise<void> {
+    async setDisappearingTimer(_ttlMs: number, _options?: { threadId?: string }): Promise<void> {
       // No transport in the demo controller.
     },
     sendTyping(): void {

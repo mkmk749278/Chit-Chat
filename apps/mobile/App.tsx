@@ -757,14 +757,17 @@ function AppShell(): React.JSX.Element {
 
   // Poll the open peer's presence (Req 5.2) while a conversation is open: immediately on open
   // and every 20s thereafter. Cleared when no chat is open so we don't poll in the background.
+  // For shadow threads openChatId is a threadId, not a uid — resolve to the peer uid so the
+  // backend can find the presence entry (it indexes by uid, not by shadow thread id).
   useEffect(() => {
     if (openChatId === null) {
       setPeerPresence({ online: null, lastSeen: null });
       return undefined;
     }
+    const presenceUid = shadowPeerRef.current.get(openChatId) ?? openChatId;
     let cancelled = false;
     const poll = (): void => {
-      void controller.getPresence(openChatId).then((p) => {
+      void controller.getPresence(presenceUid).then((p) => {
         if (!cancelled) {
           setPeerPresence(p === null ? { online: null, lastSeen: null } : { online: p.online, lastSeen: p.lastSeen });
         }
@@ -1026,7 +1029,16 @@ function AppShell(): React.JSX.Element {
   }, [controller]);
 
   // A view-once message was displayed: purge it (delete-on-display) via the controller (Req 4.3).
-  const onView = useCallback((id: string) => void controller.markViewed(id), [controller]);
+  // Pass threadId when the open chat is a shadow thread so the messages-expired event routes to
+  // the shadow thread's conversation state rather than the surface chat keyed by peer UID.
+  const onView = useCallback(
+    (id: string) => {
+      const target = openChatRef.current;
+      const threadId = target !== null && shadowPeerRef.current.has(target) ? target : undefined;
+      void controller.markViewed(id, threadId !== undefined ? { threadId } : undefined);
+    },
+    [controller],
+  );
 
   // Reaction / edit / delete / timer all target the OPEN conversation (the controller's
   // active recipient); the optimistic reducer events flow back through the subscription.
@@ -1052,8 +1064,15 @@ function AppShell(): React.JSX.Element {
     },
     [controller],
   );
+  // Pass threadId when the open chat is a shadow thread so the timer control frame rides the
+  // shadow channel and the resulting timer-changed event routes to the right conversation on
+  // both sides (shadow thread, not the surface chat keyed by peer UID).
   const onSetTimer = useCallback(
-    (ttlMs: number) => void controller.setDisappearingTimer(ttlMs),
+    (ttlMs: number) => {
+      const target = openChatRef.current;
+      const threadId = target !== null && shadowPeerRef.current.has(target) ? target : undefined;
+      void controller.setDisappearingTimer(ttlMs, threadId !== undefined ? { threadId } : undefined);
+    },
     [controller],
   );
   const getSafetyNumber = useCallback(() => {
@@ -1139,7 +1158,10 @@ function AppShell(): React.JSX.Element {
         <ConversationScreen
           state={openConversation.state}
           peerName={openConversation.name}
-          peerTyping={typingPeer === openConversation.id}
+          peerTyping={
+            typingPeer !== null &&
+            typingPeer === (shadowPeerRef.current.get(openConversation.id) ?? openConversation.id)
+          }
           peerOnline={peerPresence.online}
           peerLastSeen={peerPresence.lastSeen}
           onComposerChange={onComposerChange}
