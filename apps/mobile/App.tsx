@@ -448,10 +448,18 @@ function AppShell(): React.JSX.Element {
   }, [controller, appMode]);
 
   // Auto-relock + re-hide on backgrounding (§3.1 auto-rehide; §6 lock): drop to the lock screen and
-  // close any open (possibly revealed) hidden chat when the app leaves the foreground.
+  // close any open (possibly revealed) hidden chat when the app leaves the foreground. On RETURN to
+  // the foreground, force the realtime socket to reconnect and drain the offline queue — after the OS
+  // suspends a backgrounded app the socket can become a zombie (still "connected" in JS, but dead), so
+  // queued messages would otherwise only arrive after a manual restart ("messages only come when I
+  // open the app"). Reconnecting on resume guarantees a live socket + prompt delivery.
   useEffect(() => {
     const sub = AppState.addEventListener('change', (next) => {
-      if (next !== 'active' && lockKnown) {
+      if (next === 'active') {
+        controller.reconnect();
+        return;
+      }
+      if (lockKnown) {
         void controller.hasAppPin().then((hasPin) => {
           if (hasPin) {
             setAppMode(null);
@@ -1220,6 +1228,25 @@ function AppShell(): React.JSX.Element {
                           : c,
                       ),
                     );
+                  });
+                }
+              : undefined
+          }
+          onDeleteChat={
+            appMode === 'real' && !shadowThreadIds.has(openConversation.id)
+              ? () => {
+                  const id = openConversation.id;
+                  // Local-only Delete chat: purge this surface conversation's rows + timer, then drop
+                  // it from the list entirely and leave the view (vs. Clear chat which keeps it empty).
+                  // Also clear any hidden-chat status so a deleted chat leaves no residue in the gate.
+                  void controller.deleteConversation(id).then(() => {
+                    if (hidden.has(id)) {
+                      void controller.unhideChat(id);
+                      setHiddenPeers((prev) => prev.filter((p) => p !== id));
+                    }
+                    peerNameResolvedRef.current.delete(id);
+                    setConversations((prev) => prev.filter((c) => c.id !== id));
+                    setOpenChatId(null);
                   });
                 }
               : undefined

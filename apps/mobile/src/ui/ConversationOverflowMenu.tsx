@@ -19,7 +19,12 @@
 import React from 'react';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { CLEAR_CHAT_ACTION, CONVERSATION_ACTIONS, type ConversationActionKey } from './conversation-actions';
+import {
+  CLEAR_CHAT_ACTION,
+  CONVERSATION_ACTIONS,
+  DELETE_CHAT_ACTION,
+  type ConversationActionKey,
+} from './conversation-actions';
 import { Icon, type IconName } from './icons';
 import type { Theme } from './theme';
 
@@ -69,6 +74,13 @@ export interface ConversationOverflowMenuProps {
    */
   onClearChat?: (() => void) | null;
   /**
+   * Local "Delete chat" entry point. When provided, a destructive "Delete chat" row is rendered below
+   * "Clear chat". Removes the conversation from the list entirely (vs. "Clear chat" which keeps it,
+   * empty). Passed ONLY for an open SURFACE chat in real mode; absent for a shadow thread / non-real
+   * mode (a shadow thread uses "Revoke" instead).
+   */
+  onDeleteChat?: (() => void) | null;
+  /**
    * "Clear shadow chat" — purge THIS shadow thread's local history while keeping it working (Shadow
    * Chat Invites, Req 6). Rendered only for an open shadow thread in real mode; absent otherwise.
    */
@@ -95,6 +107,7 @@ export function ConversationOverflowMenu({
   anchor,
   onShadowPinSettings,
   onClearChat,
+  onDeleteChat,
   onClearShadowChat,
   onRevokeShadowChat,
 }: ConversationOverflowMenuProps): React.JSX.Element {
@@ -160,6 +173,19 @@ export function ConversationOverflowMenu({
             >
               <Icon name="clear" size={18} color={t.danger} />
               <Text style={[styles.text, { color: t.danger }]}>{CLEAR_CHAT_ACTION.label}</Text>
+            </Pressable>
+          )}
+          {/* Local "Delete chat" — removes the conversation from the list entirely (vs. Clear chat).
+              Present ONLY for an open surface chat in real mode; absent for a shadow thread. */}
+          {onDeleteChat != null && (
+            <Pressable
+              onPress={onDeleteChat}
+              style={[styles.item, { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: t.divider }]}
+              accessibilityRole="button"
+              accessibilityLabel={DELETE_CHAT_ACTION.label}
+            >
+              <Icon name="trash" size={18} color={t.danger} />
+              <Text style={[styles.text, { color: t.danger }]}>{DELETE_CHAT_ACTION.label}</Text>
             </Pressable>
           )}
           {/* Shadow Chat Invites: Clear (local, keep key) and Revoke (delete key + both sides). Only

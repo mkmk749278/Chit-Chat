@@ -85,7 +85,7 @@ import {
   revokePushToken,
   type PushRegistrationDeps,
 } from '../push/push-registration';
-import { clearConversationHistory } from './clear-chat';
+import { clearConversationHistory, deleteConversation } from './clear-chat';
 import { createNativeVault, probeNativeCrypto } from '../crypto/native-vault';
 import { createExpoBiometricAttestor } from '../crypto/expo-biometric-attestor';
 import { createVaultBiometricEnrollment } from '../data/biometric-enrollment';
@@ -220,6 +220,22 @@ export interface ChatController {
    * open view to empty. Surface chats only; shadow threads are not cleared here.
    */
   clearChatHistory(conversationId: string): Promise<void>;
+  /**
+   * DELETE a SURFACE conversation entirely (the "Delete chat" action): purge every persisted row for
+   * `conversationId` AND reset its disappearing-message timer, so it does not rehydrate on the next
+   * launch. Local-only (no network, no wire change) and fail-soft on a store error. The caller removes
+   * the conversation from the in-memory list and leaves its view. Surface chats only; a shadow thread
+   * uses Revoke instead.
+   */
+  deleteConversation(conversationId: string): Promise<void>;
+  /**
+   * Force the realtime connection to re-establish immediately and drain the offline (store-and-forward)
+   * queue — called on app-foreground resume. After the OS suspends a backgrounded app the socket can
+   * become a zombie (the client still believes it is connected, so queued messages never arrive until a
+   * manual restart); reconnecting on resume guarantees a live socket and a prompt queue drain. A no-op
+   * before the messaging stack is up or when signed out.
+   */
+  reconnect(): void;
   /** React to a message in the open conversation with an emoji (Req 3.1). */
   react(target: MessageTarget, emoji: string): Promise<void>;
   /** Edit a message's text in the open conversation (Req 3.2). */
@@ -932,6 +948,21 @@ export function createMobileController(): ChatController {
       await clearConversationHistory(keyStore, conversationId);
     },
 
+    async deleteConversation(conversationId: string): Promise<void> {
+      // Local-only Delete chat: purge this SURFACE conversation's persisted rows AND reset its
+      // disappearing timer so it doesn't rehydrate on relaunch. Fail-soft (handled inside
+      // deleteConversation). The container removes it from the in-memory list and leaves the view.
+      if (keyStore === null) {
+        return;
+      }
+      await deleteConversation(keyStore, conversationId);
+    },
+
+    reconnect(): void {
+      // Foreground resume: force a fresh socket + offline-queue drain. No-op before the stack is up.
+      realtime?.reconnectNow();
+    },
+
     async react(target: MessageTarget, emoji: string): Promise<void> {
       if (messaging === null || activeRecipient === null) {
         return;
@@ -1361,6 +1392,12 @@ export function createDemoController(): ChatController {
     },
     async clearChatHistory(): Promise<void> {
       // No store in the demo controller; nothing to purge.
+    },
+    async deleteConversation(): Promise<void> {
+      // No store in the demo controller; nothing to delete.
+    },
+    reconnect(): void {
+      // No transport in the demo controller.
     },
     async react(): Promise<void> {
       // No transport in the demo controller.

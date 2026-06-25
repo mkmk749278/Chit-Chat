@@ -283,6 +283,42 @@ export class RealtimeClient {
   }
 
   /**
+   * Force a fresh connection attempt immediately, regardless of the current phase — for
+   * app-foreground resume.
+   *
+   * When the OS suspends a backgrounded app it can silently drop the TCP/TLS socket WITHOUT
+   * delivering a `close` event to the frozen JS engine. On resume the client may therefore still
+   * believe it is `connected` while the socket is actually a zombie: no `close` ever fires, the
+   * server heartbeat never arrives, and the store-and-forward queue is never drained — so new
+   * messages only appear after a manual app restart. Calling this on `AppState → active` tears down
+   * any current socket, cancels a pending backoff, resets the attempt counter, and opens a new
+   * authenticated socket at once. The gateway drains the offline queue on the fresh handshake, so
+   * queued messages arrive promptly. Re-enables auto-reconnect (like {@link connect}); safe to call
+   * when signed out (no token ⇒ it simply stays `disconnected`) and never throws.
+   */
+  reconnectNow(): void {
+    this.autoReconnect = true;
+    this.clientInitiated = false;
+    this.reauthRequired = false;
+    this.clearBackoffTimer();
+    const handle = this.currentHandle;
+    // Tear down the current (possibly zombie) socket and invalidate its attempt, then proactively
+    // close the old handle so the server releases the stale presence entry.
+    this.teardownSocket();
+    if (handle !== null) {
+      try {
+        handle.close(1000, 'foreground reconnect');
+      } catch {
+        // The socket may already be closing; nothing more to do.
+      }
+    }
+    this.reconnectAttempt = 0;
+    this.phase = 'idle';
+    this.setStatus('disconnected');
+    this.startAttempt();
+  }
+
+  /**
    * Send a wire frame over the open socket (the Messaging layer builds the envelope).
    * Throws if called while not connected — the Messaging layer is responsible for the
    * pending-send queue while disconnected (design Component 5, Requirement 5.10).

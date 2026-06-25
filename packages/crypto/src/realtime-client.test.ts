@@ -181,6 +181,46 @@ test('client-initiated disconnect goes disconnected and does not reconnect (4.8)
   assert.equal(transport.handles.length, 1, 'no reconnect attempt after a client disconnect');
 });
 
+test('reconnectNow forces a fresh socket even while connected (foreground resume)', async () => {
+  const { client, transport } = build();
+  const p = client.connect();
+  transport.handles[0]!.fireOpen();
+  await p;
+  assert.equal(client.getStatus(), 'connected');
+  assert.equal(transport.handles.length, 1);
+
+  // Simulate app-resume: the previous socket may be a zombie, so a fresh attempt opens at once.
+  client.reconnectNow();
+  assert.equal(transport.handles.length, 2, 'a fresh socket was opened immediately (no backoff wait)');
+  assert.equal(transport.handles[0]!.closed?.code, 1000, 'the stale socket was proactively closed');
+  assert.equal(client.getStatus(), 'disconnected', 'disconnected until the new handshake opens');
+
+  transport.handles[1]!.fireOpen();
+  assert.equal(client.getStatus(), 'connected', 'reconnected on the fresh handshake');
+});
+
+test('reconnectNow while signed out stays disconnected and opens no socket (no token)', () => {
+  const { client, transport } = build(fakeAuth({ getCurrentToken: () => null }));
+  client.reconnectNow();
+  assert.equal(client.getStatus(), 'disconnected');
+  assert.equal(transport.handles.length, 0, 'no authenticated socket without a token');
+});
+
+test('reconnectNow re-enables auto-reconnect after a client disconnect', async () => {
+  const { client, transport } = build();
+  const p = client.connect();
+  transport.handles[0]!.fireOpen();
+  await p;
+  client.disconnect();
+  assert.equal(client.getStatus(), 'disconnected');
+
+  // After a deliberate disconnect, reconnectNow brings the connection back (like connect()).
+  client.reconnectNow();
+  assert.equal(transport.handles.length, 2, 'a new attempt was started');
+  transport.handles[1]!.fireOpen();
+  assert.equal(client.getStatus(), 'connected');
+});
+
 test('send throws while not connected and writes a frame once connected (5.10)', async () => {
   const { client, transport } = build();
   const frame: ClientToServerFrame = {

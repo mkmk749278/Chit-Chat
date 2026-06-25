@@ -113,6 +113,14 @@ export interface ConversationScreenProps {
    */
   onClearChat?: () => void;
   /**
+   * "Delete chat" — remove this conversation from the list entirely (local-only). When provided, a
+   * destructive "Delete chat" row appears in the overflow menu below "Clear chat"; tapping it shows a
+   * confirm and, on confirm, invokes this callback. The container backs it with
+   * `controller.deleteConversation(id)` and then drops the conversation + leaves the view. Passed ONLY
+   * for an open SURFACE chat in real mode; absent for a shadow thread / non-real mode.
+   */
+  onDeleteChat?: () => void;
+  /**
    * "Clear shadow chat" — purge this shadow thread's local history but keep it working (Shadow Chat
    * Invites, Req 6). Shows a confirm, then invokes this callback. Passed ONLY for an open shadow
    * thread in real mode; absent otherwise.
@@ -304,6 +312,7 @@ export function ConversationScreen({
   onUnhideChat,
   onSetThreadPin,
   onClearChat,
+  onDeleteChat,
   onClearShadowChat,
   onRevokeShadowChat,
 }: ConversationScreenProps): React.JSX.Element {
@@ -448,6 +457,23 @@ export function ConversationScreen({
       [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Clear', style: 'destructive', onPress: () => onClearChat?.() },
+      ],
+    );
+  };
+
+  /**
+   * Confirm and DELETE this conversation entirely (the "Delete chat" action). Closes the overflow
+   * menu, shows a destructive confirm, and on confirm invokes the container's `onDeleteChat` (which
+   * purges the rows + timer, drops the conversation from the list, and leaves the view). Local-only.
+   */
+  const confirmDeleteChat = (): void => {
+    setOverflowOpen(false);
+    Alert.alert(
+      'Delete chat?',
+      'This removes this chat and all its messages from this device. It can’t be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: () => onDeleteChat?.() },
       ],
     );
   };
@@ -968,6 +994,7 @@ export function ConversationScreen({
             : undefined
         }
         onClearChat={onClearChat !== undefined ? confirmClearChat : undefined}
+        onDeleteChat={onDeleteChat !== undefined ? confirmDeleteChat : undefined}
         onClearShadowChat={onClearShadowChat !== undefined ? confirmClearShadowChat : undefined}
         onRevokeShadowChat={onRevokeShadowChat !== undefined ? confirmRevokeShadowChat : undefined}
       />
