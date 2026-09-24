@@ -114,3 +114,29 @@ describe('DevicesService.getPushTokens (Req 6.2)', () => {
     expect(mgr.find).not.toHaveBeenCalled();
   });
 });
+
+describe('DevicesService push-token hygiene', () => {
+  it('moves a token: clears it from any OTHER device row of the same install', async () => {
+    const { service, mgr } = harness();
+    mgr.findOneBy.mockResolvedValueOnce({ id: 'u1' }).mockResolvedValueOnce({ id: 'd1' });
+    await service.setPushToken('uid', { registrationId: 7, pushToken: 'fcm-abc' });
+    expect(mgr.update).toHaveBeenCalledTimes(2);
+    const [, where, values] = mgr.update.mock.calls[1] as [unknown, Record<string, unknown>, unknown];
+    expect(where.pushToken).toBe('fcm-abc');
+    expect(where.id).toBeDefined(); // Not(d1)
+    expect(values).toEqual({ pushToken: null });
+  });
+
+  it('prunes invalid tokens wherever they are stored', async () => {
+    const { service, mgr } = harness();
+    await service.removePushTokens(['t1', 't2']);
+    expect(mgr.update).toHaveBeenCalledTimes(1);
+    expect(mgr.update.mock.calls[0][2]).toEqual({ pushToken: null });
+  });
+
+  it('does nothing for an empty prune list', async () => {
+    const { service, mgr } = harness();
+    await service.removePushTokens([]);
+    expect(mgr.update).not.toHaveBeenCalled();
+  });
+});

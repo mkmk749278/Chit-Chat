@@ -30,6 +30,11 @@ export interface PushPlatform {
   onTokenRefresh(listener: (token: string) => void): () => void;
   /** Delete the local FCM token (on explicit sign-out). Must not throw. */
   deleteToken(): Promise<void>;
+  /**
+   * Subscribe to wake pushes received while the app is in the FOREGROUND; returns an unsubscribe.
+   * Optional (a platform without it simply never reports one). Must not throw.
+   */
+  onForegroundWake?(listener: () => void): () => void;
 }
 
 /** Injected collaborators so registration is testable and decoupled from controller wiring. */
@@ -46,6 +51,30 @@ export interface PushRegistrationDeps {
 export type Unsubscribe = () => void;
 
 const NO_OP: Unsubscribe = () => undefined;
+
+/**
+ * React to a wake push that arrives while the app is in the foreground. The backend only sends a
+ * wake when it sees NO live connection for this user — so if the app is open, its socket is a
+ * zombie (or mid-reconnect) and `reconnect` should replace it right away instead of waiting for
+ * the keepalive to notice. Best-effort; returns a no-op unsubscribe when unsupported.
+ */
+export function watchForegroundWakes(platform: PushPlatform | null, reconnect: () => void): Unsubscribe {
+  if (platform === null || platform.onForegroundWake === undefined) {
+    return NO_OP;
+  }
+  try {
+    const unsubscribe = platform.onForegroundWake(() => {
+      try {
+        reconnect();
+      } catch {
+        // never let a reconnect failure escape the push callback
+      }
+    });
+    return typeof unsubscribe === 'function' ? unsubscribe : NO_OP;
+  } catch {
+    return NO_OP;
+  }
+}
 
 /**
  * Register this device's FCM token with the backend and keep it fresh. Best-effort and idempotent:

@@ -8,26 +8,28 @@
  *
  * `relay` (sender → recipient nodes):
  *   1. Validate the envelope's structural shape; a malformed frame is rejected with
- *      `malformed` and nothing is published.
+ *      `malformed` and nothing is stored or published.
  *   2. Bind the envelope to the authenticated connection: `envelope.senderUid` MUST
  *      equal `sender.uid`. A spoofed sender is rejected with `sender-mismatch` and
- *      nothing is published — this is the relay's security boundary (Requirements 5.7,
- *      8.2).
- *   3. Look up `presence:{recipientUid}` → `{connId -> nodeId}`; for each DISTINCT owning
- *      node, publish a {@link NodeRelayMessage} to `node:{nodeId}` via the dedicated
- *      Redis publisher. The owning node (subscribed to its own channel) then calls
- *      {@link deliverLocal}. An offline recipient (no presence entries) is queued for
- *      store-and-forward via {@link OfflineQueueService} so the message is delivered when
- *      they next connect, instead of being dropped while the sender is still ACKed (5.6).
+ *      nothing is stored or published — this is the relay's security boundary
+ *      (Requirements 5.7, 8.2).
+ *   3. Durably append the envelope to the recipient's inbox ({@link InboxService}) under a
+ *      server-assigned id. This happens BEFORE any live fan-out, so the sender is only ACKed
+ *      for a message the server can still deliver after a dead socket, a crash, or a redeploy
+ *      (reliable delivery, protocol v2). If the append fails the relay throws and the gateway
+ *      does not ACK, so the sender's retry path governs.
+ *   4. Look up the recipient's LIVE connections (`presence:{uid}` filtered by node liveness)
+ *      and publish a {@link NodeRelayMessage} once per distinct owning node. The owning node
+ *      calls {@link deliverLocal}.
+ *   5. When no node actually received the publish (recipient offline, or every presence entry
+ *      was stale), wake the recipient's devices with a content-free push. The envelope is
+ *      already in the inbox and is replayed when they connect.
  *
  * `deliverLocal` (recipient node → local socket): wraps the envelope in a `deliver`
  * server→client frame and pushes it to every socket the recipient holds on this node.
- *
- * Gateway wiring (the `send`-frame handler, the ACK frame, and the `node:{nodeId}`
- * subscription callback that invokes {@link deliverLocal}) is task 4.7.
  */
 
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import type { AuthContext, CiphertextEnvelope, ServerToClientFrame } from '@chat-app/types';
 import type Redis from 'ioredis';
 
@@ -37,12 +39,13 @@ import { PresenceRegistryService, REDIS_PUBLISHER_CLIENT } from '../redis';
 // gateway subscribes to. Imported from the leaf util (not the module barrel) to avoid a
 // module import cycle once the gateway depends on this service in task 4.7.
 import { nodeChannel } from '../realtime/node-identity.util';
+import { InboxService } from './inbox.service';
 import {
   LOCAL_SOCKET_REGISTRY,
   type LocalSocketRegistry,
 } from './local-socket-registry';
 import type { NodeRelayMessage, NodeTypingMessage } from './node-relay-message';
-import { OfflineQueueService } from './offline-queue.service';
+import { PushNotificationService } from './push-notification.service';
 
 /**
  * The outcome of a relay attempt. `received` means the envelope was accepted for
@@ -55,11 +58,14 @@ export type RelayOutcome =
 
 @Injectable()
 export class MessageRelayService {
+  private readonly logger = new Logger(MessageRelayService.name);
+
   constructor(
     @Inject(REDIS_PUBLISHER_CLIENT) private readonly publisher: Redis,
     private readonly presence: PresenceRegistryService,
     @Inject(LOCAL_SOCKET_REGISTRY) private readonly localSockets: LocalSocketRegistry,
-    private readonly offlineQueue: OfflineQueueService,
+    private readonly inbox: InboxService,
+    private readonly pushNotifications: PushNotificationService,
   ) {}
 
   /**
@@ -70,6 +76,7 @@ export class MessageRelayService {
    * @param envelope - the ciphertext envelope to route (opaque body; never decoded).
    * @returns `{ status: 'received' }` when accepted for delivery; otherwise a rejection
    *   with `malformed` (bad shape) or `sender-mismatch` (spoofed sender).
+   * @throws when the envelope could not be stored — the gateway must not ACK in that case.
    */
   async relay(sender: AuthContext, envelope: CiphertextEnvelope): Promise<RelayOutcome> {
     // 1. Structural validation first, so a clearly malformed frame is reported as such
@@ -78,36 +85,48 @@ export class MessageRelayService {
     if (!isWellFormedEnvelope(envelope)) {
       return { status: 'rejected', reason: 'malformed' };
     }
-
     // 2. Security boundary: the wire-claimed sender must be the authenticated connection
-    //    owner. Reject any spoofed sender without publishing anything (Requirements 5.7,
-    //    8.2).
+    //    owner. Reject any spoofed sender without storing or publishing anything
+    //    (Requirements 5.7, 8.2).
     if (envelope.senderUid !== sender.uid) {
       return { status: 'rejected', reason: 'sender-mismatch' };
     }
+    // Copy only the known routing + body fields, so nothing a client smuggles onto the
+    // envelope object is stored or forwarded to the recipient.
+    const sanitized = sanitizeEnvelope(envelope);
 
-    // 3. Resolve the recipient's live connections → the distinct nodes that hold them,
-    //    and fan a NodeRelayMessage out to each node's channel exactly once.
-    const entries = await this.presence.lookup(envelope.recipientUid);
-    const nodeIds = new Set<string>(Object.values(entries));
+    // 3. Durable first: the inbox entry is what guarantees delivery; live fan-out is an
+    //    optimisation on top of it.
+    const id = await this.inbox.append(sanitized.recipientUid, sanitized);
 
-    if (nodeIds.size > 0) {
-      const payload = JSON.stringify(toNodeRelayMessage(envelope));
-      await Promise.all(
-        [...nodeIds].map((nodeId) => this.publisher.publish(nodeChannel(nodeId), payload)),
-      );
-    } else {
-      // Recipient is offline: durably queue the opaque envelope for store-and-forward so
-      // it is delivered when they next connect (the gateway drains it on handshake),
-      // rather than dropping it while the sender is ACKed (Requirement 8.2: body opaque).
-      await this.offlineQueue.enqueue(envelope.recipientUid, envelope);
+    // 4. Fan out to the recipient's live node(s). A publish failure is not fatal — the entry
+    //    is already stored and will be replayed on the recipient's next connect.
+    let deliveredNodes = 0;
+    try {
+      const entries = await this.presence.lookupLive(sanitized.recipientUid);
+      const nodeIds = [...new Set<string>(Object.values(entries))];
+      if (nodeIds.length > 0) {
+        const message: NodeRelayMessage = { targetUid: sanitized.recipientUid, envelope: sanitized, id };
+        const payload = JSON.stringify(message);
+        const receivers = await Promise.all(
+          nodeIds.map((nodeId) => this.publisher.publish(nodeChannel(nodeId), payload)),
+        );
+        // PUBLISH returns how many subscribers received it; 0 means that node is gone.
+        deliveredNodes = receivers.filter((count) => count > 0).length;
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Live fan-out failed; envelope stays in the inbox: ${message}`);
     }
 
-    // Accepted for delivery (delivered live to an online recipient, or queued for an
-    // offline one). The gateway ACKs the sender on this outcome (task 4.7, 5.6).
-    // `nodes` = the number of distinct recipient nodes the envelope was published to
-    // (0 ⇒ the recipient had no live presence entry, so it was queued for store-and-forward).
-    return { status: 'received', nodes: nodeIds.size };
+    // 5. Nobody live received it: wake the recipient's devices (content-free, best-effort).
+    if (deliveredNodes === 0) {
+      void this.pushNotifications.notify(sanitized.recipientUid);
+    }
+
+    // Accepted: stored for delivery (and delivered live when a node received it). `nodes` is
+    // diagnostic — 0 ⇒ the recipient had no live connection and will get it on reconnect.
+    return { status: 'received', nodes: deliveredNodes };
   }
 
   /**
@@ -120,10 +139,10 @@ export class MessageRelayService {
    * @param recipientUid - the peer to notify that `sender` is typing.
    */
   async relayTyping(sender: AuthContext, recipientUid: string): Promise<void> {
-    if (typeof recipientUid !== 'string' || recipientUid.length === 0) {
+    if (typeof recipientUid !== 'string' || recipientUid.length === 0 || recipientUid.length > 128) {
       return;
     }
-    const entries = await this.presence.lookup(recipientUid);
+    const entries = await this.presence.lookupLive(recipientUid);
     const nodeIds = new Set<string>(Object.values(entries));
     if (nodeIds.size === 0) {
       return;
@@ -148,31 +167,60 @@ export class MessageRelayService {
   /**
    * Delivers an already-routed envelope to the recipient's local socket(s) on this node.
    * Invoked by the `node:{nodeId}` subscription callback (task 4.7) once a
-   * {@link NodeRelayMessage} arrives. Wraps the envelope in a `deliver` frame; a
-   * recipient with no local socket is a silent no-op. The body is never decoded
-   * (Requirement 8.2).
+   * {@link NodeRelayMessage} arrives. Wraps the envelope in a `deliver` frame (carrying the
+   * inbox `id` for acknowledgement); the body is never decoded (Requirement 8.2).
+   *
+   * A legacy (protocol v1) socket never acknowledges, so once the envelope has been pushed to one
+   * the inbox entry is dropped here — otherwise it would be replayed (and fail to decrypt) on every
+   * reconnect of that old app build.
    *
    * @param targetUid - the recipient whose local socket(s) should receive the envelope.
    * @param envelope  - the opaque ciphertext envelope to deliver.
+   * @param id        - the recipient inbox entry id (absent for messages from an older backend).
+   * @returns how many local sockets the frame was written to (0 ⇒ none on this node).
    */
-  deliverLocal(targetUid: string, envelope: CiphertextEnvelope): void {
-    const frame: ServerToClientFrame = { kind: 'deliver', envelope };
-    for (const socket of this.localSockets.getLocalSockets(targetUid)) {
+  deliverLocal(targetUid: string, envelope: CiphertextEnvelope, id?: string): number {
+    const frame: ServerToClientFrame =
+      id !== undefined ? { kind: 'deliver', envelope, id } : { kind: 'deliver', envelope };
+    const sockets = this.localSockets.getLocalSockets(targetUid);
+    let deliveredToLegacy = false;
+    for (const socket of sockets) {
       socket.send(frame);
+      if ((socket.protocol ?? 1) < 2) {
+        deliveredToLegacy = true;
+      }
     }
+    if (deliveredToLegacy && id !== undefined) {
+      this.inbox.ack(targetUid, [id]).catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        this.logger.warn(`Failed to drop a legacy-delivered inbox entry: ${message}`);
+      });
+    }
+    return sockets.length;
   }
 }
 
-/** Builds the cross-node payload, copying only routing target + opaque envelope. */
-function toNodeRelayMessage(envelope: CiphertextEnvelope): NodeRelayMessage {
-  return { targetUid: envelope.recipientUid, envelope };
+/** Copies exactly the wire fields of a validated envelope (no extra client-supplied keys). */
+function sanitizeEnvelope(envelope: CiphertextEnvelope): CiphertextEnvelope {
+  return {
+    senderUid: envelope.senderUid,
+    recipientUid: envelope.recipientUid,
+    senderDeviceId: envelope.senderDeviceId,
+    seq: envelope.seq,
+    type: envelope.type,
+    ciphertext: envelope.ciphertext,
+  };
 }
+
+/** Upper bound on any routing identifier (Firebase UIDs are ≤128 chars; device ids are UUIDs). */
+const MAX_ROUTING_FIELD_LENGTH = 128;
 
 /**
  * Structural validator for an inbound envelope. Confirms every routing field is a
- * non-empty string, `seq` is a non-negative integer, the libsignal `type` is 1 or 3,
+ * non-empty, bounded string, `seq` is a non-negative safe integer, the libsignal `type` is 1 or 3,
  * and `ciphertext` is a non-empty string. The ciphertext is checked for presence only —
- * it is NEVER base64-decoded, parsed, or logged (Requirement 8.2).
+ * it is NEVER base64-decoded, parsed, or logged (Requirement 8.2). Its size is bounded by the
+ * gateway's frame `maxPayload`.
  */
 function isWellFormedEnvelope(value: unknown): value is CiphertextEnvelope {
   if (value === null || typeof value !== 'object') {
@@ -180,18 +228,19 @@ function isWellFormedEnvelope(value: unknown): value is CiphertextEnvelope {
   }
   const envelope = value as Record<string, unknown>;
   return (
-    isNonEmptyString(envelope.senderUid) &&
-    isNonEmptyString(envelope.recipientUid) &&
-    isNonEmptyString(envelope.senderDeviceId) &&
+    isRoutingString(envelope.senderUid) &&
+    isRoutingString(envelope.recipientUid) &&
+    isRoutingString(envelope.senderDeviceId) &&
     typeof envelope.seq === 'number' &&
-    Number.isInteger(envelope.seq) &&
+    Number.isSafeInteger(envelope.seq) &&
     envelope.seq >= 0 &&
     (envelope.type === 1 || envelope.type === 3) &&
-    isNonEmptyString(envelope.ciphertext)
+    typeof envelope.ciphertext === 'string' &&
+    envelope.ciphertext.length > 0
   );
 }
 
-/** True when `value` is a string with at least one character. */
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0;
+/** True when `value` is a non-empty string no longer than {@link MAX_ROUTING_FIELD_LENGTH}. */
+function isRoutingString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= MAX_ROUTING_FIELD_LENGTH;
 }

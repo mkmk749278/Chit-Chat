@@ -17,6 +17,7 @@ import {
   createPersistentKeyStore,
   createPersistentSignalProtocolStore,
   createPersistentVault,
+  MAX_PROCESSED_ENVELOPE_IDS,
   type BlobStorage,
   type PersistentVaultDeps,
   type SecureKeyStorage,
@@ -285,4 +286,30 @@ test('a corrupt blob surfaces an error rather than silently resetting', async ()
   await blob.setItem('chat.vault.blob.v1.user-7', 'v1:AAAAAAAAAAAAAAAAAAAAAA==');
   const store = createPersistentKeyStore(createPersistentVault(uid, deps(secure, blob)));
   await assert.rejects(() => store.loadIdentity(uid));
+});
+
+test('processed inbox ids survive a relaunch so a replay is not decrypted twice (protocol v2)', async () => {
+  const secure = fakeStorage();
+  const blob = fakeStorage();
+  const uid = 'user-dedupe';
+  const store1 = createPersistentKeyStore(createPersistentVault(uid, deps(secure, blob)));
+  assert.equal(await store1.hasProcessedEnvelope!('10-0'), false);
+  await store1.markEnvelopeProcessed!('10-0');
+  await store1.markEnvelopeProcessed!('10-0'); // idempotent
+  store1.destroy();
+
+  const store2 = createPersistentKeyStore(createPersistentVault(uid, deps(secure, blob)));
+  assert.equal(await store2.hasProcessedEnvelope!('10-0'), true);
+  assert.equal(await store2.hasProcessedEnvelope!('11-0'), false);
+});
+
+test('the processed-id ring is bounded, forgetting the oldest ids first', async () => {
+  const store = createPersistentKeyStore(createPersistentVault('user-ring', deps(fakeStorage(), fakeStorage())));
+  for (let i = 0; i < MAX_PROCESSED_ENVELOPE_IDS + 5; i += 1) {
+    await store.markEnvelopeProcessed!(`${i}-0`);
+  }
+  assert.equal(await store.hasProcessedEnvelope!('0-0'), false, 'oldest forgotten');
+  assert.equal(await store.hasProcessedEnvelope!('4-0'), false);
+  assert.equal(await store.hasProcessedEnvelope!('5-0'), true);
+  assert.equal(await store.hasProcessedEnvelope!(`${MAX_PROCESSED_ENVELOPE_IDS + 4}-0`), true);
 });

@@ -13,21 +13,24 @@ import { MessageRelayService } from './message-relay.service';
 
 function buildService(presence: Record<string, string> = { 'conn-1': 'node-a' }) {
   const publish = jest.fn().mockResolvedValue(1);
-  const lookup = jest.fn().mockResolvedValue(presence);
+  const lookupLive = jest.fn().mockResolvedValue(presence);
+  const append = jest.fn().mockResolvedValue('1-0');
   const publisher = { publish } as unknown as ConstructorParameters<typeof MessageRelayService>[0];
   const presenceRegistry = {
-    lookup,
+    lookupLive,
   } as unknown as ConstructorParameters<typeof MessageRelayService>[1];
-  const offlineQueue = {
-    enqueue: jest.fn().mockResolvedValue(undefined),
-  } as unknown as ConstructorParameters<typeof MessageRelayService>[3];
+  const inbox = { append } as unknown as ConstructorParameters<typeof MessageRelayService>[3];
+  const push = {
+    notify: jest.fn().mockResolvedValue(undefined),
+  } as unknown as ConstructorParameters<typeof MessageRelayService>[4];
   const service = new MessageRelayService(
     publisher,
     presenceRegistry,
     new InProcessSocketRegistry(),
-    offlineQueue,
+    inbox,
+    push,
   );
-  return { service, publish };
+  return { service, publish, append };
 }
 
 const nonEmpty = fc.string({ minLength: 1, maxLength: 24 });
@@ -46,7 +49,7 @@ test('Property 23: relay routes iff envelope.senderUid === authenticated uid', a
   // Feature: phase1-client-messaging, Property 23: Relay binds sender to the authenticated connection
   await fc.assert(
     fc.asyncProperty(nonEmpty, nonEmpty, async (authUid, declaredSender) => {
-      const { service, publish } = buildService();
+      const { service, publish, append } = buildService();
       const auth: AuthContext = { uid: authUid, tokenExp: 9_999_999_999 };
       const envelope = fc.sample(envelopeArb(declaredSender), 1)[0]!;
 
@@ -59,6 +62,7 @@ test('Property 23: relay routes iff envelope.senderUid === authenticated uid', a
         // Spoofed sender ⇒ rejected and nothing published.
         expect(outcome).toEqual({ status: 'rejected', reason: 'sender-mismatch' });
         expect(publish).not.toHaveBeenCalled();
+        expect(append).not.toHaveBeenCalled();
       }
     }),
     { numRuns: 200 },

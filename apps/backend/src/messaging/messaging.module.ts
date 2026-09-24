@@ -18,7 +18,7 @@ import { DevicesModule } from '../devices';
 import { FcmPushSender } from './fcm-push-sender';
 import { InProcessSocketRegistry, LOCAL_SOCKET_REGISTRY } from './local-socket-registry';
 import { MessageRelayService } from './message-relay.service';
-import { OfflineQueueService } from './offline-queue.service';
+import { InboxService } from './inbox.service';
 import { PushNotificationService } from './push-notification.service';
 import { PUSH_SENDER } from './push-sender';
 
@@ -27,7 +27,7 @@ import { PUSH_SENDER } from './push-sender';
   imports: [DevicesModule],
   providers: [
     MessageRelayService,
-    OfflineQueueService,
+    InboxService,
     PushNotificationService,
     // The content-free push transport. FcmPushSender reuses the existing Firebase Admin app
     // (the OTP-auth project) and self-degrades to a no-op when Firebase isn't configured (e.g.
@@ -35,6 +35,6 @@ import { PUSH_SENDER } from './push-sender';
     { provide: PUSH_SENDER, useClass: FcmPushSender },
     { provide: LOCAL_SOCKET_REGISTRY, useClass: InProcessSocketRegistry },
   ],
-  exports: [MessageRelayService, OfflineQueueService, LOCAL_SOCKET_REGISTRY],
+  exports: [MessageRelayService, InboxService, PushNotificationService, LOCAL_SOCKET_REGISTRY],
 })
 export class MessagingModule {}

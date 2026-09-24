@@ -75,6 +75,7 @@ import { API_BASE_URL, REGISTER_URL, WS_URL } from '../api/api-config';
 import {
   createBlobStore,
   createDirectoryClient,
+  createAccountClient,
   createPreKeyClaimClient,
   createPushTokenClient,
   type DirectoryClient,
@@ -83,6 +84,7 @@ import { createFirebasePushPlatform } from '../push/firebase-push-platform';
 import {
   registerPushToken,
   revokePushToken,
+  watchForegroundWakes,
   type PushRegistrationDeps,
 } from '../push/push-registration';
 import { clearConversationHistory, deleteConversation } from './clear-chat';
@@ -428,6 +430,12 @@ export interface ChatController {
   whoAmI(): Promise<WhoAmIResponse | null>;
   /** Client-initiated sign-out (clears the auth session; Requirement 4.8). */
   signOut(): Promise<void>;
+  /**
+   * Permanently delete the account: the server erases the user's data and sign-in identity, then
+   * this device is wiped and signed out exactly like {@link signOut}. On failure nothing local is
+   * touched and `error` says why (safe to retry).
+   */
+  deleteAccount(): Promise<{ ok: boolean; error?: string }>;
 }
 
 /** A short, collision-resistant client message id (no external uuid dependency). */
@@ -722,8 +730,15 @@ export function createMobileController(): ChatController {
       registrationId: record.registrationId,
       platform: createFirebasePushPlatform(),
     };
+    // A wake push while the app is OPEN means the server sees no live socket for us: replace the
+    // (zombie) socket immediately so the inbox replay arrives now, not after the keepalive fires.
+    const wakeUnsub = watchForegroundWakes(pushRegistration.platform, () => realtime?.reconnectNow());
+    pushUnsub = wakeUnsub;
     void registerPushToken(pushRegistration).then((unsub) => {
-      pushUnsub = unsub;
+      pushUnsub = () => {
+        unsub();
+        wakeUnsub();
+      };
     });
   }
 
@@ -803,6 +818,33 @@ export function createMobileController(): ChatController {
       notifyAuth(null);
     }
   });
+
+  /**
+   * Shared tail of sign-out and account deletion: wipe the encrypted on-device store, forget the
+   * remembered display name, tear the messaging stack down, and clear the auth session.
+   */
+  async function forgetDeviceAndSignOut(): Promise<void> {
+    // Wipe the encrypted on-device store (identity, sessions, messages) before teardown
+    // clears the reference — explicit sign-out forgets this device (Requirement 7.4).
+    try {
+      await vault?.wipe();
+    } catch {
+      // A wipe failure must not block sign-out; the auth session is still cleared below.
+    }
+    // Forget the locally-remembered display name too, so the next account on this device
+    // starts at onboarding rather than inheriting a stale name.
+    const signedOutUid = authService.getCurrentUid() ?? currentUid;
+    if (signedOutUid !== null) {
+      await clearDisplayName(signedOutUid);
+    }
+    teardown();
+    deviceId = null;
+    bootstrappedUid = null;
+    setSetup({ phase: 'idle' });
+    currentUid = null;
+    currentPhone = null;
+    await authService.signOut();
+  }
 
   return {
     async requestOtp(e164: string): Promise<RequestOtpResult> {
@@ -1331,26 +1373,29 @@ export function createMobileController(): ChatController {
         await revokePushToken(pushRegistration);
         pushRegistration = null;
       }
-      // Wipe the encrypted on-device store (identity, sessions, messages) before teardown
-      // clears the reference — explicit sign-out forgets this device (Requirement 7.4).
-      try {
-        await vault?.wipe();
-      } catch {
-        // A wipe failure must not block sign-out; the auth session is still cleared below.
+      await forgetDeviceAndSignOut();
+    },
+
+    async deleteAccount(): Promise<{ ok: boolean; error?: string }> {
+      const client = createAccountClient(httpClient, () => authService.getCurrentToken(), API_BASE_URL);
+      const result = await client.deleteAccount();
+      if (!result.ok) {
+        return {
+          ok: false,
+          error:
+            result.status === 0
+              ? 'Couldn’t reach the server. Check your connection and try again.'
+              : 'Your account couldn’t be deleted right now. Please try again in a minute.',
+        };
       }
-      // Forget the locally-remembered display name too, so the next account on this device
-      // starts at onboarding rather than inheriting a stale name.
-      const signedOutUid = authService.getCurrentUid() ?? currentUid;
-      if (signedOutUid !== null) {
-        await clearDisplayName(signedOutUid);
+      // The server already dropped this device's push token with the account; just forget the
+      // local FCM token so the next sign-in mints a fresh one.
+      if (pushRegistration !== null) {
+        await pushRegistration.platform?.deleteToken().catch(() => undefined);
+        pushRegistration = null;
       }
-      teardown();
-      deviceId = null;
-      bootstrappedUid = null;
-      setSetup({ phase: 'idle' });
-      currentUid = null;
-      currentPhone = null;
-      await authService.signOut();
+      await forgetDeviceAndSignOut();
+      return { ok: true };
     },
   };
 }
@@ -1553,6 +1598,10 @@ export function createDemoController(): ChatController {
     },
     async signOut(): Promise<void> {
       // Demo controller holds no real auth session.
+    },
+    async deleteAccount(): Promise<{ ok: boolean; error?: string }> {
+      // Demo controller holds no real account.
+      return { ok: true };
     },
   };
 }

@@ -32,6 +32,8 @@
     "src/app/shadow-invite-wiring.test.ts",
     "src/app/clear-chat.ts",
     "src/app/clear-chat.test.ts",
+    "src/api/api-clients.ts",
+    "src/app/account-client.test.ts",
     "src/data/shadow-secret-persistence.ts",
     "src/data/shadow-secret-persistence.test.ts",
     "src/data/row-thread-association.ts",

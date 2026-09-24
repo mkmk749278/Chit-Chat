@@ -23,6 +23,12 @@ export interface NodeRelayMessage {
   targetUid: string;
   /** The opaque ciphertext envelope to deliver — never decoded or logged by the server. */
   envelope: CiphertextEnvelope;
+  /**
+   * The recipient inbox entry id the envelope was stored under (protocol v2). Forwarded on the
+   * `deliver` frame so the client can acknowledge it. Absent only on messages published by an
+   * older backend during a rolling upgrade.
+   */
+  id?: string;
 }
 
 /**

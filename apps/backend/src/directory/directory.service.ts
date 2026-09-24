@@ -45,7 +45,12 @@ export class DirectoryService {
   async resolvePhone(phoneNumber: string): Promise<ResolvePhoneResponse> {
     const normalized = normalizeE164(phoneNumber);
     return this.transactions.runInTransaction(async (manager) => {
-      const user = await manager.findOne(UserEntity, { where: { phoneNumber: normalized } });
+      // A verified number is held by one account (registration clears it from any other row);
+      // the ordering only makes the result deterministic for rows written before that rule.
+      const user = await manager.findOne(UserEntity, {
+        where: { phoneNumber: normalized },
+        order: { updatedAt: 'DESC' },
+      });
       if (user === null) {
         throw new NotFoundException('No registered user found for that phone number');
       }

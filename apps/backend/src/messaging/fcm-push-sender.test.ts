@@ -78,7 +78,37 @@ describe('FcmPushSender.send', () => {
     const sendEach = jest.fn(async () => ({ successCount: 1, failureCount: 1, responses: [] }));
     withMessaging(sendEach);
 
-    await expect(new FcmPushSender().send(['t1', 't2'], { type: 'wake' })).resolves.toBeUndefined();
+    await expect(new FcmPushSender().send(['t1', 't2'], { type: 'wake' })).resolves.toEqual({
+      invalidTokens: [],
+    });
     expect(sendEach).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports only permanently invalid tokens for pruning', async () => {
+    const sendEach = jest.fn(async () => ({
+      successCount: 1,
+      failureCount: 2,
+      responses: [
+        { success: true },
+        { success: false, error: { code: 'messaging/registration-token-not-registered' } },
+        { success: false, error: { code: 'messaging/internal-error' } },
+      ],
+    }));
+    withMessaging(sendEach);
+
+    const result = await new FcmPushSender().send(['t1', 't2', 't3'], { type: 'wake' });
+
+    // t3 failed transiently and must be kept; only the unregistered t2 is pruned.
+    expect(result).toEqual({ invalidTokens: ['t2'] });
+  });
+
+  it('collapses wake pushes so an offline device keeps only the newest', async () => {
+    const sendEach = jest.fn(async (_message: unknown) => ({ successCount: 1, failureCount: 0, responses: [] }));
+    withMessaging(sendEach);
+
+    await new FcmPushSender().send(['t1'], { type: 'wake' });
+
+    const message = sendEach.mock.calls[0][0] as { android: Record<string, unknown> };
+    expect(message.android).toMatchObject({ priority: 'high', collapseKey: 'wake' });
   });
 });

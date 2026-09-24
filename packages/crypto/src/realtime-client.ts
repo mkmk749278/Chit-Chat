@@ -33,10 +33,12 @@
  * socket, real Firebase, or real wall-clock timers (design §"Determinism").
  */
 
-import type {
-  ClientToServerFrame,
-  ConnectionStatus,
-  ServerToClientFrame,
+import {
+  REALTIME_PROTOCOL_QUERY_PARAM,
+  REALTIME_PROTOCOL_VERSION,
+  type ClientToServerFrame,
+  type ConnectionStatus,
+  type ServerToClientFrame,
 } from '@chat-app/types';
 import { BackoffPolicy } from './backoff-policy';
 import type { Unsubscribe, WebSocketHandle, WebSocketTransport } from './ports';
@@ -52,6 +54,16 @@ export const CLOSE_CODE_RATE_LIMITED = 4429;
 export const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
 /** Default pong-response deadline after a server ping: 5 s (Requirements 4.3, 4.11). */
 export const DEFAULT_PONG_TIMEOUT_MS = 5_000;
+
+/**
+ * Default spacing of client keepalive probes (protocol v2). A mobile socket can die without any
+ * `close` reaching JS (network switch, NAT timeout, a server that vanished): the OS keeps
+ * reporting it open for many minutes while every message to this user queues up server-side.
+ * Probing every 25 s bounds that blind spot.
+ */
+export const DEFAULT_KEEPALIVE_INTERVAL_MS = 25_000;
+/** Default wait for the server's `pong` before the socket is declared dead and replaced. */
+export const DEFAULT_KEEPALIVE_TIMEOUT_MS = 10_000;
 
 /**
  * Opaque timer handle returned by a {@link Scheduler}. The concrete shape depends on
@@ -107,6 +119,15 @@ export interface RealtimeClientOptions {
   handshakeTimeoutMs?: number;
   /** Pong-response deadline in ms after a server ping. Defaults to {@link DEFAULT_PONG_TIMEOUT_MS}. */
   pongTimeoutMs?: number;
+  /**
+   * Realtime protocol version to request (see `REALTIME_PROTOCOL_VERSION` in `@chat-app/types`).
+   * Defaults to the latest; `1` opts out of acknowledged delivery and keepalive (legacy wire).
+   */
+  protocol?: number;
+  /** Keepalive probe spacing in ms (v2 only). Defaults to {@link DEFAULT_KEEPALIVE_INTERVAL_MS}. */
+  keepaliveIntervalMs?: number;
+  /** Keepalive `pong` deadline in ms (v2 only). Defaults to {@link DEFAULT_KEEPALIVE_TIMEOUT_MS}. */
+  keepaliveTimeoutMs?: number;
 }
 
 /**
@@ -170,6 +191,18 @@ const defaultScheduler: Scheduler = {
  */
 export class RealtimeClient {
   private readonly url: string;
+  /** {@link url} plus the protocol-version query flag (the URL actually opened). */
+  private readonly connectUrl: string;
+  private readonly keepaliveIntervalMs: number;
+  private readonly keepaliveTimeoutMs: number;
+  /**
+   * Protocol the CURRENT socket's server confirmed with `hello` (1 until then). Keepalive only
+   * runs against a v2 server, so a client talking to an older backend never probes it with frames
+   * it would ignore (and never mistakes the missing `pong` for a dead socket).
+   */
+  private serverProtocol = 1;
+  private keepaliveTimer: TimerHandle | null = null;
+  private keepaliveDeadline: TimerHandle | null = null;
   private readonly transport: WebSocketTransport;
   private readonly auth: RealtimeAuthService;
   private readonly backoff: BackoffPolicy;
@@ -228,6 +261,10 @@ export class RealtimeClient {
     this.scheduler = options.scheduler ?? defaultScheduler;
     this.handshakeTimeoutMs = options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
     this.pongTimeoutMs = options.pongTimeoutMs ?? DEFAULT_PONG_TIMEOUT_MS;
+    this.keepaliveIntervalMs = options.keepaliveIntervalMs ?? DEFAULT_KEEPALIVE_INTERVAL_MS;
+    this.keepaliveTimeoutMs = options.keepaliveTimeoutMs ?? DEFAULT_KEEPALIVE_TIMEOUT_MS;
+    const protocol = options.protocol ?? REALTIME_PROTOCOL_VERSION;
+    this.connectUrl = protocol >= 2 ? withQueryParam(this.url, REALTIME_PROTOCOL_QUERY_PARAM, String(protocol)) : this.url;
   }
 
   // -------------------------------------------------------------------------
@@ -399,8 +436,9 @@ export class RealtimeClient {
     const id = (this.attemptId += 1);
     let handle: WebSocketHandle;
     try {
-      // Token rides the subprotocol ONLY; the URL carries no token (4.1, 4.2, 8.6).
-      handle = this.transport.open(this.url, ['bearer', token]);
+      // Token rides the subprotocol ONLY; the URL carries no token (4.1, 4.2, 8.6) — just the
+      // non-secret protocol-version flag.
+      handle = this.transport.open(this.connectUrl, ['bearer', token]);
     } catch {
       // Transport failed to open (e.g. TLS could not be established, Requirement 8.7):
       // abort without retainable state and reconnect under backoff (4.6).
@@ -556,6 +594,9 @@ export class RealtimeClient {
    * Route an inbound text frame: answer a `ping` control frame with a `pong` (4.3),
    * forward `deliver` / `ack` frames to listeners, and ignore anything else. Malformed
    * JSON is dropped silently rather than crashing the socket.
+   *
+   * Protocol v2: `hello` records the server's protocol and starts the keepalive; any inbound
+   * frame proves the socket is alive and satisfies an outstanding keepalive probe.
    */
   private handleMessage(raw: string): void {
     let parsed: unknown;
@@ -567,9 +608,22 @@ export class RealtimeClient {
     if (typeof parsed !== 'object' || parsed === null) {
       return;
     }
+    this.onProofOfLife();
     const kind = (parsed as { kind?: unknown }).kind;
     if (kind === 'ping') {
       this.respondToPing();
+      return;
+    }
+    if (kind === 'hello') {
+      const protocol = (parsed as { protocol?: unknown }).protocol;
+      this.serverProtocol = typeof protocol === 'number' && Number.isInteger(protocol) ? protocol : 1;
+      if (this.serverProtocol >= 2) {
+        this.scheduleKeepalive();
+      }
+      return;
+    }
+    if (kind === 'pong') {
+      // Keepalive answer; already accounted for by onProofOfLife above.
       return;
     }
     if (kind === 'deliver' || kind === 'ack' || kind === 'typing') {
@@ -623,6 +677,71 @@ export class RealtimeClient {
     this.scheduleBackoffReconnect();
   }
 
+  /**
+   * Arm the next keepalive probe (v2 server only). When it fires, a `ping` is sent and a deadline
+   * armed; if no frame at all arrives before the deadline the socket is a zombie and is replaced.
+   */
+  private scheduleKeepalive(): void {
+    this.clearKeepaliveTimers();
+    if (this.serverProtocol < 2 || this.phase !== 'connected') {
+      return;
+    }
+    const id = this.attemptId;
+    this.keepaliveTimer = this.scheduler.setTimeout(() => {
+      this.keepaliveTimer = null;
+      if (id !== this.attemptId || this.currentHandle === null) {
+        return;
+      }
+      this.keepaliveDeadline = this.scheduler.setTimeout(() => {
+        this.keepaliveDeadline = null;
+        if (id === this.attemptId) {
+          this.handleKeepaliveMissed();
+        }
+      }, this.keepaliveTimeoutMs);
+      try {
+        this.currentHandle.send(JSON.stringify({ kind: 'ping' }));
+      } catch {
+        // Could not even write the probe; the armed deadline will replace the socket.
+      }
+    }, this.keepaliveIntervalMs);
+  }
+
+  /** Any inbound frame proves the socket is alive: satisfy a pending probe and re-arm. */
+  private onProofOfLife(): void {
+    if (this.keepaliveDeadline !== null) {
+      this.scheduleKeepalive();
+    }
+  }
+
+  /**
+   * No frame arrived within the keepalive deadline: the socket is dead even though no `close`
+   * fired. Replace it (reconnect under backoff); the fresh handshake replays the server inbox, so
+   * nothing sent to this user in the meantime is lost.
+   */
+  private handleKeepaliveMissed(): void {
+    const handle = this.currentHandle;
+    this.teardownSocket();
+    if (handle !== null) {
+      try {
+        handle.close(CLOSE_CODE_RATE_LIMITED, 'keepalive timeout');
+      } catch {
+        // Already closing; ignore.
+      }
+    }
+    this.scheduleBackoffReconnect();
+  }
+
+  private clearKeepaliveTimers(): void {
+    if (this.keepaliveTimer !== null) {
+      this.scheduler.clearTimeout(this.keepaliveTimer);
+      this.keepaliveTimer = null;
+    }
+    if (this.keepaliveDeadline !== null) {
+      this.scheduler.clearTimeout(this.keepaliveDeadline);
+      this.keepaliveDeadline = null;
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Internal helpers.
   // -------------------------------------------------------------------------
@@ -630,6 +749,8 @@ export class RealtimeClient {
   /** Detach socket listeners, clear handshake/pong timers, drop the handle, invalidate the attempt. */
   private teardownSocket(): void {
     this.attemptId += 1;
+    this.serverProtocol = 1;
+    this.clearKeepaliveTimers();
     for (const unsubscribe of this.socketUnsubscribers) {
       try {
         unsubscribe();
@@ -707,4 +828,16 @@ export class RealtimeClient {
       resolve();
     }
   }
+}
+
+/**
+ * Append `key=value` to a URL's query string without disturbing an existing query or fragment.
+ * Kept string-based (no `URL` global) so it behaves identically on Hermes, browsers, and Node.
+ */
+function withQueryParam(url: string, key: string, value: string): string {
+  const hashIndex = url.indexOf('#');
+  const base = hashIndex >= 0 ? url.slice(0, hashIndex) : url;
+  const hash = hashIndex >= 0 ? url.slice(hashIndex) : '';
+  const separator = base.includes('?') ? '&' : '?';
+  return `${base}${separator}${encodeURIComponent(key)}=${encodeURIComponent(value)}${hash}`;
 }

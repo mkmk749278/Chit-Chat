@@ -18,8 +18,30 @@
 #   client by default — no message body is fabricated.
 # =============================================================================
 
+# --- shared response hardening ------------------------------------------------
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+}
+
 # --- api. subdomain -> backend REST :3000 (Req 9.4) --------------------------
 api.{$DOMAIN} {
+	import security_headers
+
+	# /metrics is for Prometheus on the internal monitoring network only. Through this proxy
+	# every request arrives from Caddy's private Docker address, which the backend's
+	# monitoring-network guard would otherwise accept — so it is never served publicly.
+	respond /metrics* 404
+
+	# Largest legitimate body is an attachment upload (~12 MB of base64 ciphertext).
+	request_body {
+		max_size 13MB
+	}
+
 	reverse_proxy backend:3000
 }
 
@@ -27,6 +49,8 @@ api.{$DOMAIN} {
 # Frame compression is disabled so WebSocket frames are never recompressed
 # (design §12.7). Caddy transparently handles the HTTP/1.1 Upgrade handshake.
 ws.{$DOMAIN} {
+	import security_headers
+
 	reverse_proxy backend:3001 {
 		transport http {
 			compression off
@@ -39,6 +63,9 @@ ws.{$DOMAIN} {
 # 3002 per §14.5). Caddy reaches it over the Compose network by service name, so
 # it targets the container port 3000 — not the host-published 3002.
 {$DOMAIN} {
+	import security_headers
+	header X-Frame-Options "DENY"
+
 	reverse_proxy web:3000
 }
 

@@ -25,6 +25,26 @@ services:
     restart: always
     env_file:
       - .env.backend
+    environment:
+      # Human-readable base of the realtime node id (a random per-boot suffix is appended, so a
+      # restarted container never inherits its predecessor's presence entries).
+      NODE_ID: backend
+    # Run a minimal init as PID 1 so SIGTERM reaches Node and zombies are reaped. The backend
+    # handles SIGTERM (enableShutdownHooks): it withdraws its presence entries and closes every
+    # WebSocket with 1012 so clients reconnect at once. Give that drain time before SIGKILL.
+    init: true
+    stop_grace_period: 30s
+    healthcheck:
+      # node:20 has fetch; the slim image has no curl.
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     # Bound to localhost only — public traffic reaches the backend through Caddy
     # over the Docker network (api./ws. subdomains). Docker bypasses ufw, so an
     # unbound "3000:3000" would expose these to the internet; 127.0.0.1 keeps them
@@ -111,7 +131,21 @@ services:
   redis:
     image: redis:7-alpine
     restart: always
-    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    # REDIS_MAXMEMORY (compose .env, e.g. "1gb" ≈ 40% of the VPS RAM) caps Redis so a runaway
+    # blob store fails writes instead of getting the whole box OOM-killed. `noeviction` is
+    # deliberate: Redis holds the undelivered-message inbox and presence, which must never be
+    # silently evicted. The default (0 = unlimited) keeps today's behaviour until an operator
+    # sizes it for the host.
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --maxmemory
+      - ${REDIS_MAXMEMORY:-0}
+      - --maxmemory-policy
+      - noeviction
     volumes:
       - redis_data:/data
     networks:

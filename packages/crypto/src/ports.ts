@@ -256,6 +256,14 @@ export interface KeyStore {
    */
   purgeMessages(ids: string[]): Promise<void>;
 
+  /**
+   * OPTIONAL (reliable delivery, protocol v2): whether an inbound envelope's server inbox id was
+   * already processed on this device. Persisted stores implement it so a replay after a relaunch
+   * is skipped instead of decrypted twice (see `MessagingStore.hasProcessedEnvelope`).
+   */
+  hasProcessedEnvelope?(id: string): Promise<boolean>;
+  /** OPTIONAL: remember a processed inbox id (bounded; the oldest ids are forgotten). */
+  markEnvelopeProcessed?(id: string): Promise<void>;
   /** Web only: wipe all in-memory material within the current event cycle (7.4). */
   destroy(): void;
 }

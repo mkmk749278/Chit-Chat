@@ -187,6 +187,42 @@ export class FirebaseAdminService implements OnModuleInit {
     return this.toDecodedFirebaseToken(decoded);
   }
 
+  /**
+   * Look up the VERIFIED phone number Firebase holds for `uid` (the number the user completed an
+   * OTP for), or `undefined` when the account has none or the lookup fails.
+   *
+   * Used as the authoritative fallback when an ID token happens to carry no `phone_number` claim,
+   * instead of trusting a client-supplied number: a client value would let any caller claim
+   * someone else's phone and hijack their contact-discovery lookups.
+   */
+  async getVerifiedPhoneNumber(uid: string): Promise<string | undefined> {
+    try {
+      const user = await this.requireAuth().getUser(uid);
+      return typeof user.phoneNumber === 'string' && user.phoneNumber.length > 0
+        ? user.phoneNumber
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Delete the Firebase Auth user (account deletion). Idempotent: an already-deleted user counts
+   * as success. Any other failure is rethrown so the caller can report "try again" — account
+   * deletion must not silently leave the sign-in identity behind.
+   */
+  async deleteUser(uid: string): Promise<void> {
+    try {
+      await this.requireAuth().deleteUser(uid);
+    } catch (err) {
+      const code = (err as { code?: unknown } | null)?.code;
+      if (code === 'auth/user-not-found') {
+        return;
+      }
+      throw err;
+    }
+  }
+
   /** Maps the SDK's `DecodedIdToken` onto the shared {@link DecodedFirebaseToken}. */
   private toDecodedFirebaseToken(decoded: DecodedIdToken): DecodedFirebaseToken {
     return {

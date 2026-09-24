@@ -13,15 +13,25 @@ import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 /** DI token for the {@link PushSender}, so the FCM binding can be swapped in (task 6.3) or faked. */
 export const PUSH_SENDER = Symbol('PUSH_SENDER');
 
+/** What a push attempt learned about the tokens it was given. */
+export interface PushSendResult {
+  /**
+   * Tokens the push provider reported as permanently invalid (app uninstalled, token rotated or
+   * unregistered). The caller removes them so the backend stops pushing into the void.
+   */
+  invalidTokens: string[];
+}
+
 /** A content-free data push: routing metadata only — never message text or sender plaintext (6.2). */
 export interface PushSender {
   /**
    * Deliver a content-free data push to each token. `data` carries ONLY routing metadata
    * sufficient for the client to wake, connect, and fetch+decrypt locally (Req 6.3) — it MUST
    * NOT contain message text or sender plaintext. Best-effort: implementations swallow per-token
-   * failures (e.g. an unregistered token) rather than throwing.
+   * failures (e.g. an unregistered token) rather than throwing, and MAY report permanently invalid
+   * tokens so they can be pruned.
    */
-  send(tokens: string[], data: Record<string, string>): Promise<void>;
+  send(tokens: string[], data: Record<string, string>): Promise<PushSendResult | void>;
 }
 
 /**

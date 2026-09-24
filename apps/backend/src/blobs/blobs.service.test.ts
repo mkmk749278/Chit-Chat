@@ -1,7 +1,7 @@
-import { PayloadTooLargeException } from '@nestjs/common';
+import { HttpException, PayloadTooLargeException } from '@nestjs/common';
 
 import { BlobService } from './blobs.service';
-import { BLOB_TTL_SECONDS, MAX_BLOB_BYTES } from './blobs.constants';
+import { BLOB_DAILY_BYTES_PER_USER, BLOB_TTL_SECONDS, MAX_BLOB_BYTES } from './blobs.constants';
 
 /**
  * Unit tests for {@link BlobService} (Req 7.1/7.4). Exercised with a stub Redis client, asserting
@@ -9,15 +9,20 @@ import { BLOB_TTL_SECONDS, MAX_BLOB_BYTES } from './blobs.constants';
  * null, and oversize uploads are rejected before any write.
  */
 
-function build(getValue: string | null = null): {
+function build(getValue: string | null = null, quotaAdmits: number | Error = 1): {
   service: BlobService;
   set: jest.Mock;
   get: jest.Mock;
+  evalScript: jest.Mock;
 } {
   const set = jest.fn().mockResolvedValue('OK');
   const get = jest.fn().mockResolvedValue(getValue);
-  const redis = { set, get } as unknown as ConstructorParameters<typeof BlobService>[0];
-  return { service: new BlobService(redis), set, get };
+  const evalScript =
+    quotaAdmits instanceof Error
+      ? jest.fn().mockRejectedValue(quotaAdmits)
+      : jest.fn().mockResolvedValue(quotaAdmits);
+  const redis = { set, get, eval: evalScript } as unknown as ConstructorParameters<typeof BlobService>[0];
+  return { service: new BlobService(redis), set, get, evalScript };
 }
 
 describe('BlobService.store', () => {
@@ -56,5 +61,35 @@ describe('BlobService.fetch', () => {
   it('returns null for an unknown or expired id', async () => {
     const { service } = build(null);
     expect(await service.fetch('gone')).toBeNull();
+  });
+});
+
+describe('BlobService.store — per-user daily byte quota', () => {
+  it('charges the upload to the uploader and stores it when within quota', async () => {
+    const { service, set, evalScript } = build(null, 1);
+    const ciphertext = Buffer.alloc(3000).toString('base64');
+
+    await service.store(ciphertext, 'alice');
+
+    const [, numKeys, key, bytes, limit] = evalScript.mock.calls[0] as unknown[];
+    expect(numKeys).toBe(1);
+    expect(key).toBe('blob-quota:alice');
+    expect(bytes).toBe(3000);
+    expect(limit).toBe(BLOB_DAILY_BYTES_PER_USER);
+    expect(set).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects with 429 and writes nothing once the quota is exhausted', async () => {
+    const { service, set } = build(null, 0);
+    await expect(service.store(Buffer.from('x').toString('base64'), 'alice')).rejects.toBeInstanceOf(
+      HttpException,
+    );
+    expect(set).not.toHaveBeenCalled();
+  });
+
+  it('fails open when the quota counter is unavailable', async () => {
+    const { service, set } = build(null, new Error('redis down'));
+    await service.store(Buffer.from('x').toString('base64'), 'alice');
+    expect(set).toHaveBeenCalledTimes(1);
   });
 });

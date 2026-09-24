@@ -16,6 +16,7 @@ import {
   Logger,
   NotFoundException,
   Param,
+  ParseUUIDPipe,
   Post,
   UseGuards,
 } from '@nestjs/common';
@@ -46,6 +47,7 @@ export class BlobsController {
    *
    * @throws HttpException 429 when the per-uid upload limit is exceeded.
    * @throws PayloadTooLargeException (413) when the ciphertext exceeds the size bound (from the service).
+   * @throws HttpException 429 when the uploader's daily byte quota is exhausted (from the service).
    */
   @Post()
   @UseGuards(FirebaseAuthGuard)
@@ -66,7 +68,7 @@ export class BlobsController {
       throw new HttpException('Rate limit exceeded', HttpStatus.TOO_MANY_REQUESTS);
     }
 
-    const blobId = await this.blobs.store(dto.ciphertext);
+    const blobId = await this.blobs.store(dto.ciphertext, auth.uid);
     return { blobId };
   }
 
@@ -78,7 +80,7 @@ export class BlobsController {
    */
   @Get(':id')
   @UseGuards(FirebaseAuthGuard)
-  async download(@Param('id') id: string): Promise<DownloadBlobResponse> {
+  async download(@Param('id', new ParseUUIDPipe({ version: '4' })) id: string): Promise<DownloadBlobResponse> {
     const ciphertext = await this.blobs.fetch(id);
     if (ciphertext === null) {
       throw new NotFoundException('Attachment not found or expired');

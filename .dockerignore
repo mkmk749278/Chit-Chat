@@ -10,3 +10,10 @@
 .git
 .github
 **/*.log
+# Never bake local secrets/credentials into an image layer.
+**/.env
+**/.env.*
+**/*.keystore
+**/*.jks
+**/google-services.json
+**/GoogleService-Info.plist

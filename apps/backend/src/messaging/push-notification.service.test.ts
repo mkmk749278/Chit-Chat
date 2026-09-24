@@ -1,5 +1,5 @@
 import type { DevicesService } from '../devices';
-import { PushNotificationService } from './push-notification.service';
+import { PushNotificationService, WAKE_DEBOUNCE_SECONDS } from './push-notification.service';
 import type { PushSender } from './push-sender';
 
 /**
@@ -8,20 +8,42 @@ import type { PushSender } from './push-sender';
  * throws — push is best-effort on top of store-and-forward.
  */
 
-function build(opts: { tokens?: string[]; getThrows?: boolean; sendThrows?: boolean }): {
+function build(opts: {
+  tokens?: string[];
+  getThrows?: boolean;
+  sendThrows?: boolean;
+  invalidTokens?: string[];
+  debounced?: boolean;
+  redisThrows?: boolean;
+}): {
   service: PushNotificationService;
   send: jest.Mock;
   getPushTokens: jest.Mock;
+  removePushTokens: jest.Mock;
+  set: jest.Mock;
 } {
   const getPushTokens = jest.fn(
     opts.getThrows ? () => Promise.reject(new Error('db down')) : async () => opts.tokens ?? [],
   );
-  const devices = { getPushTokens } as unknown as DevicesService;
+  const removePushTokens = jest.fn().mockResolvedValue(undefined);
+  const devices = { getPushTokens, removePushTokens } as unknown as DevicesService;
   const send = jest.fn(
-    opts.sendThrows ? () => Promise.reject(new Error('fcm down')) : async () => undefined,
+    opts.sendThrows
+      ? () => Promise.reject(new Error('fcm down'))
+      : async () => (opts.invalidTokens !== undefined ? { invalidTokens: opts.invalidTokens } : undefined),
   );
   const sender = { send } as unknown as PushSender;
-  return { service: new PushNotificationService(devices, sender), send, getPushTokens };
+  const set = opts.redisThrows
+    ? jest.fn().mockRejectedValue(new Error('redis down'))
+    : jest.fn().mockResolvedValue(opts.debounced ? null : 'OK');
+  const redis = { set } as unknown as ConstructorParameters<typeof PushNotificationService>[2];
+  return {
+    service: new PushNotificationService(devices, sender, redis),
+    send,
+    getPushTokens,
+    removePushTokens,
+    set,
+  };
 }
 
 describe('PushNotificationService.notify', () => {
@@ -50,5 +72,33 @@ describe('PushNotificationService.notify', () => {
   it('never throws when the push send fails', async () => {
     const { service } = build({ tokens: ['t1'], sendThrows: true });
     await expect(service.notify('bob')).resolves.toBeUndefined();
+  });
+});
+
+describe('PushNotificationService.notify — bounding', () => {
+  it('debounces: at most one wake per recipient per window', async () => {
+    const { service, send, getPushTokens, set } = build({ tokens: ['t1'], debounced: true });
+    await service.notify('bob');
+    expect(set).toHaveBeenCalledWith('push-wake:bob', '1', 'EX', WAKE_DEBOUNCE_SECONDS, 'NX');
+    expect(getPushTokens).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('fails open when the debounce store is unavailable', async () => {
+    const { service, send } = build({ tokens: ['t1'], redisThrows: true });
+    await service.notify('bob');
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('prunes tokens the provider reports as permanently invalid', async () => {
+    const { service, removePushTokens } = build({ tokens: ['t1', 't2'], invalidTokens: ['t2'] });
+    await service.notify('bob');
+    expect(removePushTokens).toHaveBeenCalledWith(['t2']);
+  });
+
+  it('does not touch the store when every token is valid', async () => {
+    const { service, removePushTokens } = build({ tokens: ['t1'], invalidTokens: [] });
+    await service.notify('bob');
+    expect(removePushTokens).not.toHaveBeenCalled();
   });
 });

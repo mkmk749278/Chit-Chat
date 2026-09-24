@@ -18,15 +18,43 @@
  *      HTTP 404 (Requirement 5.1).
  */
 
-import { Controller, Get, Param, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  HttpException,
+  HttpStatus,
+  Logger,
+  NotFoundException,
+  Param,
+  UseGuards,
+} from '@nestjs/common';
 import type { AuthContext, PreKeyBundleResponse } from '@chat-app/types';
 
 import { Auth, FirebaseAuthGuard } from '../auth';
+import { RateLimiterService } from '../redis';
 import { PreKeyClaimService } from './pre-key-claim.service';
+
+/**
+ * Per-caller cap on prekey-bundle claims. Every claim CONSUMES one of the recipient's one-time
+ * prekeys, so an unbounded claim loop by any signed-in account could exhaust a victim's supply
+ * and silently degrade their new sessions to signed-prekey-only (weaker forward secrecy for the
+ * first message). A client claims once per new session, so 30/min is far above real use.
+ */
+export const KEY_CLAIM_RATE_LIMIT = 30;
+export const KEY_CLAIM_RATE_WINDOW_SECONDS = 60;
+export const KEY_CLAIM_RATE_LIMIT_SCOPE = 'key-claim';
+
+/** Firebase UIDs are at most 128 characters; anything longer cannot name a user. */
+const MAX_UID_LENGTH = 128;
 
 @Controller('api/keys')
 export class KeysController {
-  constructor(private readonly preKeyClaim: PreKeyClaimService) {}
+  private readonly logger = new Logger(KeysController.name);
+
+  constructor(
+    private readonly preKeyClaim: PreKeyClaimService,
+    private readonly rateLimiter: RateLimiterService,
+  ) {}
 
   /**
    * Claims and returns the recipient's PUBLIC prekey bundle for the authenticated caller.
@@ -42,9 +70,26 @@ export class KeysController {
   @Get(':uid')
   @UseGuards(FirebaseAuthGuard)
   async claim(
-    @Auth() _auth: AuthContext,
+    @Auth() auth: AuthContext,
     @Param('uid') uid: string,
   ): Promise<PreKeyBundleResponse> {
+    if (uid.length === 0 || uid.length > MAX_UID_LENGTH) {
+      throw new NotFoundException('Recipient has no registered device');
+    }
+    let allowed = true;
+    try {
+      const result = await this.rateLimiter.hit(
+        `${KEY_CLAIM_RATE_LIMIT_SCOPE}:${auth.uid}`,
+        KEY_CLAIM_RATE_LIMIT,
+        KEY_CLAIM_RATE_WINDOW_SECONDS,
+      );
+      allowed = result.allowed;
+    } catch {
+      this.logger.warn('Key-claim rate-limit check failed; allowing request');
+    }
+    if (!allowed) {
+      throw new HttpException('Rate limit exceeded', HttpStatus.TOO_MANY_REQUESTS);
+    }
     return this.preKeyClaim.claimForUser(uid);
   }
 }

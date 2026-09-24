@@ -20,7 +20,12 @@ export {
 } from './redis-retry-strategy';
 export { resolveRedisUrl, validateRedisUrl } from './redis-url';
 export { TokenCacheService } from './token-cache.service';
-export { PresenceRegistryService, type PresenceEntries } from './presence-registry.service';
+export {
+  PresenceRegistryService,
+  type PresenceEntries,
+  NODE_ALIVE_TTL_SECONDS,
+  PRESENCE_TTL_SECONDS,
+} from './presence-registry.service';
 export {
   RateLimiterService,
   RateLimitConfigError,

@@ -1,8 +1,9 @@
-import { NotFoundException } from '@nestjs/common';
+import { HttpException, NotFoundException } from '@nestjs/common';
 import type { AuthContext, PreKeyBundleResponse } from '@chat-app/types';
 
 import { FirebaseAuthGuard } from '../auth';
 import { KeysController } from './keys.controller';
+import type { RateLimiterService } from '../redis';
 import type { PreKeyClaimService } from './pre-key-claim.service';
 
 /**
@@ -19,6 +20,11 @@ import type { PreKeyClaimService } from './pre-key-claim.service';
 
 const AUTH: AuthContext = { uid: 'caller-uid', tokenExp: 9_999_999_999 };
 
+/** A limiter stub that allows (or rejects) every hit. */
+function allowAll(allowed = true): RateLimiterService {
+  return { hit: jest.fn().mockResolvedValue({ allowed }) } as unknown as RateLimiterService;
+}
+
 const BUNDLE: PreKeyBundleResponse = {
   deviceId: 'device-1',
   registrationId: 7,
@@ -30,7 +36,7 @@ const BUNDLE: PreKeyBundleResponse = {
 describe('KeysController.claim', () => {
   it('returns the claimed bundle from the service on success (5.1)', async () => {
     const claimForUser = jest.fn().mockResolvedValue(BUNDLE);
-    const controller = new KeysController({ claimForUser } as unknown as PreKeyClaimService);
+    const controller = new KeysController({ claimForUser } as unknown as PreKeyClaimService, allowAll());
 
     const result = await controller.claim(AUTH, 'recipient-uid');
 
@@ -40,7 +46,7 @@ describe('KeysController.claim', () => {
 
   it('propagates NotFoundException (404) when the recipient has no device (5.1)', async () => {
     const claimForUser = jest.fn().mockRejectedValue(new NotFoundException());
-    const controller = new KeysController({ claimForUser } as unknown as PreKeyClaimService);
+    const controller = new KeysController({ claimForUser } as unknown as PreKeyClaimService, allowAll());
 
     await expect(controller.claim(AUTH, 'ghost-uid')).rejects.toBeInstanceOf(NotFoundException);
   });
@@ -51,5 +57,27 @@ describe('KeysController.claim', () => {
     const guards = Reflect.getMetadata('__guards__', KeysController.prototype.claim) as unknown[];
     expect(Array.isArray(guards)).toBe(true);
     expect(guards).toContain(FirebaseAuthGuard);
+  });
+});
+
+describe('KeysController.claim — abuse bounds', () => {
+  it('rejects with 429 once the caller exceeds the claim rate, without consuming a prekey', async () => {
+    const claimForUser = jest.fn();
+    const limiter = allowAll(false);
+    const controller = new KeysController({ claimForUser } as unknown as PreKeyClaimService, limiter);
+
+    await expect(controller.claim(AUTH, 'recipient-uid')).rejects.toBeInstanceOf(HttpException);
+    expect(limiter.hit).toHaveBeenCalledWith('key-claim:caller-uid', 30, 60);
+    expect(claimForUser).not.toHaveBeenCalled();
+  });
+
+  it('404s an impossible uid without touching the limiter or the database', async () => {
+    const claimForUser = jest.fn();
+    const limiter = allowAll();
+    const controller = new KeysController({ claimForUser } as unknown as PreKeyClaimService, limiter);
+
+    await expect(controller.claim(AUTH, 'x'.repeat(129))).rejects.toBeInstanceOf(NotFoundException);
+    expect(limiter.hit).not.toHaveBeenCalled();
+    expect(claimForUser).not.toHaveBeenCalled();
   });
 });

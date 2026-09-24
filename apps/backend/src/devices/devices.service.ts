@@ -27,7 +27,7 @@
  */
 
 import { Injectable, NotFoundException } from '@nestjs/common';
-import type { EntityManager } from 'typeorm';
+import { In, Not, type EntityManager } from 'typeorm';
 import type { AddOneTimePreKeysResponse, RegisterDeviceResponse } from '@chat-app/types';
 
 import {
@@ -139,6 +139,30 @@ export class DevicesService {
       }
       const token = dto.pushToken.length > 0 ? dto.pushToken : null;
       await manager.update(DeviceEntity, { id: device.id }, { pushToken: token });
+      if (token !== null) {
+        // An FCM token identifies one app install. If it is still recorded on another device row
+        // (a reinstall re-registered under a new registrationId, or the install changed hands),
+        // drop it there so that stale row can't receive this install's wake pushes.
+        await manager.update(
+          DeviceEntity,
+          { pushToken: token, id: Not(device.id) },
+          { pushToken: null },
+        );
+      }
+    });
+  }
+
+  /**
+   * Revoke push tokens the push provider reported as permanently invalid (uninstalled app,
+   * rotated/unregistered token), wherever they are stored, so they stop costing a send on every
+   * message. Best-effort maintenance; unknown tokens are ignored.
+   */
+  async removePushTokens(tokens: readonly string[]): Promise<void> {
+    if (tokens.length === 0) {
+      return;
+    }
+    await this.transactions.runInTransaction(async (manager) => {
+      await manager.update(DeviceEntity, { pushToken: In([...tokens]) }, { pushToken: null });
     });
   }
 
@@ -164,21 +188,29 @@ export class DevicesService {
    * Upserts the `users` row keyed by `firebase_uid` and returns its id. Idempotent for
    * returning users — exactly one row per UID (Requirement 2.4).
    *
-   * When the verified token carries a phone number it is persisted so the directory
-   * (`POST /api/directory/resolve`) can resolve a phone to this UID for contact discovery.
-   * A token WITHOUT a phone claim leaves any previously-stored number untouched (the field
-   * is simply omitted from the upsert), so re-registering never blanks a known number.
+   * When a Firebase-verified phone number is supplied it is persisted so the directory
+   * (`POST /api/directory/resolve`) can resolve a phone to this UID for contact discovery,
+   * and it is cleared from any OTHER user row: a verified number belongs to exactly one account
+   * (a recycled number, or an account deleted and re-created, must not leave the old UID
+   * resolvable). No phone leaves any previously-stored number untouched (the field is simply
+   * omitted from the upsert), so re-registering never blanks a known number.
    */
   private async upsertUser(
     manager: EntityManager,
     uid: string,
     phoneNumber?: string,
   ): Promise<string> {
-    const row =
-      phoneNumber !== undefined
-        ? { firebaseUid: uid, phoneNumber: normalizeE164(phoneNumber) }
-        : { firebaseUid: uid };
-    await manager.upsert(UserEntity, row, ['firebaseUid']);
+    if (phoneNumber === undefined) {
+      await manager.upsert(UserEntity, { firebaseUid: uid }, ['firebaseUid']);
+    } else {
+      const normalized = normalizeE164(phoneNumber);
+      await manager.update(
+        UserEntity,
+        { phoneNumber: normalized, firebaseUid: Not(uid) },
+        { phoneNumber: () => 'NULL' },
+      );
+      await manager.upsert(UserEntity, { firebaseUid: uid, phoneNumber: normalized }, ['firebaseUid']);
+    }
     const user = await manager.findOneByOrFail(UserEntity, { firebaseUid: uid });
     return user.id;
   }

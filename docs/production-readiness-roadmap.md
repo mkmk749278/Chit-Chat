@@ -14,17 +14,25 @@
 
 ## TL;DR — the short list
 
+> **Update 2026-09:** a full production audit (`docs/production-audit.md`) found and fixed the root
+> causes of the "no offline delivery" complaint on the server side (stale presence after deploys,
+> at-most-once delivery, crash-on-Redis-error) and added acknowledged delivery (realtime protocol
+> v2), abuse limits, and account deletion. Statuses below reflect the code after that change; the
+> audit's §5 lists the owner actions still required.
+
 | # | Gap | Sev | Effort | Status |
 |---|-----|-----|--------|--------|
-| 1 | Offline push delivery (FCM) end-to-end | P0 | L | ⬜ |
+| 1 | Offline push delivery (FCM) end-to-end | P0 | L | ✅ FCM sender + mobile wake handler; audit fixed the server-side message loss |
 | 2 | Shadow chat UX (invite model is invisible/asymmetric) | P0 | M | 🟡 |
-| 3 | Attachments / media (send + receive) | P0 | L | 🟡 |
-| 4 | Signed-prekey signature verification is a stub | P0 | S | ⬜ |
-| 5 | Connection reliability + offline UX (the "Connecting…" problem) | P1 | M | 🟡 |
-| 6 | In-app / foreground new-message notifications | P1 | M | ⬜ |
+| 3 | Attachments / media (send + receive) | P0 | L | 🟡 images shipped; files/voice + object storage pending |
+| 4 | Signed-prekey signature verification is a stub | P0 | S | ✅ real XEdDSA verification |
+| 5 | Connection reliability + offline UX (the "Connecting…" problem) | P1 | M | ✅ offline banner + retry; keepalive + acked delivery (audit) |
+| 6 | In-app / foreground new-message notifications | P1 | M | 🟡 generic wake notification; no per-chat unread badges |
 | 7 | Contact/profile polish (avatars, names on shadow headers) | P2 | M | 🟡 |
 | 8 | Calls (audio/video) | P2 | XL | ⬜ |
 | 9 | Group chats | P2 | XL | ⬜ |
+| 10 | Account deletion (Play policy / GDPR) | P0 | M | ✅ backend + mobile (audit) |
+| 11 | Real web client (web is a labelled demo) | P1 | L | ⬜ |
 
 ---
 

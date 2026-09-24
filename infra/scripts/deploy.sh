@@ -103,6 +103,17 @@ docker compose --project-directory "${COMPOSE_DIR}" -f "${COMPOSE_DIR}/docker-co
 # ---------------------------------------------------------------------------
 if [ "${SERVICE}" = "backend" ]; then
   COMPOSE_DIR="${COMPOSE_DIR}" bash "${SCRIPT_DIR}/migrate.sh"
+
+  # The Caddyfile is bind-mounted, so edge-config changes (headers, blocked routes) only take
+  # effect once Caddy reloads it. Reload gracefully (an invalid file leaves the running config in
+  # place). Done on backend deploys only: the backend restart has already dropped every
+  # WebSocket, so the reload costs nothing extra. Best-effort — never fails the deploy.
+  if docker compose --project-directory "${COMPOSE_DIR}" -f "${COMPOSE_DIR}/docker-compose.yml" \
+    exec -T caddy caddy reload --config /etc/caddy/Caddyfile >/dev/null 2>&1; then
+    log "caddy configuration reloaded"
+  else
+    log "WARNING: caddy reload skipped or failed; edge config unchanged"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
