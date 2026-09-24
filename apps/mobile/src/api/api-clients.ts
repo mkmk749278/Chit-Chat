@@ -158,6 +158,43 @@ export function createPushTokenClient(
   };
 }
 
+/**
+ * Build the {@link AccountClient} over `POST /api/account/delete`. The server deletes only the
+ * account named by the bearer token.
+ */
+export function createAccountClient(
+  http: HttpClient,
+  getToken: () => string | null,
+  apiBaseUrl: string,
+): AccountClient {
+  return {
+    async deleteAccount(): Promise<{ ok: boolean; status: number }> {
+      const token = getToken();
+      if (token === null) {
+        return { ok: false, status: 0 };
+      }
+      try {
+        const response = await http.send({
+          method: 'POST',
+          url: `${apiBaseUrl}/api/account/delete`,
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: '{}',
+          timeoutMs: REQUEST_TIMEOUT_MS,
+        });
+        return { ok: response.status >= 200 && response.status < 300, status: response.status };
+      } catch {
+        return { ok: false, status: 0 };
+      }
+    },
+  };
+}
+
+/** Permanently deletes the signed-in account on the server. */
+export interface AccountClient {
+  /** `ok` only when the server confirmed deletion; `status` 0 = not sent / network failure. Never throws. */
+  deleteAccount(): Promise<{ ok: boolean; status: number }>;
+}
+
 /** Registers/revokes this device's push token (Req 6.2/6.4). */
 export interface PushTokenClient {
   /**

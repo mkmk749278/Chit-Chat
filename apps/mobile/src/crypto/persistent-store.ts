@@ -198,7 +198,17 @@ interface VaultDoc {
    * consistency. Absent ⇒ no peer has enrolled on this device yet.
    */
   biometricEnrollment?: Record<string, string>;
+  /**
+   * Server inbox ids of inbound envelopes already processed on this device (reliable delivery,
+   * protocol v2), oldest first, capped at {@link MAX_PROCESSED_ENVELOPE_IDS}. Lets a replay of an
+   * entry whose `delivered` confirmation never reached the server (app killed right after
+   * processing) be skipped instead of decrypted twice. Opaque server ids only — no content.
+   */
+  processedEnvelopeIds?: string[];
 }
+
+/** Retention of {@link VaultDoc.processedEnvelopeIds}: covers a full server inbox (1000) replay. */
+export const MAX_PROCESSED_ENVELOPE_IDS = 1500;
 
 const emptyDoc = (): VaultDoc => ({
   version: DOC_VERSION,
@@ -547,6 +557,23 @@ export function createPersistentKeyStore(vault: PersistentVault): KeyStore {
             delete doc.messages[id];
           }
         }
+      });
+    },
+
+    async hasProcessedEnvelope(id: string): Promise<boolean> {
+      return vault.read((doc) => (doc.processedEnvelopeIds ?? []).includes(id));
+    },
+    async markEnvelopeProcessed(id: string): Promise<void> {
+      await vault.mutate((doc) => {
+        const ids = doc.processedEnvelopeIds ?? [];
+        if (ids.includes(id)) {
+          return;
+        }
+        ids.push(id);
+        if (ids.length > MAX_PROCESSED_ENVELOPE_IDS) {
+          ids.splice(0, ids.length - MAX_PROCESSED_ENVELOPE_IDS);
+        }
+        doc.processedEnvelopeIds = ids;
       });
     },
 

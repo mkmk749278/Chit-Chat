@@ -22,6 +22,12 @@ import { Platform } from 'react-native';
 const ANDROID_CHANNEL_ID = 'messages';
 
 /**
+ * Fixed identifier for the generic wake alert, so every wake REPLACES the previous alert instead of
+ * stacking one "New message" per push (the content is identical and still encrypted anyway).
+ */
+const WAKE_NOTIFICATION_ID = 'lumin-wake';
+
+/**
  * Prepare local notifications: request OS permission (Android 13+ POST_NOTIFICATIONS / iOS alerts)
  * and create the Android message channel so wake alerts can be shown. Idempotent and best-effort —
  * a denied permission or a failure just means no offline alerts; the store-and-forward queue still
@@ -55,6 +61,7 @@ export async function setupNotifications(): Promise<void> {
 export async function presentWakeNotification(): Promise<void> {
   try {
     await Notifications.scheduleNotificationAsync({
+      identifier: WAKE_NOTIFICATION_ID,
       content: { title: 'New message', body: 'Open Lumin to read your messages.' },
       trigger: Platform.OS === 'android' ? { channelId: ANDROID_CHANNEL_ID } : null,
     });

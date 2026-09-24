@@ -15,6 +15,7 @@ import {
   registerPushToken,
   revokePushToken,
   type PushPlatform,
+  watchForegroundWakes,
 } from './push-registration';
 
 function fakeClient(opts: { throws?: boolean } = {}): {
@@ -119,4 +120,45 @@ test('revoke never throws when the backend revoke fails', async () => {
   const { client } = fakeClient({ throws: true });
   const fp = fakePlatform({ token: 'tok' });
   await assert.doesNotReject(revokePushToken({ client, registrationId: 5, platform: fp.platform }));
+});
+
+test('a foreground wake push triggers an immediate reconnect; unsubscribe detaches it', () => {
+  let wake: (() => void) | null = null;
+  let detached = false;
+  const { platform } = fakePlatform({ token: 'tok' });
+  platform.onForegroundWake = (listener) => {
+    wake = listener;
+    return () => {
+      detached = true;
+    };
+  };
+  let reconnects = 0;
+
+  const unsub = watchForegroundWakes(platform, () => {
+    reconnects += 1;
+  });
+  (wake as unknown as () => void)();
+  assert.equal(reconnects, 1);
+
+  unsub();
+  assert.equal(detached, true);
+});
+
+test('foreground wake watching is a safe no-op without FCM or without support', () => {
+  assert.doesNotThrow(() => watchForegroundWakes(null, () => undefined)());
+  const { platform } = fakePlatform({ token: 'tok' });
+  assert.doesNotThrow(() => watchForegroundWakes(platform, () => undefined)());
+});
+
+test('a throwing reconnect never escapes the push callback', () => {
+  let wake: (() => void) | null = null;
+  const { platform } = fakePlatform({ token: 'tok' });
+  platform.onForegroundWake = (listener) => {
+    wake = listener;
+    return () => undefined;
+  };
+  watchForegroundWakes(platform, () => {
+    throw new Error('boom');
+  });
+  assert.doesNotThrow(() => (wake as unknown as () => void)());
 });

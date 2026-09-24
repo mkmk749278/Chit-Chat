@@ -38,7 +38,7 @@ import {
 } from '@nestjs/common';
 import type { AuthContext, AddOneTimePreKeysResponse, RegisterDeviceResponse } from '@chat-app/types';
 
-import { Auth, FirebaseAuthGuard } from '../auth';
+import { Auth, FirebaseAdminService, FirebaseAuthGuard } from '../auth';
 import { RateLimiterService } from '../redis';
 import {
   REGISTER_RATE_LIMIT,
@@ -56,6 +56,7 @@ export class DevicesController {
   constructor(
     private readonly devices: DevicesService,
     private readonly rateLimiter: RateLimiterService,
+    private readonly firebaseAdmin: FirebaseAdminService,
   ) {}
 
   /**
@@ -96,10 +97,13 @@ export class DevicesController {
     }
 
     // Persist the phone number so the directory can resolve a phone → this UID for contact
-    // discovery. Prefer the VERIFIED token claim; fall back to the client-supplied E.164
-    // (the number the user completed OTP for) only when the token carries no phone claim, so
-    // a server-verified number is never overridden by client input.
-    return this.devices.registerDevice(auth.uid, dto, auth.phoneNumber ?? dto.phoneNumber);
+    // discovery. ONLY a Firebase-verified number is ever stored: the token claim, or — when a
+    // token happens to carry no phone claim — the number on the Firebase account itself. The
+    // client-supplied `dto.phoneNumber` is deliberately ignored: trusting it let any signed-in
+    // caller claim someone else's number and receive the messages meant for them.
+    const phoneNumber =
+      auth.phoneNumber ?? (await this.firebaseAdmin.getVerifiedPhoneNumber(auth.uid));
+    return this.devices.registerDevice(auth.uid, dto, phoneNumber);
   }
 
   /**

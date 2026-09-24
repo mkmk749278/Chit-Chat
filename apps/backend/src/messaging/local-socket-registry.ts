@@ -33,6 +33,12 @@ export const LOCAL_SOCKET_REGISTRY = Symbol('LOCAL_SOCKET_REGISTRY');
 export interface LocalRecipientSocket {
   /** Sends a server→client frame to this socket. */
   send(frame: ServerToClientFrame): void;
+  /**
+   * The realtime protocol version the client negotiated (1 = legacy, 2 = acknowledged delivery).
+   * A v1 socket never confirms deliveries, so the relay drops an inbox entry as soon as it is
+   * pushed to one (legacy at-most-once). Absent ⇒ treated as v1.
+   */
+  readonly protocol?: number;
 }
 
 /**

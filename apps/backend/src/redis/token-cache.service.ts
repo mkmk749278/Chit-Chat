@@ -86,6 +86,14 @@ export class TokenCacheService {
   }
 
   /**
+   * Drop the cached verification for a raw token (e.g. on account deletion), so the token stops
+   * passing the guard from cache and must be re-verified against Firebase.
+   */
+  async delete(token: string): Promise<void> {
+    await this.redis.del(TokenCacheService.cacheKey(token));
+  }
+
+  /**
    * Builds the cache key `fbtoken:{sha256(token)}`. Only the hex SHA-256 digest of the
    * token is embedded — the raw token never appears in a key (Requirement 13.2).
    */

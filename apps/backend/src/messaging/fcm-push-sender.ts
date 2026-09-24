@@ -23,14 +23,35 @@ import { getApps } from 'firebase-admin/app';
 import { getMessaging } from 'firebase-admin/messaging';
 
 import { FIREBASE_APP_NAME } from '../auth/firebase-admin.service';
-import type { PushSender } from './push-sender';
+import type { PushSendResult, PushSender } from './push-sender';
+
+/**
+ * FCM error codes that mean the token will never work again, so it should be removed rather than
+ * retried on every future message.
+ */
+const PERMANENT_TOKEN_ERRORS = new Set<string>([
+  'messaging/registration-token-not-registered',
+  'messaging/invalid-registration-token',
+]);
+
+/**
+ * Android collapse key for wake pushes: while a device is unreachable FCM keeps only the newest
+ * wake for it, so a burst of messages to an offline user becomes one wake instead of N.
+ */
+const WAKE_COLLAPSE_KEY = 'wake';
+
+/**
+ * How long FCM keeps trying to deliver a wake to an unreachable device. Matches the inbox
+ * retention, so a device that comes back within that window is still woken.
+ */
+const WAKE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 @Injectable()
 export class FcmPushSender implements PushSender {
   private readonly logger = new Logger(FcmPushSender.name);
 
   /** @inheritdoc */
-  async send(tokens: string[], data: Record<string, string>): Promise<void> {
+  async send(tokens: string[], data: Record<string, string>): Promise<PushSendResult | void> {
     if (tokens.length === 0) {
       return;
     }
@@ -47,14 +68,26 @@ export class FcmPushSender implements PushSender {
       const result = await getMessaging(app).sendEachForMulticast({
         tokens,
         data,
-        android: { priority: 'high' },
+        android: { priority: 'high', collapseKey: WAKE_COLLAPSE_KEY, ttl: WAKE_TTL_MS },
+        apns: { headers: { 'apns-collapse-id': WAKE_COLLAPSE_KEY } },
+      });
+      const invalidTokens: string[] = [];
+      (result.responses ?? []).forEach((response, index) => {
+        const code = response.error?.code;
+        if (!response.success && code !== undefined && PERMANENT_TOKEN_ERRORS.has(code)) {
+          const token = tokens[index];
+          if (token !== undefined) {
+            invalidTokens.push(token);
+          }
+        }
       });
       if (result.failureCount > 0) {
         // Count-only diagnostics — never log tokens or payload (Req 8.2 / invariant C1).
         this.logger.debug(
-          `Wake-push delivered to ${result.successCount}/${tokens.length} token(s); ${result.failureCount} failed`,
+          `Wake-push delivered to ${result.successCount}/${tokens.length} token(s); ${result.failureCount} failed (${invalidTokens.length} invalid)`,
         );
       }
+      return { invalidTokens };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.warn(`FCM wake-push failed: ${message}`);

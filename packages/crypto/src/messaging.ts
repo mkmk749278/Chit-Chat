@@ -138,7 +138,24 @@ export interface MessagingStore {
   loadMessages(): Promise<MessageRow[]>;
   /** Permanently remove expired rows (best-effort secure erase) (Req 4.2/4.4). */
   purgeMessages(ids: string[]): Promise<void>;
+  /**
+   * OPTIONAL (reliable delivery, protocol v2): whether the inbound envelope stored under this
+   * server inbox id was already fully processed on this device. Persisted so an entry whose
+   * `delivered` confirmation never reached the server (app killed right after processing) is
+   * skipped when replayed after a relaunch, instead of being decrypted a second time — which
+   * libsignal rejects, surfacing a spurious "could not decrypt" row. Absent ⇒ only the in-memory
+   * dedupe applies (sufficient within one app session).
+   */
+  hasProcessedEnvelope?(id: string): Promise<boolean>;
+  /** OPTIONAL companion to {@link hasProcessedEnvelope}: remember an id (bounded, oldest dropped). */
+  markEnvelopeProcessed?(id: string): Promise<void>;
 }
+
+/**
+ * How many processed inbox ids the orchestrator remembers in memory (fast-path replay dedupe).
+ * The server inbox holds at most 1000 entries, so this comfortably covers a full replay.
+ */
+export const MAX_REMEMBERED_ENVELOPE_IDS = 2000;
 
 /** The injected ports + collaborators {@link DefaultMessaging} depends on. */
 export interface MessagingDeps {
@@ -633,6 +650,12 @@ export class DefaultMessaging implements Messaging {
    * message is being decrypted).
    */
   private readonly envelopeQueues = new Map<string, Promise<void>>();
+  /**
+   * Server inbox ids already processed this session, in insertion order (oldest evicted past
+   * {@link MAX_REMEMBERED_ENVELOPE_IDS}). The server replays every unconfirmed entry on each
+   * reconnect and may also deliver it live, so the same id can legitimately arrive twice.
+   */
+  private readonly processedEnvelopeIds = new Set<string>();
   /**
    * Per-peer in-chat-verification seeds, RAM-only and session-scoped: cleared on `dispose`
    * (app lock/exit), so verification state never outlives the session (§4.4) and the seed is
@@ -1793,18 +1816,85 @@ export class DefaultMessaging implements Messaging {
    * promise for this sender ensures that all envelopes from the same peer are processed
    * one-at-a-time in arrival order, preventing concurrent libsignal session access.
    */
-  private enqueueEnvelope(senderUid: string, envelope: CiphertextEnvelope): void {
+  private enqueueEnvelope(senderUid: string, envelope: CiphertextEnvelope, inboxId?: string): void {
     const prev = this.envelopeQueues.get(senderUid) ?? Promise.resolve();
     // Always run the next envelope even if the previous one threw (chain via .then + .catch).
-    const next = prev.then(() => this.onEnvelope(envelope)).catch(() => {});
+    const next = prev.then(() => this.processInbound(envelope, inboxId)).catch(() => {});
     this.envelopeQueues.set(senderUid, next);
+  }
+
+  /**
+   * Process one delivered envelope with at-least-once semantics (protocol v2). An envelope that
+   * carries a server inbox id is:
+   *   - skipped (but re-confirmed) when that id was already processed — a replay after a
+   *     reconnect, or the same entry delivered both live and by replay;
+   *   - otherwise decrypted/applied via {@link onEnvelope}, remembered, and only THEN confirmed
+   *     with a `delivered` frame, so the server drops it only once this device has durably
+   *     handled it. A processing failure leaves it unconfirmed, and the server replays it.
+   * The dedupe check runs inside the per-peer chain, so two copies racing in are serialised and
+   * the second always sees the first as processed.
+   */
+  private async processInbound(envelope: CiphertextEnvelope, inboxId?: string): Promise<void> {
+    if (inboxId === undefined) {
+      await this.onEnvelope(envelope);
+      return;
+    }
+    if (await this.wasEnvelopeProcessed(inboxId)) {
+      this.confirmDelivered(inboxId);
+      return;
+    }
+    await this.onEnvelope(envelope);
+    await this.rememberEnvelopeProcessed(inboxId);
+    this.confirmDelivered(inboxId);
+  }
+
+  private async wasEnvelopeProcessed(inboxId: string): Promise<boolean> {
+    if (this.processedEnvelopeIds.has(inboxId)) {
+      return true;
+    }
+    if (this.store.hasProcessedEnvelope === undefined) {
+      return false;
+    }
+    try {
+      return await this.store.hasProcessedEnvelope(inboxId);
+    } catch {
+      return false;
+    }
+  }
+
+  private async rememberEnvelopeProcessed(inboxId: string): Promise<void> {
+    this.processedEnvelopeIds.add(inboxId);
+    if (this.processedEnvelopeIds.size > MAX_REMEMBERED_ENVELOPE_IDS) {
+      const oldest = this.processedEnvelopeIds.values().next().value;
+      if (oldest !== undefined) {
+        this.processedEnvelopeIds.delete(oldest);
+      }
+    }
+    try {
+      await this.store.markEnvelopeProcessed?.(inboxId);
+    } catch {
+      // The in-memory set still dedupes this session; a relaunch replay is the only exposure.
+    }
+  }
+
+  /**
+   * Tell the server this device has processed an inbox entry. Best-effort: while disconnected the
+   * entry simply stays in the inbox, is replayed on the next connect, and is confirmed then.
+   */
+  private confirmDelivered(inboxId: string): void {
+    try {
+      this.realtime.send({ kind: 'delivered', ids: [inboxId] });
+    } catch {
+      // Not connected — replayed and re-confirmed after the reconnect.
+    }
   }
 
   /** Route an inbound frame: `deliver` → decrypt+render (serialised per-peer); `ack` → resolve send; `typing` → hint. */
   private handleFrame(frame: ServerToClientFrame): void {
     if (frame.kind === 'deliver') {
       // Serialise per-peer so concurrent libsignal session access cannot corrupt ratchet state.
-      this.enqueueEnvelope(frame.envelope.senderUid, frame.envelope);
+      const inboxId = typeof frame.id === 'string' && frame.id.length > 0 ? frame.id : undefined;
+      this.enqueueEnvelope(frame.envelope.senderUid, frame.envelope, inboxId);
       return;
     }
     if (frame.kind === 'ack') {

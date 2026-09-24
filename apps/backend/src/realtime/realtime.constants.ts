@@ -62,3 +62,36 @@ export const WS_HEARTBEAT_INTERVAL_MS = 25_000;
  * value the same way, so the REST :3000 + WS :3001 contract stays consistent.
  */
 export const WS_PORT = Number(process.env.WS_PORT ?? 3001);
+
+/**
+ * Close code sent to every client when this node shuts down gracefully (RFC 6455 1012,
+ * "Service Restart"). Clients treat it like any other non-deliberate close and reconnect under
+ * backoff — to the new node after a redeploy.
+ */
+export const WS_CLOSE_SERVICE_RESTART = 1012;
+
+/**
+ * Largest inbound WebSocket frame accepted, in bytes. Envelopes carry only libsignal ciphertext of
+ * a small content payload (attachments travel through the blob store, not the socket), so 256 KiB
+ * is generous; the `ws` default of 100 MiB would let one client make the server buffer 100 MiB.
+ * A larger frame is rejected by `ws` with close code 1009.
+ */
+export const WS_MAX_PAYLOAD_BYTES = 256 * 1024;
+
+/**
+ * Per-uid cap on `send` frames (messages + control payloads such as reactions/edits/receipts),
+ * enforced over {@link WS_FRAME_RATE_WINDOW_SECONDS}. Generous enough for a burst flush of queued
+ * messages after a reconnect, low enough that one account cannot flood a victim's inbox. An
+ * over-limit `send` is not relayed and not ACKed, so the sender's message fails and can be retried.
+ */
+export const WS_SEND_RATE_LIMIT = 300;
+
+/** Per-uid cap on ephemeral `typing` frames per window; excess hints are dropped silently. */
+export const WS_TYPING_RATE_LIMIT = 60;
+
+/** Window for the per-uid frame limits above. */
+export const WS_FRAME_RATE_WINDOW_SECONDS = 60;
+
+/** `{scope}` portions of the frame rate-limit keys (`ws-send:{uid}`, `ws-typing:{uid}`). */
+export const WS_SEND_RATE_LIMIT_SCOPE = 'ws-send';
+export const WS_TYPING_RATE_LIMIT_SCOPE = 'ws-typing';

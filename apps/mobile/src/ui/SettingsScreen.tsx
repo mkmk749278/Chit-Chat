@@ -36,6 +36,7 @@ export function SettingsScreen({
   onTogglePresence,
   onSelfTest,
   onSignOut,
+  onDeleteAccount,
   appLockEnabled = false,
   decoyEnabled = false,
   onSetAppPin,
@@ -53,6 +54,8 @@ export function SettingsScreen({
   /** Resolve this device's OWN phone number through the directory (self-test). */
   onSelfTest: () => Promise<{ ok: boolean; detail: string }>;
   onSignOut: () => void;
+  /** Permanently delete the account (the caller confirms first). Hidden when absent. */
+  onDeleteAccount?: () => void;
   /** Whether a real app-lock PIN is set (Signature Feature 4, §6). */
   appLockEnabled?: boolean;
   /** Whether a decoy PIN is set (§6). */
@@ -286,6 +289,16 @@ export function SettingsScreen({
       >
         <Text style={[styles.signOutText, { color: t.danger }]}>Sign out</Text>
       </Pressable>
+      {onDeleteAccount !== undefined && (
+        <Pressable
+          style={styles.deleteAccount}
+          onPress={onDeleteAccount}
+          accessibilityRole="button"
+          accessibilityHint="Permanently deletes your account and the data on this device"
+        >
+          <Text style={[styles.deleteAccountText, { color: t.danger }]}>Delete account</Text>
+        </Pressable>
+      )}
       <View style={styles.footer} />
 
       {/* PIN-entry modal for setting the real or decoy app-lock PIN (§6). */}
@@ -431,5 +444,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   signOutText: { fontSize: 15, fontWeight: '700' },
+  deleteAccount: { marginTop: 12, paddingVertical: 10, alignItems: 'center' },
+  deleteAccountText: { fontSize: 14, fontWeight: '600' },
   footer: { height: 32 },
 });

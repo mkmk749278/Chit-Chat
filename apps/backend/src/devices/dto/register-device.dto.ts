@@ -71,9 +71,9 @@ export class RegisterDeviceDto implements RegisterDeviceDtoShape {
   deviceName?: string;
 
   /**
-   * Optional E.164 phone number the user signed in with (discovery fallback). Validated to
-   * E.164 so a malformed value is rejected; the server only uses it when the verified token
-   * carries no phone claim, so it can never override a server-verified number.
+   * Optional E.164 phone number the user signed in with. Accepted (and validated) only so
+   * existing app builds that still send it are not rejected by `forbidNonWhitelisted`; the
+   * server IGNORES it and stores only the Firebase-verified number (see DevicesController).
    */
   @IsOptional()
   @Matches(/^\+[1-9]\d{6,14}$/, { message: 'phoneNumber must be a valid E.164 number' })

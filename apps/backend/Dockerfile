@@ -37,6 +37,10 @@ COPY --from=build /repo/packages ./packages
 COPY --from=build /repo/apps/backend ./apps/backend
 
 WORKDIR /repo/apps/backend
+# Drop root: the backend only reads its files and listens on unprivileged ports, so a compromise
+# of the Node process does not get root inside the container. (Migrations run via
+# `docker compose exec`, which uses this same user — they need no filesystem writes.)
+USER node
 EXPOSE 3000 3001
 # REST :3000 + WebSocket :3001. Migrations are applied by the deploy via
 # `docker compose exec backend npm run migration:run`.

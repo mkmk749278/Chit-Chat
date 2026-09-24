@@ -1088,9 +1088,8 @@ function AppShell(): React.JSX.Element {
     return target !== null ? controller.getSafetyNumber(target) : Promise.resolve(null);
   }, [controller]);
 
-  const signOut = useCallback(() => {
-    void controller.signOut();
-    // Session-end hygiene: drop all conversation + profile state with the session.
+  /** Session-end hygiene: drop all conversation + profile state with the session. */
+  const resetSessionState = useCallback(() => {
     rehydratedRef.current = false;
     setConversations([]);
     setOpenChatId(null);
@@ -1113,7 +1112,38 @@ function AppShell(): React.JSX.Element {
     setRowMenu(null);
     setCreateSheet(null);
     setPinPrompt(null);
-  }, [controller]);
+  }, []);
+
+  const signOut = useCallback(() => {
+    void controller.signOut();
+    resetSessionState();
+  }, [controller, resetSessionState]);
+
+  // Permanent account deletion (store-policy requirement): confirm, let the server erase the
+  // account, then wipe this device exactly like sign-out. Nothing local changes on failure.
+  const deleteAccount = useCallback(() => {
+    Alert.alert(
+      'Delete account?',
+      'This permanently deletes your Lumin account, your profile, and all chats on this device. ' +
+        'Messages not yet delivered to you are discarded. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            void controller.deleteAccount().then((result) => {
+              if (result.ok) {
+                resetSessionState();
+              } else {
+                Alert.alert('Account not deleted', result.error ?? 'Please try again.');
+              }
+            });
+          },
+        },
+      ],
+    );
+  }, [controller, resetSessionState]);
 
   const openConversation = openChatId !== null
     ? conversations.find((c) => c.id === openChatId) ?? null
@@ -1401,6 +1431,7 @@ function AppShell(): React.JSX.Element {
                 }
               }}
               onSignOut={signOut}
+              onDeleteAccount={deleteAccount}
               onManageShadowChats={appMode === 'real' ? openShadowManager : undefined}
               />
             }

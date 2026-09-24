@@ -137,9 +137,92 @@ test('constructor rejects a non-wss url (8.6)', () => {
 test('token rides the bearer subprotocol, never the URL (4.1, 4.2, 8.6)', () => {
   const { client, transport } = build();
   void client.connect();
-  assert.equal(transport.lastUrl, URL);
+  // Only the non-secret protocol-version flag is added to the URL.
+  assert.equal(transport.lastUrl, `${URL}?v=2`);
   assert.ok(!transport.lastUrl.includes('tok'));
   assert.deepEqual(transport.lastSubprotocols, ['bearer', 'tok']);
+});
+
+test('protocol 1 opts out of the version flag (legacy wire)', () => {
+  const transport = new FakeTransport();
+  const client = new RealtimeClient({ url: URL, transport, auth: fakeAuth(), scheduler: new FakeScheduler(), protocol: 1 });
+  void client.connect();
+  assert.equal(transport.lastUrl, URL);
+});
+
+test('the version flag is appended after an existing query string', () => {
+  const transport = new FakeTransport();
+  const client = new RealtimeClient({ url: `${URL}?region=eu`, transport, auth: fakeAuth(), scheduler: new FakeScheduler() });
+  void client.connect();
+  assert.equal(transport.lastUrl, `${URL}?region=eu&v=2`);
+});
+
+// --- keepalive (protocol v2) --------------------------------------------------
+
+async function connectedV2(): Promise<{ client: RealtimeClient; transport: FakeTransport; scheduler: FakeScheduler; handle: FakeHandle }> {
+  const { client, transport, scheduler } = build();
+  const p = client.connect();
+  const handle = transport.handles[0]!;
+  handle.fireOpen();
+  await p;
+  handle.fireMessage(JSON.stringify({ kind: 'hello', protocol: 2 }));
+  return { client, transport, scheduler, handle };
+}
+
+test('keepalive: probes a v2 server with ping and stays up when pong arrives', async () => {
+  const { client, transport, scheduler, handle } = await connectedV2();
+
+  scheduler.runPending(); // keepalive interval elapses → ping sent, deadline armed
+  assert.deepEqual(JSON.parse(handle.sent.at(-1)!), { kind: 'ping' });
+
+  handle.fireMessage(JSON.stringify({ kind: 'pong' })); // answer clears the deadline, re-arms
+  scheduler.runPending(); // next interval → another ping, NOT a reconnect
+  assert.equal(transport.handles.length, 1);
+  assert.equal(client.getStatus(), 'connected');
+  assert.equal(handle.sent.filter((f) => JSON.parse(f).kind === 'ping').length, 2);
+});
+
+test('keepalive: a zombie socket (no answer) is replaced and reconnects', async () => {
+  const { client, transport, scheduler, handle } = await connectedV2();
+
+  scheduler.runPending(); // ping sent
+  scheduler.runPending(); // deadline passes with no frame at all
+  assert.equal(client.getStatus(), 'disconnected');
+  assert.equal(handle.closed?.reason, 'keepalive timeout');
+
+  scheduler.runPending(); // backoff → fresh attempt
+  assert.equal(transport.handles.length, 2, 'a fresh socket replaces the zombie');
+});
+
+test('keepalive: any inbound frame counts as proof of life', async () => {
+  const { transport, scheduler, handle } = await connectedV2();
+
+  scheduler.runPending(); // ping sent, deadline armed
+  handle.fireMessage(JSON.stringify({ kind: 'typing', fromUid: 'bob' }));
+  scheduler.runPending(); // interval (not the stale deadline)
+  assert.equal(transport.handles.length, 1);
+});
+
+test('keepalive: never runs against a server that did not say hello (older backend)', async () => {
+  const { client, transport, scheduler } = build();
+  const p = client.connect();
+  const handle = transport.handles[0]!;
+  handle.fireOpen();
+  await p;
+
+  scheduler.runPending();
+  scheduler.runPending();
+  assert.equal(handle.sent.length, 0, 'no ping sent to a v1 server');
+  assert.equal(client.getStatus(), 'connected');
+});
+
+test('hello and pong are control frames, not forwarded to frame listeners', async () => {
+  const { client, handle } = await connectedV2();
+  const seen: unknown[] = [];
+  client.onFrame((f) => seen.push(f));
+  handle.fireMessage(JSON.stringify({ kind: 'pong' }));
+  handle.fireMessage(JSON.stringify({ kind: 'hello', protocol: 2 }));
+  assert.deepEqual(seen, []);
 });
 
 test('status is disconnected while connecting and connected only once open (Property 14)', async () => {

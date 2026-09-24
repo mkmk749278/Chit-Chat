@@ -1,4 +1,4 @@
-import { Global, Inject, Logger, Module, type OnModuleDestroy } from '@nestjs/common';
+import { Global, Inject, Logger, Module, type OnApplicationShutdown } from '@nestjs/common';
 import type Redis from 'ioredis';
 
 import { PresenceRegistryService } from './presence-registry.service';
@@ -41,7 +41,7 @@ import { TokenCacheService } from './token-cache.service';
     RateLimiterService,
   ],
 })
-export class RedisModule implements OnModuleDestroy {
+export class RedisModule implements OnApplicationShutdown {
   private readonly logger = new Logger(RedisModule.name);
 
   constructor(
@@ -55,8 +55,12 @@ export class RedisModule implements OnModuleDestroy {
    * can exit cleanly and Redis releases the sockets. `quit()` drains pending commands;
    * any failure is logged but never rethrown so one client's close cannot block the
    * others.
+   *
+   * Runs in `onApplicationShutdown` — the LAST shutdown phase, after the HTTP/WS servers are
+   * disposed — so the realtime gateway's own shutdown cleanup (dropping this node's presence
+   * entries and liveness marker) and the per-socket disconnect handlers can still reach Redis.
    */
-  async onModuleDestroy(): Promise<void> {
+  async onApplicationShutdown(): Promise<void> {
     const clients: ReadonlyArray<readonly [string, Redis]> = [
       ['command', this.commandClient],
       ['subscriber', this.subscriberClient],

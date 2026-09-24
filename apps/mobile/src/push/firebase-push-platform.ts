@@ -44,5 +44,16 @@ export function createFirebasePushPlatform(): PushPlatform {
         // best-effort
       }
     },
+    onForegroundWake(listener: () => void): () => void {
+      try {
+        return messaging().onMessage(async (message) => {
+          if (message?.data?.type === 'wake') {
+            listener();
+          }
+        });
+      } catch {
+        return () => undefined;
+      }
+    },
   };
 }
